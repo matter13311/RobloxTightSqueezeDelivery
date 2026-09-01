@@ -18,11 +18,11 @@ end)
 	--AttachmentXX - 4 attachments, positioned on the corners of the chassis. the orientation is rotated 90: 0, 0, 90
 	--the CustomPhysicalProperties is enabled to get the Mass to 80. Currently set Density to 2 to achieve mass of 80.
 	--Orientation is 0,0,90
---Wheels named like BL, BR, FL, FR. 
+--Wheels named like BL, BR, FL, FR.
 		--wheel part has CustomPhysicalProperties. Density set to 2, Elasticity set to 0.2, friction set to 1.5
-		--each wheel contains 
+		--each wheel contains
 		--Attachment set in the middle of the wheel. it's rotated 180. Orientation: 0, 0, -180
-		--CylindricalConstraint -attaches Attachment in wheel to AttachmentXX in Chassis. 
+		--CylindricalConstraint -attaches Attachment in wheel to AttachmentXX in Chassis.
 				--AngularActuatorType: Motor
 				--InclinationAngle: 50
 				--AngularVelocity: 0
@@ -30,7 +30,7 @@ end)
 				--limits lowerLimit: -2, upperlimit: -1  controls how max and min distance
 				--inclinationAngle: 90
 				--BR and BL wheels have AngularActuatorType set to Motor
-		--SpringConstraint -- Attaches to Attachment in wheel to AttachmentXX in Chassis. 
+		--SpringConstraint -- Attaches to Attachment in wheel to AttachmentXX in Chassis.
 				--Damping: 200
 				--Stiffness: 3500
 				--Freelength in back wheels is 3.2. Front wheels are 2.8
