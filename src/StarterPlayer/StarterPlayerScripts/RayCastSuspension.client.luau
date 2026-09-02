@@ -18,7 +18,9 @@ local wheelFriction = 10
 local torque = 10
 local maxSpeed = 50
 local steerAngle = 30
-local brakeStrength = 10 -- how hard the car auto-brakes when nobody's pressing W/S
+local brakeStrength = 10 -- how hard the car auto-brakes once it's nearly stopped
+local coastDrag = 0.5 -- gentle rolling resistance while coasting above coastSpeedThreshold
+local coastSpeedThreshold = 3 -- studs/s - below this, snap to a full stop instead of gently coasting
 
 local smoothSteer = 0
 
@@ -41,7 +43,10 @@ local function onCharacterAdded(character)
                 while true do
                     local delta = game["Run Service"].Heartbeat:Wait()
 
-                    local carPrim = carModel.PrimaryPart
+
+                    carPrim.Sound.PlaybackSpeed = 0.8 + carPrim.AssemblyLinearVelocity.Magnitude / maxSpeed
+                    -- game.Players.LocalPlayer.PlayerGui.ScreenGui.TextLabel.Text = carPrim.AssemblyAngularVelocity.magnitude
+
 
                     smoothSteer = math.abs(seatPart.SteerFloat - smoothSteer) <= delta * 5 and seatPart.SteerFloat or smoothSteer + math.sign(seatPart.SteerFloat - smoothSteer) * delta * 5    
 
@@ -74,15 +79,18 @@ local function onCharacterAdded(character)
                             local ZForce
                             if seatPart.ThrottleFloat ~= 0 then
                                 ZForce = RotationsOnlyWhereDirCFrame.LookVector * seatPart.ThrottleFloat * torque * (1 - math.min(1, math.abs(LocalVelocity.z)/ maxSpeed)) -- Reduce forward force when steering
+                            elseif math.abs(LocalVelocity.z) > coastSpeedThreshold then
+                                -- Still going fast enough to be "coasting" - only apply a light
+                                -- rolling drag so momentum carries through, instead of slamming
+                                -- to a stop the instant you let go of the accelerator.
+                                -- NOTE: LookVector is the local -Z axis, not +Z, so
+                                -- LocalVelocity.z is already the negative of forward speed -
+                                -- don't negate it again (that would push further in the
+                                -- direction of travel instead of opposing it).
+                                ZForce = RotationsOnlyWhereDirCFrame.LookVector * LocalVelocity.z * coastDrag
                             else
-                                -- Auto-brake: cancel forward/backward speed the same way XForce
-                                -- always cancels sideways speed. Without this, letting go of
-                                -- W/S applies zero force at all (ThrottleFloat * torque = 0),
-                                -- so the car just coasts forever instead of coming to a stop.
-                                -- NOTE: unlike RightVector, LookVector corresponds to the local
-                                -- -Z axis, not +Z - so LocalVelocity.z is already the negative
-                                -- of forward speed. Do NOT negate it again here (that produces
-                                -- a force in the direction of travel, not opposing it).
+                                -- Slow enough that continuing to creep forward/backward would
+                                -- just look like it's stuck rolling - fully brake to a stop.
                                 ZForce = RotationsOnlyWhereDirCFrame.LookVector * LocalVelocity.z * brakeStrength
                             end
                             SpringLengthMemory[wheelName] = SpringLength

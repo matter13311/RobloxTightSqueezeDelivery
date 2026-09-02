@@ -59,6 +59,7 @@ local Stiffness = 70
 local Damper = 2
 
 local wheelFriction = 5
+local maxSpeed = 50 -- keep in sync with the client's maxSpeed, used to scale engine sound pitch
 
 
 -- game.ReplicatedStorage.SwitchLight.OnServerEvent:Connect(function(player)
@@ -84,6 +85,9 @@ while true do
         -- random direction at exit; skipping until ownership is confirmed
         -- avoids fighting over data nobody agrees on yet.
         if carPrim:GetNetworkOwner() == nil then
+
+            carPrim.Sound.PlaybackSpeed = 0.8 + carPrim.AssemblyAngularVelocity.magnitude / maxSpeed
+
             local DisCarSpringLength = AllCarsMemory[carModel].SpringLengthMemory
 
             for wheelName, originalPosition in pairs(WheelPositions) do
