@@ -1,145 +1,82 @@
-local WheelPositions = {
-    FL = Vector3.new(-2.9, 0, -5),
-    FR = Vector3.new(2.9, 0, -5),
-    RL = Vector3.new(-2.9, 0, 5),
-    RR = Vector3.new(2.9, 0, 5)
-}
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local wheelModel = game.ReplicatedStorage.UAZWheel
+local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
+
+local defaultWheelModel = ReplicatedStorage.UAZWheel
 local VehicleFolder = workspace.Vehicles
-local AllCarsMemory = {}
-local ExistingCarsTable = {} --stores every car, make car folder to go without it
 
-local function AddCar(obj)
-    table.insert(ExistingCarsTable,obj)
-    obj.PrimaryPart:SetNetworkOwner(nil)--now car physics are calculated only on server
-    AllCarsMemory[obj] = {} --adds table for any memory you want, but i need it only for suspension right now
-    AllCarsMemory[obj].SpringLengthMemory = {}
-    for i, v in pairs(WheelPositions) do AllCarsMemory[obj].SpringLengthMemory[i] = 0.5 end --sets spring length
-    obj.VehicleSeat:GetPropertyChangedSignal('Occupant'):Connect(function()
-        local occ = obj.VehicleSeat.Occupant
-        if occ then--if someone just sat
-            local player = game.Players:GetPlayerFromCharacter(occ.Parent)
-            if player then--if not npc
-                obj.PrimaryPart:SetNetworkOwner(player)
-            end
-        else
-            obj.PrimaryPart:SetNetworkOwner(nil)
-        end
-    end)
+local ExistingCars = {} -- [carModel] = { Attachments = ..., State = ... }
 
-    --wheels
-    local wheelFolder = Instance.new("Folder", obj)
-    wheelFolder.Name = "Wheels"
-    for i,v in pairs(WheelPositions) do
-        local ClonedWheel = wheelModel:Clone()
-        ClonedWheel.Parent = wheelFolder
-        ClonedWheel.Name = i
-        ClonedWheel.CanCollide = false
-        local weld = Instance.new("Weld", ClonedWheel)
-        weld.Part0 = obj.PrimaryPart
-        weld.Part1 = ClonedWheel
-        weld.C0 = CFrame.new(WheelPositions[i])
+local function AddCar(carModel)
+	local chassis = carModel.PrimaryPart
+	local attachments = VehiclePhysics.GetWheelAttachments(chassis)
 
-        if v.x >0 then
-            weld.C0 = weld.C0 * CFrame.Angles(0, math.rad(180), 0)
-        end
-    end
+	ExistingCars[carModel] = {
+		Attachments = attachments,
+		State = VehiclePhysics.NewState(),
+	}
+
+	chassis:SetNetworkOwner(nil) -- server controls physics for parked cars
+
+	carModel.VehicleSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
+		local occupant = carModel.VehicleSeat.Occupant
+		if occupant then
+			local player = Players:GetPlayerFromCharacter(occupant.Parent)
+			if player then
+				chassis:SetNetworkOwner(player)
+			end
+		else
+			chassis:SetNetworkOwner(nil)
+		end
+	end)
+
+	-- wheels (purely cosmetic - a car can override its wheel mesh with a
+	-- "WheelModelName" attribute naming a different model in ReplicatedStorage)
+	local wheelModelName = chassis:GetAttribute("WheelModelName")
+	local wheelModel = (wheelModelName and ReplicatedStorage:FindFirstChild(wheelModelName)) or defaultWheelModel
+
+	local wheelFolder = Instance.new("Folder", carModel)
+	wheelFolder.Name = "Wheels"
+	for _, wheelName in VehiclePhysics.WheelNames do
+		local attachment = attachments[wheelName]
+		local clonedWheel = wheelModel:Clone()
+		clonedWheel.Parent = wheelFolder
+		clonedWheel.Name = wheelName
+		clonedWheel.CanCollide = false
+		local weld = Instance.new("Weld", clonedWheel)
+		weld.Part0 = chassis
+		weld.Part1 = clonedWheel
+		weld.C0 = CFrame.new(attachment.Position)
+
+		if attachment.Position.X > 0 then
+			weld.C0 = weld.C0 * CFrame.Angles(0, math.rad(180), 0)
+		end
+	end
 end
 
-
-for _,object in pairs(VehicleFolder:GetChildren())do
-    AddCar(object)
+for _, carModel in VehicleFolder:GetChildren() do
+	AddCar(carModel)
 end
-
-local SuspensionMaxLength = 1.3
-local wheelRadius = 1.5
-
-local Stiffness = 70
-local Damper = 2
-
-local wheelFriction = 5
-local lateralGripStrength = 1 -- keep in sync with the client's lateralGripStrength - 0-1, 1 = never slides sideways
-local maxSpeed = 50 -- keep in sync with the client's maxSpeed, used to scale engine sound pitch
-
-
--- game.ReplicatedStorage.SwitchLight.OnServerEvent:Connect(function(player)
---     if player.Character and player.Character.Humanoid.SeatPart and player.Character.Humanoid.SeatPart:FindFirstAncestor('Vehicles') then
---         local partsModel = player.Character.SeatPart:FindFirstOfClass('Model').Model
---         partsModel.H1.Light.Enabled = not partsModel.H1.Light.Enabled
---         partsModel.T2.Light.Enabled = partsModel.H1.Light.Enabled
---     end
--- end)
-
+VehicleFolder.ChildAdded:Connect(AddCar)
 
 while true do
-    local delta = game["Run Service"].Heartbeat:Wait()
-    for _, carModel in pairs(ExistingCarsTable) do
-        local carPrim = carModel.PrimaryPart
+	local delta = RunService.Heartbeat:Wait()
+	for carModel, car in ExistingCars do
+		local chassis = carModel.PrimaryPart
 
-        -- Only simulate suspension while the server actually owns this car's
-        -- physics. SetNetworkOwner(nil) is a request that has to replicate,
-        -- not an instant switch - right after a player exits, the server can
-        -- briefly still be working from stale/inconsistent state before
-        -- ownership has genuinely settled back to it. Applying a corrective
-        -- impulse against that stale state is what launches the car in a
-        -- random direction at exit; skipping until ownership is confirmed
-        -- avoids fighting over data nobody agrees on yet.
-        if carPrim:GetNetworkOwner() == nil then
-
-            carPrim.Sound.PlaybackSpeed = 0.8 + carPrim.AssemblyAngularVelocity.magnitude / maxSpeed
-
-            local DisCarSpringLength = AllCarsMemory[carModel].SpringLengthMemory
-
-            for wheelName, originalPosition in pairs(WheelPositions) do
-                local carCFrame = carPrim.CFrame
-                local rayOrigin = carCFrame:ToWorldSpace(CFrame.new(originalPosition)).p
-                local rayDirection = -carCFrame.UpVector * (SuspensionMaxLength + wheelRadius)
-                local rayParams = RaycastParams.new()
-                rayParams.FilterType = Enum.RaycastFilterType.Exclude
-                rayParams.FilterDescendantsInstances = { carModel }
-                local raycast = workspace:Raycast(rayOrigin,rayDirection,rayParams)
-
-                if raycast then
-
-                    local RaycastDistance = (rayOrigin - raycast.Position).magnitude
-
-                    local SpringLength = math.clamp(RaycastDistance - wheelRadius, 0, SuspensionMaxLength)
-                    local StiffnessForce = Stiffness * (SuspensionMaxLength - SpringLength)
-                    local DamperForce = Damper * (( DisCarSpringLength[wheelName] - SpringLength) / delta)
-                    local SuspensionForceVec3 = carCFrame.UpVector * (StiffnessForce + DamperForce)
-
-                    local RotationsOnlyWhereDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
-                    local LocalVelocity = RotationsOnlyWhereDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
-
-                    -- Scaled by mass (a true impulse) rather than a bare coefficient, so this
-                    -- can only ever cancel sideways velocity exactly - never overshoot past
-                    -- zero and flip direction, no matter how strong lateralGripStrength is.
-                    -- Divided across the 4 wheels since each one reads roughly the same
-                    -- velocity and would otherwise each try to cancel the WHOLE car's
-                    -- sideways speed independently, applying up to 4x the needed correction.
-                    local XForce = carCFrame.RightVector * -LocalVelocity.x * (carPrim.AssemblyMass / 4) * lateralGripStrength
-                    -- The server never drives a car (nobody's pressing anything while it's
-                    -- parked), so unlike the client it always brakes forward/backward too -
-                    -- otherwise a car handed back with leftover speed would coast forever.
-                    -- NOTE: LookVector is the local -Z axis (not +Z like RightVector is +X),
-                    -- so LocalVelocity.z is already the negative of forward speed - don't
-                    -- negate it again, or this pushes further in the direction of travel
-                    -- instead of opposing it.
-                    local ZForce = carCFrame.LookVector * LocalVelocity.z * wheelFriction
-
-                    DisCarSpringLength[wheelName] = SpringLength
-
-                    carPrim:ApplyImpulseAtPosition(SuspensionForceVec3 + XForce + ZForce, rayOrigin)
-
-                end
-
-
-
-            end
-        end
-    end
-    
-
-    
+		-- Only simulate suspension while the server actually owns this car's
+		-- physics. SetNetworkOwner(nil) is a request that has to replicate,
+		-- not an instant switch - right after a player exits, the server can
+		-- briefly still be working from stale/inconsistent state before
+		-- ownership has genuinely settled back to it. Applying a corrective
+		-- impulse against that stale state is what launches the car in a
+		-- random direction at exit; skipping until ownership is confirmed
+		-- avoids fighting over data nobody agrees on yet.
+		if chassis:GetNetworkOwner() == nil then
+			local config = VehiclePhysics.GetConfig(chassis)
+			VehiclePhysics.Step(carModel, car.Attachments, config, car.State, delta, nil)
+		end
+	end
 end
