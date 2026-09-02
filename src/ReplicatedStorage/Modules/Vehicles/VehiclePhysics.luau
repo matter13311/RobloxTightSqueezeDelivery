@@ -11,6 +11,11 @@ local VehiclePhysics = {}
 local WHEEL_NAMES = { "FL", "FR", "RL", "RR" }
 VehiclePhysics.WheelNames = WHEEL_NAMES
 
+-- studs/s below which a stopped car is treated as genuinely stopped, and the
+-- low-speed brake controller stops correcting entirely. Without a deadzone it
+-- keeps chasing float noise forever, which reads as a permanent fine jitter.
+local REST_VELOCITY_EPSILON = 0.1
+
 -- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
 	-- Matches DriftCar.luau's SuspensionMaxLength, which empirically holds
@@ -252,12 +257,35 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			local lateralImpulseMagnitude = math.clamp(neededLateralImpulse, -maxLateralImpulse, maxLateralImpulse)
 			local lateralForce = wheelDirCFrame.RightVector * lateralImpulseMagnitude
 
+			-- How hard this tire is working, 0-1, and with it the same
+			-- stabilizer-vs-real-force split the longitudinal branch makes
+			-- below. BELOW the friction limit this is a slip-CANCELLING
+			-- controller, and the "can't overshoot" claim above only held while
+			-- it was applied near the centre of mass: at the contact patch a
+			-- large share of a mass/4 * velocity impulse becomes roll instead
+			-- of deceleration, rolling creates fresh sideways velocity at the
+			-- patch, and it corrects that again next frame - a self-exciting
+			-- loop that reads as the whole car vibrating. SATURATED, it's a
+			-- real friction force pinned at a fixed magnitude with no feedback
+			-- term at all, so the patch is exactly where it belongs - and that
+			-- (a tire at its grip limit) is precisely when cornering roll
+			-- should appear. Blending by saturation rather than switching keeps
+			-- the force continuous, so there's no pop at the crossover.
+			local lateralSaturation = if maxLateralImpulse > 0
+				then math.min(1, math.abs(lateralImpulseMagnitude) / maxLateralImpulse)
+				else 0
+
 			-- Only wheels on the driven axle (DriveWheels: "All"/"Front"/"Rear")
 			-- push the car forward - the other axle just rolls (falls through to
 			-- coast/brake below), same as a real FWD/RWD car.
 			local isDriveWheel = config.DriveWheels == "All"
 				or (config.DriveWheels == "Front" and isFrontWheel)
 				or (config.DriveWheels == "Rear" and not isFrontWheel)
+
+			-- The low-speed full-stop branch below is a stabilizing controller
+			-- rather than a real tire force, and unlike the others it must NOT
+			-- be applied at the contact patch - see the note where it's set.
+			local longitudinalIsStabilizer = false
 
 			local longitudinalForce
 			if input.Throttle and input.Throttle ~= 0 and isDriveWheel then
@@ -274,13 +302,34 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				-- coefficient here only cancels BrakeStrength/mass of the
 				-- velocity each frame, which for a real car's mass is a weak
 				-- handful of percent, nowhere near enough to actually stop it.
-				local neededLongitudinalImpulse = localVelocity.Z * (carPrim.AssemblyMass / 4)
-				local longitudinalImpulseMagnitude = math.clamp(
-					neededLongitudinalImpulse * config.BrakeStrength,
-					-math.abs(neededLongitudinalImpulse),
-					math.abs(neededLongitudinalImpulse)
-				)
-				longitudinalForce = wheelDirCFrame.LookVector * longitudinalImpulseMagnitude
+				--
+				-- This one is a velocity-cancelling CONTROLLER, not a real tire
+				-- force, so it's applied at the strut mount rather than the
+				-- contact patch. Off-centre, part of its impulse turns into
+				-- rotation instead of deceleration - and rotating the body
+				-- creates fresh velocity at the contact patch (v = v_com + w x r),
+				-- which this same controller then reads next frame as "still
+				-- moving" and corrects again. That's a positive feedback loop,
+				-- and it shows up as the whole car jittering while stopped.
+				-- Nothing is lost by exempting it: braking with S sets
+				-- Throttle = -1, which takes the drive branch above, so all the
+				-- real braking dive still comes from the contact patch.
+				longitudinalIsStabilizer = true
+
+				-- Below a hair of movement, correcting at all is just chasing
+				-- float noise - a deadzone stops the controller from ever
+				-- engaging when the car is already effectively at rest.
+				if math.abs(localVelocity.Z) < REST_VELOCITY_EPSILON then
+					longitudinalForce = Vector3.zero
+				else
+					local neededLongitudinalImpulse = localVelocity.Z * (carPrim.AssemblyMass / 4)
+					local longitudinalImpulseMagnitude = math.clamp(
+						neededLongitudinalImpulse * config.BrakeStrength,
+						-math.abs(neededLongitudinalImpulse),
+						math.abs(neededLongitudinalImpulse)
+					)
+					longitudinalForce = wheelDirCFrame.LookVector * longitudinalImpulseMagnitude
+				end
 			end
 
 			state.SpringLengthMemory[wheelName] = springLength
@@ -296,7 +345,11 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- creating a compression difference between the wheels).
 			local tireForcePosition = raycast.Position:Lerp(rayOrigin, 1 - config.BodyLean)
 			carPrim:ApplyImpulseAtPosition(suspensionForce, rayOrigin)
-			carPrim:ApplyImpulseAtPosition(lateralForce + longitudinalForce, tireForcePosition)
+			carPrim:ApplyImpulseAtPosition(lateralForce, rayOrigin:Lerp(tireForcePosition, lateralSaturation))
+			carPrim:ApplyImpulseAtPosition(
+				longitudinalForce,
+				if longitudinalIsStabilizer then rayOrigin else tireForcePosition
+			)
 		else
 			state.SpringLengthMemory[wheelName] = config.SuspensionMaxLength
 		end
