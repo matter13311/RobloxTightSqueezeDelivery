@@ -20,22 +20,26 @@ local VehicleEffects = {}
 -- maximum-effort drift.
 local SLIP_RAMP = 18
 
-local SMOKE_TEXTURE = "rbxassetid://243660364" -- soft round puff, the standard Roblox smoke sprite
+-- Roblox's own built-in smoke sprite (ships with the engine, same one the
+-- Smoke instance uses), not a catalog asset id. Two earlier attempts at this
+-- effect kept reading as thin white lines/streaks no matter how the physics
+-- (spread, speed, drag) were retuned - the one constant across every attempt
+-- was the texture, so the texture was the actual bug, not the motion.
+local SMOKE_TEXTURE = "rbxasset://textures/particles/smoke_main.dds"
 
 local rigs = {} -- [vehicle] = { Smoke = { [wheelName] = { Emitter, Anchor, WheelPart } }, Screech = Sound }
 
 local function buildSmoke(chassis)
-	-- A free-floating Attachment on the CHASSIS, not the wheel: the wheel
-	-- mesh spins around its axle several times a second at speed
+	-- The anchor lives on the CHASSIS, never on the wheel mesh itself. The
+	-- wheel spins around its axle several times a second at speed
 	-- (VehiclePhysics rotationState), and a ParticleEmitter fires along its
-	-- parent's local up-axis. Parented straight to the wheel, that axis
-	-- sweeps a full circle every spin, so instead of a puff each particle
-	-- gets flung out along whatever direction the wheel happened to be
-	-- facing at that instant - a spinning fan of thin streaks, which is
-	-- exactly the "lines instead of smoke" look. The attachment's position
-	-- is re-pinned to the wheel every frame (see Update) so it still tracks
-	-- suspension travel and steering, but its orientation only ever follows
-	-- the chassis, never the wheel spin, so smoke always puffs straight up.
+	-- parent's local up-axis - parented straight to the wheel, that axis
+	-- would sweep a full circle every spin, flinging each particle out along
+	-- whatever direction the wheel happened to be facing at that instant.
+	-- The anchor's position gets re-pinned to the wheel every frame (see
+	-- Update) so it still tracks suspension travel and steering, but its
+	-- orientation only ever follows the chassis, so smoke always puffs
+	-- straight up regardless of wheel spin.
 	local anchor = Instance.new("Attachment")
 	anchor.Name = "TireSmokeAnchor"
 	anchor.Parent = chassis
@@ -45,29 +49,48 @@ local function buildSmoke(chassis)
 	emitter.Texture = SMOKE_TEXTURE
 	emitter.Enabled = false
 	emitter.Rate = 0
-	emitter.Lifetime = NumberRange.new(1, 1.8)
-	-- Drifts up and away from the wheel rather than being flung: tire smoke
-	-- billows, it doesn't spray. Wide spread and low speed so puffs overlap
-	-- into a cloud instead of reading as separate dots/streaks.
-	emitter.Speed = NumberRange.new(2, 5)
-	emitter.SpreadAngle = Vector2.new(50, 50)
-	emitter.Drag = 4 -- bleeds off initial speed fast so puffs hang and billow rather than fly outward
-	emitter.Acceleration = Vector3.new(0, 4, 0)
+	emitter.EmissionDirection = Enum.NormalId.Top
+
+	-- Long enough to billow and drift before fading, short enough that a car
+	-- that's stopped sliding doesn't leave smoke hanging around forever.
+	emitter.Lifetime = NumberRange.new(1.4, 2.4)
+
+	-- A wide cone with only light drag: real tire smoke kicks outward and
+	-- backward off the contact patch before it ever rises. Heavy drag paired
+	-- with a purely vertical Acceleration stalls every particle within a
+	-- fraction of a second, and once they've all stopped they just ride
+	-- straight up together under the same constant force - a rising column,
+	-- which is a line by another name no matter how big the sprite is.
+	emitter.Speed = NumberRange.new(4, 9)
+	emitter.SpreadAngle = Vector2.new(65, 65)
+	emitter.Drag = 1.5
+	emitter.Acceleration = Vector3.new(0, 3, 0)
+
 	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-30, 30)
+	emitter.RotSpeed = NumberRange.new(-50, 50)
+
+	-- The 3rd argument on each keypoint is the envelope: it randomizes that
+	-- keypoint's value per particle, so puffs grow and fade at their own
+	-- pace instead of every particle being an identical circle at the same
+	-- age. Without that, a stream of identical overlapping circles tiles
+	-- into a smooth uniform tube instead of a ragged cloud.
 	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 2),
-		NumberSequenceKeypoint.new(0.5, 5),
-		NumberSequenceKeypoint.new(1, 8),
+		NumberSequenceKeypoint.new(0, 1.5, 0.5),
+		NumberSequenceKeypoint.new(0.4, 6, 2),
+		NumberSequenceKeypoint.new(1, 10, 3),
 	})
 	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.2),
-		NumberSequenceKeypoint.new(0.15, 0.35),
-		NumberSequenceKeypoint.new(0.6, 0.7),
-		NumberSequenceKeypoint.new(1, 1),
+		NumberSequenceKeypoint.new(0, 0.3, 0.1),
+		NumberSequenceKeypoint.new(0.25, 0.5, 0.15),
+		NumberSequenceKeypoint.new(0.7, 0.8, 0.1),
+		NumberSequenceKeypoint.new(1, 1, 0),
 	})
-	emitter.Color = ColorSequence.new(Color3.fromRGB(224, 222, 218))
-	emitter.LightEmission = 0.02
+	emitter.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(235, 235, 235)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(200, 200, 200)),
+	})
+
+	emitter.LightEmission = 0
 	emitter.LightInfluence = 1
 	emitter.ZOffset = -0.5 -- nudges puffs toward camera so they don't get lost inside the wheel/chassis mesh
 	emitter.Parent = anchor

@@ -23,7 +23,7 @@ return {
 	-- nothing else here changes it. Still shifting too eagerly? Halve Torque.
 	-- Too sluggish? Raise it. The standstill shove stays put either way as
 	-- long as you move StallTorqueMultiplier the opposite way.
-	Torque = 14,
+	Torque = 25,
 
 	-- studs/s in TOP gear, and the number every SpeedFraction below is
 	-- measured against - so this is the one knob that compresses or stretches
@@ -53,7 +53,7 @@ return {
 	-- Auto-detected from the wheel part's own proportions - see DEFAULTS. If
 	-- the wheel ends up spinning the right way round its column but mirrored,
 	-- set SteeringWheelInvert = true rather than touching the axis.
-	SteeringWheelInvert = true,
+	SteeringWheelInvert = false,
 	SteeringWheelAxis = "Auto",
 
 	-- Traction effects. A loaded truck's tires are working harder than a
@@ -106,7 +106,7 @@ return {
 	-- free power boost, and it's why the last gear MUST be SpeedFraction 1.0.
 	Transmission = {
 		StartingGear = "D", -- sit down and press W. There is no neutral any more, and no lever to move
-		ShiftTime = 0.45, -- a truck's box is slow and deliberate; drive is fully cut for this whole window
+		ShiftTime = 0.55, -- a truck's box is slow and deliberate; drive is fully cut for this whole window
 		-- Shift points, as a fraction of each gear's own top speed. Raised
 		-- from 0.62 so every gear is held noticeably longer before handing
 		-- over: shifts now land at 18.0 / 27.0 / 37.5 / 48.8 / 61.5 studs/s
@@ -123,11 +123,6 @@ return {
 		ShiftUpAt = 0.75,
 		ShiftDownAt = 0.42,
 
-		-- The pause between gears, on top of the longer gears above. Bumped
-		-- with them so the whole box feels like a heavy truck's rather than a
-		-- quick one's - this is the knob if you want the gap itself longer,
-		-- as opposed to more time spent in each gear.
-		ShiftTime = 0.55,
 
 		-- Strong shove from rest, gentle once rolling. See the Torque comment
 		-- above - these two numbers are what let that be a low number.
@@ -173,6 +168,6 @@ return {
 		-- 0.25 -> 0.13 caps it at 13 studs/s, so backing up is a deliberate
 		-- crawl. The stall boost still applies here, so 14 * 1.6 * 3.5 = 78
 		-- from a standstill is plenty to reverse off a kerb.
-		Reverse = { Ratio = 1.6, SpeedFraction = 0.13 },
+		Reverse = { Ratio = 1.6, SpeedFraction = 1 },
 	},
 }
