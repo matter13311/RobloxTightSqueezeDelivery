@@ -13,17 +13,28 @@ VehiclePhysics.WheelNames = WHEEL_NAMES
 
 -- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
-	SuspensionMaxLength = 1.3,
+	-- Matches DriftCar.luau's SuspensionMaxLength, which empirically holds
+	-- ground contact reliably for this chassis - 1.3 was just barely too
+	-- short, letting the wheel flicker grounded/ungrounded on marginal
+	-- frames (zero suspension force applied on a "miss" frame), which shows
+	-- up as visible jitter, most noticeably lateral.
+	SuspensionMaxLength = 2,
 	WheelRadius = 1.5,
 	Stiffness = 100,
 	Damper = 5,
-	LateralGripStrength = 1, -- friction coefficient (like a real tire, roughly 0.7-1.5 is a normal grippy range) - the max sideways g-force this wheel's grip can generate. Applies to whichever axle doesn't have its own Front/RearLateralGripStrength override
+	LateralGripStrength = 1.5, -- friction coefficient (like a real tire, roughly 0.7-1.5 is a normal grippy range) - the max sideways g-force this wheel's grip can generate. Applies to whichever axle doesn't have its own Front/RearLateralGripStrength override. Raised from 1 for more margin before an ordinary turn trips the binary grip/no-grip model
 	DriveWheels = "All", -- "All", "Front", or "Rear" - which axle receives drive/brake force from the throttle
 	WheelSpinBoost = 0, -- 0 = off. Extra visual wheel-spin speed under throttle at low speed, for a burnout/wheelspin look on drive wheels
 	Torque = 10,
 	MaxSpeed = 50,
 	SteerAngle = 30,
-	BrakeStrength = 1, -- 0-1: fraction of a full stop applied per frame once braking. 1 = stops dead instantly, lower = a more gradual stop
+	-- 0-1: fraction of a full stop applied per frame once braking. 1 (fully
+	-- instant, every frame, no gradualness) is a bang-bang controller with no
+	-- settling room - any tiny nudge from elsewhere (suspension force not
+	-- being perfectly vertical, float noise) gets fully snapped back to zero
+	-- based on that instant's reading, then re-appears and gets snapped back
+	-- again next frame - a real, visible jitter, not just an edge case.
+	BrakeStrength = 0.3,
 	CoastDrag = 0.5, -- light drag while coasting above CoastSpeedThreshold
 	CoastSpeedThreshold = 3, -- studs/s
 }
@@ -130,9 +141,10 @@ function VehiclePhysics.GetWheelAttachments(chassis)
 	return attachments
 end
 
--- One of these per car (server, for a parked car) or per drive session
--- (client, while a player is seated). Holds the previous frame's suspension
--- length per wheel, which the damper needs, plus the smoothed steer value.
+-- One of these per drive session (created when a player sits down). Holds
+-- the previous frame's suspension length per wheel, which the damper needs,
+-- plus the smoothed steer value. A parked car has no State at all - it's
+-- fully Anchored and not simulated, see Raycast.server.luau.
 function VehiclePhysics.NewState()
 	local state = { SpringLengthMemory = {}, SmoothSteer = 0 }
 	for _, name in WHEEL_NAMES do
@@ -141,22 +153,16 @@ function VehiclePhysics.NewState()
 	return state
 end
 
--- Runs one physics step for one car.
--- `input` is { Throttle = seat.ThrottleFloat, Steer = seat.SteerFloat } while
--- a player is actively driving. Pass input = nil for a parked/server-owned
--- car - no throttle, no steering, and it always fully brakes to a stop
--- (never coasts) since nobody's there to have let off the gas.
+-- Runs one physics step for one car. Only ever called for the car a player
+-- is actively driving (the chassis is unanchored for exactly that long) -
+-- `input` is always { Throttle = seat.ThrottleFloat, Steer = seat.SteerFloat }.
 function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local carPrim = carModel.PrimaryPart
 
-	if input then
-		local target = input.Steer or 0
-		state.SmoothSteer = math.abs(target - state.SmoothSteer) <= delta * 5
-			and target
-			or state.SmoothSteer + math.sign(target - state.SmoothSteer) * delta * 5
-	else
-		state.SmoothSteer = 0
-	end
+	local targetSteer = input.Steer or 0
+	state.SmoothSteer = math.abs(targetSteer - state.SmoothSteer) <= delta * 5
+		and targetSteer
+		or state.SmoothSteer + math.sign(targetSteer - state.SmoothSteer) * delta * 5
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -211,23 +217,20 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				or (config.DriveWheels == "Rear" and not isFrontWheel)
 
 			local longitudinalForce
-			if input and input.Throttle and input.Throttle ~= 0 and isDriveWheel then
+			if input.Throttle and input.Throttle ~= 0 and isDriveWheel then
 				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * config.Torque * (1 - math.min(1, math.abs(localVelocity.Z) / config.MaxSpeed))
-			elseif input and math.abs(localVelocity.Z) > config.CoastSpeedThreshold then
+			elseif math.abs(localVelocity.Z) > config.CoastSpeedThreshold then
 				-- Still going fast enough to be "coasting" - light drag only, so
 				-- momentum carries through instead of slamming to a stop.
 				longitudinalForce = wheelDirCFrame.LookVector * localVelocity.Z * config.CoastDrag
 			else
-				-- No driver (always brake), or slow enough that continuing to
-				-- creep would just look stuck rolling - fully brake to a stop.
-				-- Mass-scaled and clamped to the exact impulse a full stop
-				-- needs (BrakeStrength is 0-1, the fraction of that applied
-				-- per frame) - same fix as lateral grip: an unscaled raw
+				-- Slow enough that continuing to creep would just look stuck
+				-- rolling - fully brake to a stop. Mass-scaled and clamped to
+				-- the exact impulse a full stop needs (BrakeStrength is 0-1,
+				-- the fraction of that applied per frame) - an unscaled raw
 				-- coefficient here only cancels BrakeStrength/mass of the
 				-- velocity each frame, which for a real car's mass is a weak
-				-- handful of percent - nowhere near enough to hold still
-				-- against a slope or any other small continuous push, so a
-				-- "parked, always braking" car would still slowly creep.
+				-- handful of percent, nowhere near enough to actually stop it.
 				local neededLongitudinalImpulse = localVelocity.Z * (carPrim.AssemblyMass / 4)
 				local longitudinalImpulseMagnitude = math.clamp(
 					neededLongitudinalImpulse * config.BrakeStrength,
