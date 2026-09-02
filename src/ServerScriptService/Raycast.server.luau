@@ -5,6 +5,8 @@ local WheelPositions = {
     RR = Vector3.new(2.9, 0, 5)
 }
 
+local wheelModel = game.ReplicatedStorage.UAZWheel
+local VehicleFolder = workspace.Vehicles
 local AllCarsMemory = {}
 local ExistingCarsTable = {} --stores every car, make car folder to go without it
 
@@ -25,13 +27,29 @@ local function AddCar(obj)
             obj.PrimaryPart:SetNetworkOwner(nil)
         end
     end)
-end
---better make folder for cars only, so wont have to check if its car
-for _,object in pairs(workspace:GetChildren())do
-    --any check that will tell if it is car
-    if object.Name == 'CarModel'then
-        AddCar(object)
+
+    --wheels
+    local wheelFolder = Instance.new("Folder", obj)
+    wheelFolder.Name = "Wheels"
+    for i,v in pairs(WheelPositions) do
+        local ClonedWheel = wheelModel:Clone()
+        ClonedWheel.Parent = wheelFolder
+        ClonedWheel.Name = i
+        ClonedWheel.CanCollide = false
+        local weld = Instance.new("Weld", ClonedWheel)
+        weld.Part0 = obj.PrimaryPart
+        weld.Part1 = ClonedWheel
+        weld.C0 = CFrame.new(WheelPositions[i])
+
+        if v.x >0 then
+            weld.C0 = weld.C0 * CFrame.Angles(0, math.rad(180), 0)
+        end
     end
+end
+
+
+for _,object in pairs(VehicleFolder:GetChildren())do
+    AddCar(object)
 end
 
 local SuspensionMaxLength = 1.3
@@ -46,9 +64,19 @@ while true do
     local delta = game["Run Service"].Heartbeat:Wait()
     for _, carModel in pairs(ExistingCarsTable) do
         local carPrim = carModel.PrimaryPart
-        local DisCarSpringLength = AllCarsMemory[carModel].SpringLengthMemory
 
-        for wheelName, originalPosition in pairs(WheelPositions) do
+        -- Only simulate suspension while the server actually owns this car's
+        -- physics. SetNetworkOwner(nil) is a request that has to replicate,
+        -- not an instant switch - right after a player exits, the server can
+        -- briefly still be working from stale/inconsistent state before
+        -- ownership has genuinely settled back to it. Applying a corrective
+        -- impulse against that stale state is what launches the car in a
+        -- random direction at exit; skipping until ownership is confirmed
+        -- avoids fighting over data nobody agrees on yet.
+        if carPrim:GetNetworkOwner() == nil then
+            local DisCarSpringLength = AllCarsMemory[carModel].SpringLengthMemory
+
+            for wheelName, originalPosition in pairs(WheelPositions) do
                 local carCFrame = carPrim.CFrame
                 local rayOrigin = carCFrame:ToWorldSpace(CFrame.new(originalPosition)).p
                 local rayDirection = -carCFrame.UpVector * (SuspensionMaxLength + wheelRadius)
@@ -79,6 +107,7 @@ while true do
 
 
 
+            end
         end
     end
     
