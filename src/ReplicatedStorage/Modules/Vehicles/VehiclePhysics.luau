@@ -194,9 +194,12 @@ end
 -- plus the smoothed steer value. A parked car has no State at all - it's
 -- fully Anchored and not simulated, see Raycast.server.luau.
 function VehiclePhysics.NewState()
-	local state = { SpringLengthMemory = {}, SmoothSteer = 0 }
+	local state = { SpringLengthMemory = {}, WasGrounded = {}, SmoothSteer = 0 }
 	for _, name in WHEEL_NAMES do
 		state.SpringLengthMemory[name] = 0.5
+		-- Starts false so the very first grounded frame skips the damper too -
+		-- there's no real previous compression to differentiate against yet.
+		state.WasGrounded[name] = false
 	end
 	return state
 end
@@ -227,7 +230,22 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			local raycastDistance = (rayOrigin - raycast.Position).Magnitude
 			local springLength = math.clamp(raycastDistance - config.WheelRadius, 0, config.SuspensionMaxLength)
 			local stiffnessForce = config.Stiffness * (config.SuspensionMaxLength - springLength)
-			local damperForce = config.Damper * ((state.SpringLengthMemory[wheelName] - springLength) / delta)
+			-- The damper is a finite-difference derivative of compression, so it
+			-- needs a previous compression the wheel actually passed through.
+			-- A wheel that was airborne last frame has none: its memory was
+			-- parked at SuspensionMaxLength, and differentiating across that
+			-- discontinuity invents a huge phantom compression rate on the
+			-- landing frame (for this truck, several times the impulse that
+			-- supports its weight). That kick bounces the wheel back off the
+			-- ground, which re-parks the memory at full extension, which kicks
+			-- again on the next landing - a self-sustaining limit cycle that
+			-- reads as the car jittering and crawling sideways until something
+			-- knocks it out of phase. Skipping the damper for one frame on
+			-- re-contact costs nothing: real landing damping comes from the
+			-- frames after it, where the compression rate is genuine.
+			local damperForce = if state.WasGrounded[wheelName]
+				then config.Damper * ((state.SpringLengthMemory[wheelName] - springLength) / delta)
+				else 0
 			local suspensionForce = carCFrame.UpVector * (stiffnessForce + damperForce)
 
 			local isFrontWheel = wheelName:sub(1, 1) == "F"
@@ -333,6 +351,7 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			end
 
 			state.SpringLengthMemory[wheelName] = springLength
+			state.WasGrounded[wheelName] = true
 
 			-- The spring genuinely does push on the body at the strut mount,
 			-- so suspensionForce stays at rayOrigin. The TIRE forces (grip and
@@ -351,7 +370,12 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				if longitudinalIsStabilizer then rayOrigin else tireForcePosition
 			)
 		else
+			-- Airborne: this value is now only a resting placeholder, never
+			-- differentiated against - the WasGrounded flag makes the landing
+			-- frame ignore it rather than treat it as a real compression the
+			-- wheel travelled through.
 			state.SpringLengthMemory[wheelName] = config.SuspensionMaxLength
+			state.WasGrounded[wheelName] = false
 		end
 	end
 
