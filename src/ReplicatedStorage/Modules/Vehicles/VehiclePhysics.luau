@@ -37,6 +37,15 @@ local DEFAULTS = {
 	BrakeStrength = 0.3,
 	CoastDrag = 0.5, -- light drag while coasting above CoastSpeedThreshold
 	CoastSpeedThreshold = 3, -- studs/s
+	-- 0-1: how far down the tire forces (grip + drive/brake) are applied.
+	-- 1 = at the tire's actual ground contact patch, which is what gives the
+	-- body a moment arm about its centre of mass, and therefore squat under
+	-- power, dive under braking and roll in a turn. 0 = at the strut mount
+	-- (roughly hub height), which leaves almost no moment arm and drives
+	-- dead flat like a gokart no matter how soft the spring is. Anything
+	-- between scales how pronounced the lean is - this is a feel knob, not a
+	-- correctness one, so a deliberately arcadey car can turn it down.
+	BodyLean = 1,
 }
 VehiclePhysics.Defaults = DEFAULTS
 
@@ -275,7 +284,19 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			end
 
 			state.SpringLengthMemory[wheelName] = springLength
-			carPrim:ApplyImpulseAtPosition(suspensionForce + lateralForce + longitudinalForce, rayOrigin)
+
+			-- The spring genuinely does push on the body at the strut mount,
+			-- so suspensionForce stays at rayOrigin. The TIRE forces (grip and
+			-- drive/brake) act at the contact patch on the ground instead -
+			-- well below the centre of mass. That offset is the moment arm
+			-- that makes the body pitch and roll; applying them at rayOrigin
+			-- like the suspension force left effectively no moment arm, so the
+			-- car could never lean regardless of how the spring was tuned
+			-- (the spring only ever reacts to compression, and nothing was
+			-- creating a compression difference between the wheels).
+			local tireForcePosition = raycast.Position:Lerp(rayOrigin, 1 - config.BodyLean)
+			carPrim:ApplyImpulseAtPosition(suspensionForce, rayOrigin)
+			carPrim:ApplyImpulseAtPosition(lateralForce + longitudinalForce, tireForcePosition)
 		else
 			state.SpringLengthMemory[wheelName] = config.SuspensionMaxLength
 		end

@@ -9,4 +9,5 @@ return {
 	Stiffness = 70, -- softened back down now that SuspensionMaxLength gives it more room - still enough to hold the truck's weight without bottoming out at rest
 	Damper = 3, -- lowered relative to Stiffness (was matched 1:1-ish) so it's underdamped enough to actually bounce instead of just clamping to ride height
 	Torque = 50, -- DEFAULTS is 10 - was accelerating far too slowly for the truck's weight
+	MaxSpeed= 100
 }
