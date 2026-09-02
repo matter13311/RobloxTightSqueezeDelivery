@@ -80,11 +80,17 @@ local function onCharacterAdded(character)
 			-- Only the car THIS client is currently driving has a real smoothed
 			-- steer value (from the physics loop above) - other cars' front
 			-- wheels stay centered visually, since we don't get their driver's
-			-- steer input replicated to us.
+			-- steer input replicated to us. Same story for throttle (used for
+			-- the wheelspin visual): only known for the car we're driving.
 			local drivingState = drivingStates[vehicle]
 			local smoothSteer = drivingState and drivingState.SmoothSteer or 0
+			local throttle = 0
+			if drivingState then
+				local seat = vehicle:FindFirstChildWhichIsA("VehicleSeat")
+				throttle = seat and seat.ThrottleFloat or 0
+			end
 
-			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, wheelRotationState[vehicle])
+			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, wheelRotationState[vehicle], throttle)
 		end
 	end)
 end

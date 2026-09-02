@@ -11,17 +11,15 @@ local VehiclePhysics = {}
 local WHEEL_NAMES = { "FL", "FR", "RL", "RR" }
 VehiclePhysics.WheelNames = WHEEL_NAMES
 
--- Per-car tuning. A car only needs to set the attributes it wants to differ
--- from these - anything unset falls back to the default here. This is how
--- you make a "drift car" (low LateralGripStrength, high Torque) vs a
--- "speed car" (high MaxSpeed/Torque, high LateralGripStrength) etc, entirely
--- from the Properties > Attributes panel on a car's Chassis, no scripting.
+-- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
 	SuspensionMaxLength = 1.3,
 	WheelRadius = 1.5,
 	Stiffness = 100,
 	Damper = 5,
-	LateralGripStrength = 1, -- 0-1, 1 = never slides sideways
+	LateralGripStrength = 1, -- friction coefficient (like a real tire, roughly 0.7-1.5 is a normal grippy range) - the max sideways g-force this wheel's grip can generate. Applies to whichever axle doesn't have its own Front/RearLateralGripStrength override
+	DriveWheels = "All", -- "All", "Front", or "Rear" - which axle receives drive/brake force from the throttle
+	WheelSpinBoost = 0, -- 0 = off. Extra visual wheel-spin speed under throttle at low speed, for a burnout/wheelspin look on drive wheels
 	Torque = 10,
 	MaxSpeed = 50,
 	SteerAngle = 30,
@@ -31,11 +29,76 @@ local DEFAULTS = {
 }
 VehiclePhysics.Defaults = DEFAULTS
 
+-- Per-car-TYPE tuning lives in ModuleScripts under Configs/, one file per car
+-- type (e.g. Configs/DriftCar.luau), each returning a table of only the
+-- values that differ from DEFAULTS. A car picks up its config automatically
+-- by matching its Model's Name to a file of the same name - so a car named
+-- "DriftCar" in workspace.Vehicles automatically uses Configs/DriftCar.luau,
+-- no attribute-setting required. Set a "ConfigName" attribute on the Chassis
+-- to use a different config file than the model's own name (e.g. several
+-- car instances sharing one "MonsterTruckCar" config).
+local configsFolder = script.Parent:FindFirstChild("Configs")
+
+local configCache = {} -- [configName] = table or false (false = looked up, none found)
+
+local function loadNamedConfig(name)
+	if configCache[name] ~= nil then
+		return configCache[name] or nil
+	end
+
+	local module = configsFolder and configsFolder:FindFirstChild(name)
+	local result = nil
+	if module and module:IsA("ModuleScript") then
+		local ok, loaded = pcall(require, module)
+		if ok and type(loaded) == "table" then
+			result = loaded
+		else
+			warn("VehiclePhysics: Configs/" .. name .. " didn't return a table (" .. tostring(loaded) .. ")")
+		end
+	end
+
+	configCache[name] = result or false
+	return result
+end
+
+-- Optional - no default, since these should normally just fall back to
+-- LateralGripStrength. Set either to give the front and rear axles
+-- different grip - e.g. a drift car wants the front to hold on for
+-- steering control while the rear breaks loose (RearLateralGripStrength
+-- much lower than FrontLateralGripStrength).
+local OPTIONAL_KEYS = { "FrontLateralGripStrength", "RearLateralGripStrength" }
+
+-- Precedence, highest first: an Attribute set directly on this Chassis
+-- instance > the car-type's Configs/<name>.luau file > DEFAULTS. This lets
+-- you define a car type once in a file, and still nudge one specific
+-- instance of it via Attributes without touching the shared file.
 function VehiclePhysics.GetConfig(chassis)
+	local carModel = chassis.Parent
+	local configName = chassis:GetAttribute("ConfigName") or (carModel and carModel.Name)
+	local fileConfig = configName and loadNamedConfig(configName)
+
 	local config = {}
 	for key, default in DEFAULTS do
-		local value = chassis:GetAttribute(key)
-		config[key] = if value ~= nil then value else default
+		local value = default
+		if fileConfig and fileConfig[key] ~= nil then
+			value = fileConfig[key]
+		end
+		local attributeValue = chassis:GetAttribute(key)
+		if attributeValue ~= nil then
+			value = attributeValue
+		end
+		config[key] = value
+	end
+	for _, key in OPTIONAL_KEYS do
+		local value = nil
+		if fileConfig and fileConfig[key] ~= nil then
+			value = fileConfig[key]
+		end
+		local attributeValue = chassis:GetAttribute(key)
+		if attributeValue ~= nil then
+			value = attributeValue
+		end
+		config[key] = value
 	end
 	return config
 end
@@ -99,21 +162,42 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			local damperForce = config.Damper * ((state.SpringLengthMemory[wheelName] - springLength) / delta)
 			local suspensionForce = carCFrame.UpVector * (stiffnessForce + damperForce)
 
+			local isFrontWheel = wheelName:sub(1, 1) == "F"
+
 			local wheelDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
-			if wheelName:sub(1, 1) == "F" then
+			if isFrontWheel then
 				wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-state.SmoothSteer * config.SteerAngle), 0)
 			end
 			local localVelocity = wheelDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
-			-- Mass-scaled (a true impulse) so this only ever cancels sideways
-			-- velocity exactly - never overshoots past zero. Divided across the
-			-- 4 wheels since each one reads roughly the same velocity and would
-			-- otherwise each try to cancel the WHOLE car's sideways speed on its
-			-- own, applying up to 4x the needed correction.
-			local lateralForce = wheelDirCFrame.RightVector * -localVelocity.X * (carPrim.AssemblyMass / 4) * config.LateralGripStrength
+			-- LateralGripStrength is a friction coefficient, like a real tire's:
+			-- the max sideways force this wheel can generate is coefficient *
+			-- its share of the car's weight. Below that limit, sideways slip is
+			-- fully cancelled (full grip, mass-scaled so it can't overshoot).
+			-- Above it, the tire can only partially resist - it breaks traction
+			-- and the car actually slides, instead of snapping straight back
+			-- within a fraction of a second regardless of how low the
+			-- coefficient is (which is what a flat "cancel X% of velocity every
+			-- frame" model does - even a "weak" 10%/frame at 60fps converges
+			-- back to zero in a fraction of a second, never a real slide).
+			local axleGrip = if isFrontWheel
+				then (config.FrontLateralGripStrength or config.LateralGripStrength)
+				else (config.RearLateralGripStrength or config.LateralGripStrength)
+			local wheelWeight = (carPrim.AssemblyMass / 4) * workspace.Gravity
+			local maxLateralImpulse = axleGrip * wheelWeight * delta
+			local neededLateralImpulse = -localVelocity.X * (carPrim.AssemblyMass / 4)
+			local lateralImpulseMagnitude = math.clamp(neededLateralImpulse, -maxLateralImpulse, maxLateralImpulse)
+			local lateralForce = wheelDirCFrame.RightVector * lateralImpulseMagnitude
+
+			-- Only wheels on the driven axle (DriveWheels: "All"/"Front"/"Rear")
+			-- push the car forward - the other axle just rolls (falls through to
+			-- coast/brake below), same as a real FWD/RWD car.
+			local isDriveWheel = config.DriveWheels == "All"
+				or (config.DriveWheels == "Front" and isFrontWheel)
+				or (config.DriveWheels == "Rear" and not isFrontWheel)
 
 			local longitudinalForce
-			if input and input.Throttle and input.Throttle ~= 0 then
+			if input and input.Throttle and input.Throttle ~= 0 and isDriveWheel then
 				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * config.Torque * (1 - math.min(1, math.abs(localVelocity.Z) / config.MaxSpeed))
 			elseif input and math.abs(localVelocity.Z) > config.CoastSpeedThreshold then
 				-- Still going fast enough to be "coasting" - light drag only, so
@@ -142,7 +226,7 @@ end
 -- ground and spin/steer, independent of the physics raycast above. Called
 -- from the client for every vehicle it can see (not just the one driven),
 -- since every viewer computes this locally from replicated position data.
-function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, rotationState)
+function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, rotationState, throttle)
 	local carPrim = vehicle.PrimaryPart
 	local carCFrame = carPrim.CFrame
 	local wheelsFolder = vehicle:FindFirstChild("Wheels")
@@ -183,7 +267,24 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothS
 					local localVelocity = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
 						:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
-					rotationState[wheelName] = (rotationState[wheelName] or 0.5) + localVelocity.Z / 56 --56 should be same as math.rad(number)
+					local wheelSurfaceSpeed = localVelocity.Z
+					if throttle and throttle ~= 0 and config.WheelSpinBoost ~= 0 then
+						local isFrontWheel = wheelName:sub(1, 1) == "F"
+						local isDriveWheel = config.DriveWheels == "All"
+							or (config.DriveWheels == "Front" and isFrontWheel)
+							or (config.DriveWheels == "Rear" and not isFrontWheel)
+						if isDriveWheel then
+							-- Wheelspin: under throttle, the tire's surface can move
+							-- faster than the car actually is - it's spinning "in
+							-- place" rather than purely rolling with the ground. Fades
+							-- out as the car catches up to MaxSpeed, so it reads as a
+							-- burnout/wheelspin rather than the wheel spinning forever.
+							local slipRoom = math.max(0, 1 - math.abs(localVelocity.Z) / config.MaxSpeed)
+							wheelSurfaceSpeed += throttle * config.WheelSpinBoost * slipRoom
+						end
+					end
+
+					rotationState[wheelName] = (rotationState[wheelName] or 0.5) + wheelSurfaceSpeed / 56 --56 should be same as math.rad(number)
 					weld.C0 = weld.C0 * CFrame.Angles(rotationState[wheelName], 0, 0)
 				end
 			end
