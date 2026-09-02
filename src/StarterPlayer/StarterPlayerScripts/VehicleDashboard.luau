@@ -80,21 +80,25 @@ function Dashboard.new(player)
 	gui.Parent = player:WaitForChild("PlayerGui")
 	self.Gui = gui
 
-	local panel = newFrame(gui, "Panel", UDim2.new(0.5, 0, 1, -28), UDim2.fromOffset(336, 140))
-	panel.AnchorPoint = Vector2.new(0.5, 1)
+	-- Compact corner HUD, tucked out of the way in the bottom-right rather
+	-- than sitting big and centered - the player's eyes should mostly be on
+	-- the road, not the dashboard.
+	local panel = newFrame(gui, "Panel", UDim2.new(1, -16, 1, -16), UDim2.fromOffset(196, 90))
+	panel.AnchorPoint = Vector2.new(1, 1)
 	panel.BackgroundTransparency = 0.08
-	corner(panel, 12)
+	corner(panel, 10)
 	stroke(panel, PANEL_EDGE)
 
-	-- Big current-gear readout. In D this is the automatic box's gear NUMBER,
-	-- not the letter - the letter is already obvious from the lit pill below,
-	-- and the number is the part that's actually changing while you drive.
-	local gearBox = newFrame(panel, "GearBox", UDim2.fromOffset(14, 14), UDim2.fromOffset(88, 88), Color3.fromRGB(28, 31, 38))
-	corner(gearBox, 10)
+	-- Small current-gear readout. In D this is the automatic box's gear
+	-- NUMBER, not the letter - the letter is already obvious from the lit
+	-- pill beside it, and the number is the part that's actually changing
+	-- while you drive.
+	local gearBox = newFrame(panel, "GearBox", UDim2.fromOffset(10, 10), UDim2.fromOffset(34, 34), Color3.fromRGB(28, 31, 38))
+	corner(gearBox, 8)
 	local gearStroke = stroke(gearBox, SELECTOR_COLOR.D, 2)
 	self.GearStroke = gearStroke
 
-	local gearLabel = newLabel(gearBox, "Gear", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "1", 46, SELECTOR_COLOR.D, Enum.Font.GothamBold)
+	local gearLabel = newLabel(gearBox, "Gear", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "1", 18, SELECTOR_COLOR.D, Enum.Font.GothamBold)
 	self.GearLabel = gearLabel
 
 	-- Direction pills: R and D. The player never selects these - the car
@@ -102,44 +106,36 @@ function Dashboard.new(player)
 	-- control. It still earns its space: knowing which way the truck is about
 	-- to move before you touch a key is the whole point of showing it.
 	self.Pills = {}
-	local pillGap = 8
-	local pillWidth = (206 - pillGap * (#Gearbox.SelectorOrder - 1)) / #Gearbox.SelectorOrder
+	local pillsX, pillsWidth = 52, 134
+	local pillGap = 6
+	local pillWidth = (pillsWidth - pillGap * (#Gearbox.SelectorOrder - 1)) / #Gearbox.SelectorOrder
 	for index, name in Gearbox.SelectorOrder do
-		local x = 116 + (index - 1) * (pillWidth + pillGap)
-		local pill = newFrame(panel, "Pill" .. name, UDim2.fromOffset(x, 14), UDim2.fromOffset(pillWidth, 30), Color3.fromRGB(28, 31, 38))
-		corner(pill, 8)
+		local x = pillsX + (index - 1) * (pillWidth + pillGap)
+		local pill = newFrame(panel, "Pill" .. name, UDim2.fromOffset(x, 10), UDim2.fromOffset(pillWidth, 20), Color3.fromRGB(28, 31, 38))
+		corner(pill, 6)
 		local pillStroke = stroke(pill, PANEL_EDGE)
-		local label = newLabel(pill, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), name, 17, DIM_TEXT, Enum.Font.GothamBold)
+		local label = newLabel(pill, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), name, 13, DIM_TEXT, Enum.Font.GothamBold)
 		self.Pills[name] = { Frame = pill, Stroke = pillStroke, Label = label }
 	end
 
-	-- Tachometer. Deliberately just a bar rather than a dial: the only thing
-	-- it needs to communicate is "the revs are climbing, and they just fell
-	-- back because the box shifted", which a bar does at a glance.
-	local rpmTrack = newFrame(panel, "RpmTrack", UDim2.fromOffset(116, 54), UDim2.fromOffset(206, 8), Color3.fromRGB(34, 38, 46))
-	corner(rpmTrack, 4)
-	local rpmFill = newFrame(rpmTrack, "Fill", UDim2.fromOffset(0, 0), UDim2.new(0, 0, 1, 0), SELECTOR_COLOR.D)
-	corner(rpmFill, 4)
-	self.RpmFill = rpmFill
-
-	local speedLabel = newLabel(panel, "Speed", UDim2.fromOffset(116, 66), UDim2.fromOffset(150, 36), "0", 30, BRIGHT_TEXT, Enum.Font.GothamBold)
+	local speedLabel = newLabel(panel, "Speed", UDim2.fromOffset(10, 46), UDim2.fromOffset(90, 24), "0", 20, BRIGHT_TEXT, Enum.Font.GothamBold)
 	speedLabel.TextXAlignment = Enum.TextXAlignment.Left
 	self.SpeedLabel = speedLabel
 
-	local unitLabel = newLabel(panel, "Unit", UDim2.fromOffset(116, 66), UDim2.fromOffset(206, 36), "MPH", 13, DIM_TEXT)
+	local unitLabel = newLabel(panel, "Unit", UDim2.fromOffset(10, 46), UDim2.fromOffset(176, 24), "MPH", 11, DIM_TEXT)
 	unitLabel.TextXAlignment = Enum.TextXAlignment.Right
 
 	-- Bottom strip does double duty: the control hints while you're driving
 	-- normally, and a loud handbrake warning the moment it matters. They can
 	-- share the space because you don't need to be told which key shifts gear
 	-- at the exact moment you're sideways with the handbrake up.
-	local status = newLabel(panel, "Status", UDim2.fromOffset(14, 108), UDim2.fromOffset(308, 20), "", 12, DIM_TEXT)
+	local status = newLabel(panel, "Status", UDim2.fromOffset(10, 70), UDim2.fromOffset(176, 16), "", 10, DIM_TEXT)
 	self.StatusLabel = status
 
-	local handbrakeBadge = newFrame(panel, "HandbrakeBadge", UDim2.fromOffset(14, 108), UDim2.fromOffset(308, 22), Color3.fromRGB(214, 66, 62))
-	corner(handbrakeBadge, 6)
+	local handbrakeBadge = newFrame(panel, "HandbrakeBadge", UDim2.fromOffset(10, 70), UDim2.fromOffset(176, 16), Color3.fromRGB(214, 66, 62))
+	corner(handbrakeBadge, 5)
 	handbrakeBadge.Visible = false
-	newLabel(handbrakeBadge, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "HANDBRAKE", 12, Color3.fromRGB(255, 236, 236), Enum.Font.GothamBold)
+	newLabel(handbrakeBadge, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "HANDBRAKE", 10, Color3.fromRGB(255, 236, 236), Enum.Font.GothamBold)
 	self.HandbrakeBadge = handbrakeBadge
 
 	self.HintText = "W  drive      S  brake, hold to reverse      SPACE  handbrake      F  exit"
@@ -173,15 +169,6 @@ function Dashboard:Update(gearboxState, speedStuds, handbrakeOn)
 		pill.Label.TextColor3 = DIM_TEXT:Lerp(SELECTOR_COLOR[name], glow)
 		pill.Frame.BackgroundColor3 = Color3.fromRGB(28, 31, 38):Lerp(Color3.fromRGB(38, 43, 52), glow)
 	end
-
-	local rpm = math.clamp(gearboxState.Rpm, 0, 1)
-	self.RpmFill.Size = UDim2.new(rpm, 0, 1, 0)
-	-- Green through most of the range, amber approaching the top of the gear,
-	-- red at the point the box is about to shift.
-	self.RpmFill.BackgroundColor3 = if rpm > 0.9
-		then Color3.fromRGB(224, 76, 72)
-		elseif rpm > 0.72 then Color3.fromRGB(232, 176, 64)
-		else SELECTOR_COLOR.D
 
 	self.SpeedLabel.Text = tostring(math.floor(speedStuds * MPH_PER_STUD + 0.5))
 
