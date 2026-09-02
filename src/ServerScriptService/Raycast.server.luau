@@ -38,6 +38,61 @@ local function SettleThenAnchor(carModel, chassis, attachments)
 	end
 end
 
+-- The steering wheel prop has to turn, so it needs a joint whose offset can
+-- be changed at runtime - that means a Weld (which has C0/C1) and NOT a
+-- WeldConstraint, which just pins two parts together with no offset to
+-- animate. Any existing joint on the part is replaced, so it doesn't matter
+-- how it was welded in Studio; whatever pose it was left in becomes its
+-- resting pose.
+--
+-- The resting C0 is stored as an attribute rather than kept in a table here,
+-- because the client is what actually spins the wheel and it needs a
+-- neutral to rotate away from. Reading it back off the joint means the client
+-- can never accumulate rotation onto an already-rotated value and drift.
+local function SetUpSteeringWheel(carModel, chassis)
+	local part = VehiclePhysics.GetSteeringWheelPart(carModel)
+	if not part then
+		return -- car has no steering wheel prop, which is fine
+	end
+
+	for _, joint in carModel:GetDescendants() do
+		if (joint:IsA("Weld") or joint:IsA("WeldConstraint") or joint:IsA("Motor6D"))
+			and (joint.Part0 == part or joint.Part1 == part)
+		then
+			joint:Destroy()
+		end
+	end
+
+	part.Anchored = false
+	part.CanCollide = false
+	-- Multi-part steering wheel (rim, spokes, horn boss): everything else
+	-- rides on the part we're about to animate, so the whole assembly turns
+	-- together. The container has to be a "SteeringWheel" wrapper and NOT the
+	-- car model itself - a steering wheel that is a direct part child of the
+	-- car would otherwise match here and weld the entire vehicle to it.
+	local assembly = part.Parent
+	if assembly ~= carModel and assembly.Name == "SteeringWheel" then
+		for _, other in assembly:GetDescendants() do
+			if other:IsA("BasePart") and other ~= part then
+				other.Anchored = false
+				other.CanCollide = false
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = part
+				weld.Part1 = other
+				weld.Parent = other
+			end
+		end
+	end
+
+	local weld = Instance.new("Weld")
+	weld.Name = "SteeringWheelWeld"
+	weld.Part0 = chassis
+	weld.Part1 = part
+	weld.C0 = chassis.CFrame:ToObjectSpace(part.CFrame)
+	weld:SetAttribute("BaseC0", weld.C0)
+	weld.Parent = part
+end
+
 local function AddCar(carModel)
 	local chassis = carModel.PrimaryPart
 	if not chassis then
@@ -54,13 +109,16 @@ local function AddCar(carModel)
 
 	-- Rigidly weld static decoration (body panels, lights) to the chassis so
 	-- it rides along with suspension movement. Doors and the steering wheel
-	-- are deliberately left out - they'll get their own moving joints later.
+	-- are deliberately left out - the steering wheel gets its own animatable
+	-- joint just below, and doors will get theirs later.
 	for _, folderName in { "Body", "Lights", "Engine" } do
 		local folder = carModel:FindFirstChild(folderName)
 		if folder then
 			VehiclePhysics.WeldFolderToChassis(folder, chassis)
 		end
 	end
+
+	SetUpSteeringWheel(carModel, chassis)
 
 	-- Parked by default: fully Anchored, so there is no physics running at
 	-- all (and nothing that can jitter) until someone actually drives it.

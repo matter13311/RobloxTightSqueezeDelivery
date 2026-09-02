@@ -33,6 +33,47 @@ local DEFAULTS = {
 	Torque = 10,
 	MaxSpeed = 50,
 	SteerAngle = 45,
+	-- How fast the steering moves, in "steer units per second" - the input is
+	-- -1..1, so a value of 5 reaches full lock in 1/5 of a second. This is
+	-- steering FEEL, entirely separate from SteerAngle above, which is how far
+	-- the road wheels actually point at full lock. Lower = heavier, slower,
+	-- more deliberate; the difference between a go-kart and a loaded truck.
+	SteerSpeed = 5,
+	SteerReturnSpeed = 8, -- letting go re-centres faster than turning in does, the way a real car's castor pulls the wheel straight on its own
+
+	-- The steering wheel PROP in the cab (see GetSteeringWheelPart). Degrees
+	-- it rotates at full lock. Games usually use something tiny like 30, which
+	-- looks obviously fake; a real car is more like 450 (1.25 turns) each way.
+	-- 180 is the compromise: unmistakably a wheel being turned, without
+	-- spinning wildly in first person every time you tap A.
+	SteeringWheelMaxAngle = 180,
+	-- Which axis the wheel spins about. "Auto" works this out from the part
+	-- itself and is almost always right: a steering wheel is a flat disc, so
+	-- the column necessarily runs through its THINNEST dimension. There is
+	-- nothing else it could be.
+	--
+	-- Set an explicit Vector3 only if Auto guesses wrong (a wheel whose part
+	-- is not disc-shaped - a cube-ish bounding box, or a Model whose
+	-- PrimaryPart is a hub rather than the rim). If you do, note that it is in
+	-- the PART'S OWN local space, NOT world space. This trips people up:
+	-- Studio's rotate handles default to World, where red is the world X axis,
+	-- but a steering wheel is mounted on a tilted column so its local axes do
+	-- not line up with the world's. Switch Studio to Local axis mode before
+	-- reading a colour off the handles - red/green/blue are then X/Y/Z here.
+	SteeringWheelAxis = "Auto",
+	SteeringWheelInvert = false, -- flip if the wheel spins the correct way round its column but in the wrong direction. Kept separate from the axis on purpose, so getting the direction wrong never means second-guessing the axis
+
+	-- Traction loss. Used ONLY to drive the screech and smoke effects - none
+	-- of it feeds back into the physics, so tuning these can't change how the
+	-- car actually handles.
+	--
+	-- A tire counts as slipping when its contact patch is sliding across the
+	-- ground faster than TractionSlipThreshold. Both gates exist to suppress
+	-- movement that is technically slip but obviously shouldn't make a noise:
+	TractionSlipThreshold = 7, -- studs/s the patch must be sliding. Ordinary cornering always slips a little; this is the line between "a tire working" and "a tire letting go"
+	TractionMinCarSpeed = 10, -- studs/s the CAR must be doing before any slip counts. This is what stops a car parked on a slope and creeping sideways from screeching forever - it genuinely is sliding, but nobody would expect a sound
+	TireScreechSoundId = "rbxassetid://109487442763183",
+	TireScreechVolume = 0.55,
 	-- 0-1: fraction of a full stop applied per frame once braking. 1 (fully
 	-- instant, every frame, no gradualness) is a bang-bang controller with no
 	-- settling room - any tiny nudge from elsewhere (suspension force not
@@ -375,10 +416,18 @@ end
 function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local carPrim = carModel.PrimaryPart
 
+	-- Rate-limited rather than instant, so the road wheels sweep toward lock
+	-- instead of snapping there the frame A or D goes down. Re-centring gets
+	-- its own faster rate: a real car's castor pulls the wheel straight by
+	-- itself, so letting go should settle quicker than turning in does.
 	local targetSteer = input.Steer or 0
-	state.SmoothSteer = math.abs(targetSteer - state.SmoothSteer) <= delta * 5
-		and targetSteer
-		or state.SmoothSteer + math.sign(targetSteer - state.SmoothSteer) * delta * 5
+	local recentering = math.abs(targetSteer) < math.abs(state.SmoothSteer)
+	local steerRate = if recentering then config.SteerReturnSpeed else config.SteerSpeed
+	local steerStep = delta * steerRate
+	local steerDiff = targetSteer - state.SmoothSteer
+	state.SmoothSteer = if math.abs(steerDiff) <= steerStep
+		then targetSteer
+		else state.SmoothSteer + math.sign(steerDiff) * steerStep
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -635,7 +684,39 @@ end
 -- ground and spin/steer, independent of the physics raycast above. Called
 -- from the client for every vehicle it can see (not just the one driven),
 -- since every viewer computes this locally from replicated position data.
-function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, rotationState, throttle, handbrake)
+-- Finds the steering wheel prop in the cab, if the car has one. Convention
+-- is a child of the car model named "SteeringWheel" - either the part itself,
+-- or a Model/Folder of that name containing the part (its PrimaryPart, or a
+-- part of the same name inside). Returns nil for a car without one, which is
+-- fine everywhere - nothing here is required.
+function VehiclePhysics.GetSteeringWheelPart(carModel)
+	local found = carModel:FindFirstChild("SteeringWheel")
+	if not found then
+		return nil
+	end
+	if found:IsA("BasePart") then
+		return found
+	end
+	if found:IsA("Model") and found.PrimaryPart then
+		return found.PrimaryPart
+	end
+	return found:FindFirstChild("SteeringWheel") or found:FindFirstChildWhichIsA("BasePart")
+end
+
+-- `input` fields, all optional:
+--   SmoothSteer  -1..1, only known for the car this client drives
+--   Throttle     gear-aware drive demand, for the wheelspin visual
+--   Handbrake    true while the driver holds it
+--   Burnout      true while the driver is holding the handbrake AND the gas
+--   SlipOut      table to fill with [wheelName] = contact patch slip in
+--                studs/s. Populated for EVERY car, not just the driven one -
+--                lateral slip needs only replicated velocity and the car's
+--                config, so a bystander computes the same numbers the driver
+--                does and sees the same smoke and hears the same screech.
+function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotationState, input)
+	local smoothSteer = input.SmoothSteer or 0
+	local throttle = input.Throttle or 0
+	local handbrake = input.Handbrake
 	local carPrim = vehicle.PrimaryPart
 	local carCFrame = carPrim.CFrame
 	local wheelsFolder = vehicle:FindFirstChild("Wheels")
@@ -718,6 +799,54 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothS
 					-- spinning either direction.)
 					local spinSign = if localOffset.X > 0 then -1 else 1
 					weld.C0 = weld.C0 * CFrame.Angles(spinSign * rotationState[wheelName], 0, 0)
+
+					-- How fast this tire's contact patch is sliding across the
+					-- ground, in studs/s. Measured directly as patch velocity
+					-- rather than derived from the grip force, which matters
+					-- for two reasons: it's the quantity that physically makes
+					-- a tire howl and smoke, and unlike anything computed from
+					-- the per-frame impulse model it doesn't change meaning
+					-- with framerate.
+					--
+					--   sideways  a tire that grips has its sideways velocity
+					--             cancelled, so this only grows once the tire
+					--             is genuinely letting go. This is cornering
+					--             slip, and it's the case that works for every
+					--             car on screen, not just the driven one.
+					--   lengthwise only a LOCKED wheel slides along its
+					--             rolling direction - a rolling one is, by
+					--             definition, not sliding that way.
+					if input.SlipOut then
+						local lateralSlip = math.abs(localVelocity.X)
+						local longitudinalSlip = if isLocked then math.abs(localVelocity.Z) else 0
+						local slip = math.sqrt(lateralSlip * lateralSlip + longitudinalSlip * longitudinalSlip)
+
+						-- A burnout is the one case with no slip velocity to
+						-- measure: the wheels are spinning but the car isn't
+						-- going anywhere, and nothing in this model tracks
+						-- wheel rotation independently of road speed. It's an
+						-- unambiguous, deliberate two-key action though, so
+						-- the driver's client just declares it.
+						if input.Burnout then
+							local isDriveWheel = config.DriveWheels == "All"
+								or (config.DriveWheels == "Front" and wheelName:sub(1, 1) == "F")
+								or (config.DriveWheels == "Rear" and wheelName:sub(1, 1) ~= "F")
+							if isDriveWheel then
+								slip = math.max(slip, config.TractionSlipThreshold * 1.6)
+							end
+						end
+
+						-- The two gates. A car has to actually be travelling
+						-- before any of this counts, which is what keeps a car
+						-- parked on a slope - genuinely creeping sideways, and
+						-- genuinely slipping by the maths - silent instead of
+						-- screeching and smoking forever. A burnout is exempt,
+						-- since being stationary is the whole point of it.
+						local carSpeed = carPrim.AssemblyLinearVelocity.Magnitude
+						local counts = input.Burnout
+							or (carSpeed >= config.TractionMinCarSpeed and slip >= config.TractionSlipThreshold)
+						input.SlipOut[wheelName] = if counts then slip else 0
+					end
 				end
 			end
 		end

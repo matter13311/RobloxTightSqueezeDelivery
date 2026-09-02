@@ -3,6 +3,7 @@
 -- proportionally more of both than DEFAULTS just to hold ride height and
 -- accelerate at a normal rate - bumped up from DEFAULTS accordingly.
 return {
+	DriveWheels = "Rear",
 	WheelModelName = "PickupTruckWheel",
 	WheelRadius = 1.8485, -- half of PickupTruckWheel's 3.697-stud Size.Y/Z - must track that mesh's actual size, not DEFAULTS' 1.5
 	SuspensionMaxLength = 3.5, -- DEFAULTS is 2 - more travel to compress into, so accel/brake squat and bumps have room to show instead of instantly maxing out the spring
@@ -32,6 +33,35 @@ return {
 	-- (drive force fades to zero AT MaxSpeed, so the last stretch of any
 	-- MaxSpeed always crawls - the higher this is, the longer that crawl).
 	MaxSpeed = 100,
+
+	-- Steering feel. DEFAULTS' 5 reaches full lock in a fifth of a second,
+	-- which on a truck reads as the front axle snapping sideways. 2 takes
+	-- half a second to wind on full lock, so threading a gap becomes a
+	-- deliberate input rather than a twitch. Re-centring stays quicker than
+	-- turning in, which is what a real car's castor does on its own.
+	--
+	-- This is separate from SteerAngle (how far the wheels actually point) -
+	-- turn this down for heavier steering, that one down for a wider circle.
+	SteerSpeed = 2,
+	SteerReturnSpeed = 3.5,
+
+	-- Steering wheel prop in the cab. 180 degrees at full lock: clearly a
+	-- wheel being turned rather than the token 30-degree nudge most games
+	-- use, but nowhere near the ~450 a real truck does, which in first person
+	-- would have the wheel whirling every time a player taps A.
+	SteeringWheelMaxAngle = 180,
+	-- Auto-detected from the wheel part's own proportions - see DEFAULTS. If
+	-- the wheel ends up spinning the right way round its column but mirrored,
+	-- set SteeringWheelInvert = true rather than touching the axis.
+	SteeringWheelInvert = true,
+	SteeringWheelAxis = "Auto",
+
+	-- Traction effects. A loaded truck's tires are working harder than a
+	-- light car's, so they let go a little sooner, but the car-speed gate is
+	-- raised: this thing spends its life creeping around at parking speeds
+	-- and nudging kerbs, and none of that should ever screech.
+	TractionSlipThreshold = 6.5,
+	TractionMinCarSpeed = 12,
 
 	-- Handbrake (Space). Rear-locking, which is what lets you flick the back
 	-- end out mid-corner rather than just stopping in a straight line.

@@ -6,6 +6,7 @@ local ContextActionService = game:GetService("ContextActionService")
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local Gearbox = require(ReplicatedStorage.Modules.Vehicles.Gearbox)
 local VehicleDashboard = require(script.Parent.VehicleDashboard)
+local VehicleEffects = require(script.Parent.VehicleEffects)
 
 local player = Players.LocalPlayer
 
@@ -23,6 +24,7 @@ local EXIT_ACTION = "VehicleExit"
 -- every car it can see, not just the one it's driving - see UpdateWheelVisuals).
 local wheelAttachmentsCache = {} -- [vehicle] = attachments
 local wheelRotationState = {} -- [vehicle] = { FL = angle, ... }
+local wheelSlipState = {} -- [vehicle] = { FL = slip studs/s, ... }, reused each frame so the render step allocates nothing
 local drivingStates = {} -- [vehicle] = physics State, only set while THIS client is driving it
 
 -- The one car this client is driving right now, or nil. Everything the input
@@ -239,6 +241,7 @@ local function beginDrive(humanoid, seatPart)
 		Dashboard = VehicleDashboard.new(player),
 		Handbrake = false,
 		DriveThrottle = 0,
+		Burnout = false,
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
 		SelectorSound = createSound(chassis, "GearSelectorSound", config.SelectorSoundId, config.SelectorSoundVolume),
@@ -300,6 +303,14 @@ local function beginDrive(humanoid, seatPart)
 		-- and has no other way to know what the gearbox decided this frame.
 		mySession.DriveThrottle = drive.Throttle
 
+		-- Handbrake plus gas, while barely moving: the wheels are turning and
+		-- the car isn't. Nothing in the physics tracks wheel rotation apart
+		-- from road speed, so there's no slip velocity to measure here - the
+		-- driver's client just declares it, and only for its own car.
+		mySession.Burnout = mySession.Handbrake
+			and drive.Throttle ~= 0
+			and speed < config.TractionMinCarSpeed
+
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
 			Steer = seatPart.SteerFloat,
@@ -349,6 +360,64 @@ local function onCharacterAdded(character)
 	end, false, Enum.KeyCode.L)
 end
 
+-- Rotates the steering wheel prop in the cab to match the road wheels. The
+-- weld and its untouched resting C0 are set up on the server (see
+-- Raycast.server.luau) - all that happens here is spinning about the part's
+-- own axis, so the prop keeps whatever position and tilt it was built with.
+-- The axis the wheel spins about, in the part's own local space.
+--
+-- "Auto" reads it off the part's proportions: a steering wheel is a flat
+-- disc, so the column runs through whichever dimension is thinnest. That is a
+-- far more reliable answer than asking someone to name an axis by hand, where
+-- it is very easy to read a colour off Studio's rotate handles while they are
+-- in World mode and get an axis that has nothing to do with the part's own.
+local function steeringWheelAxis(part, config)
+	local axis = config.SteeringWheelAxis
+	if typeof(axis) == "Vector3" then
+		return axis
+	end
+
+	local size = part.Size
+	if size.X <= size.Y and size.X <= size.Z then
+		return Vector3.xAxis
+	elseif size.Y <= size.Z then
+		return Vector3.yAxis
+	end
+	return Vector3.zAxis
+end
+
+local function updateSteeringWheel(vehicle, config, smoothSteer)
+	local part = VehiclePhysics.GetSteeringWheelPart(vehicle)
+	if not part then
+		return -- car simply doesn't have one, which is fine
+	end
+	local weld = part:FindFirstChild("SteeringWheelWeld")
+	local baseC0 = weld and weld:GetAttribute("BaseC0")
+	if not baseC0 then
+		return -- server hasn't finished setting it up yet
+	end
+
+	-- Direction is SteeringWheelInvert's job alone, so a wheel that spins the
+	-- wrong way is one boolean and never a reason to go back and re-guess the
+	-- axis. Post-multiplying rotates about the part's own axes through its own
+	-- centre, so the wheel spins in place and keeps the position and tilt it
+	-- was built with.
+	local direction = if config.SteeringWheelInvert then -1 else 1
+	local angle = math.rad(smoothSteer * config.SteeringWheelMaxAngle * direction)
+	weld.C0 = baseC0 * CFrame.fromAxisAngle(steeringWheelAxis(part, config), angle)
+end
+
+-- Cars can be removed at runtime; their smoke emitters and screech loop are
+-- client-created, so they have to be cleaned up here rather than going with
+-- the model.
+workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
+	VehicleEffects.Clear(vehicle)
+	wheelAttachmentsCache[vehicle] = nil
+	wheelRotationState[vehicle] = nil
+	wheelSlipState[vehicle] = nil
+	drivingStates[vehicle] = nil
+end)
+
 -- Wheel visuals for every car in view, not just the one being driven, so this
 -- is bound once for the client rather than per character spawn.
 RunService:BindToRenderStep("MoveWheels", 5, function()
@@ -369,19 +438,31 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- steer input replicated to us. Same story for throttle (used for
 			-- the wheelspin visual) and the handbrake (used to stop locked
 			-- wheels turning): only known for the car we're driving.
+			wheelSlipState[vehicle] = wheelSlipState[vehicle] or {}
+
 			local drivingState = drivingStates[vehicle]
 			local smoothSteer = drivingState and drivingState.SmoothSteer or 0
 			local throttle = 0
 			local handbrake = false
+			local burnout = false
 			if session and session.CarModel == vehicle then
 				-- The GEAR's drive demand, not the raw seat axis. S is the
 				-- brake now, so feeding ThrottleFloat straight in here would
 				-- spin the wheels backwards every time you slowed down.
 				throttle = session.DriveThrottle
 				handbrake = session.Handbrake
+				burnout = session.Burnout
 			end
 
-			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, wheelRotationState[vehicle], throttle, handbrake)
+			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, wheelRotationState[vehicle], {
+				SmoothSteer = smoothSteer,
+				Throttle = throttle,
+				Handbrake = handbrake,
+				Burnout = burnout,
+				SlipOut = wheelSlipState[vehicle],
+			})
+			VehicleEffects.Update(vehicle, config, wheelSlipState[vehicle])
+			updateSteeringWheel(vehicle, config, smoothSteer)
 		end
 	end
 end)
