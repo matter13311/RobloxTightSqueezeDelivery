@@ -103,6 +103,20 @@ function VehiclePhysics.GetConfig(chassis)
 	return config
 end
 
+-- A wheel can be a single Part (like UAZWheel) or a multi-part Model (rim,
+-- tire, hubcap, etc. welded together internally with WeldConstraints, with
+-- Model.PrimaryPart set to whichever part is the external attachment point).
+-- Everywhere else in this module treats "the wheel" as this one part - the
+-- only external connection to the chassis - so a multi-part wheel needs no
+-- special-casing anywhere but here.
+function VehiclePhysics.GetWheelPrimaryPart(wheelInstance)
+	if wheelInstance:IsA("Model") then
+		assert(wheelInstance.PrimaryPart ~= nil, "Wheel model " .. wheelInstance:GetFullName() .. " needs a PrimaryPart set")
+		return wheelInstance.PrimaryPart
+	end
+	return wheelInstance
+end
+
 -- Each wheel's mount point is an Attachment named "Wheel" .. name (e.g.
 -- "WheelFL"), parented directly to the Chassis and positioned visually in
 -- Studio - its Position IS the wheel/raycast offset, nothing to type by hand.
@@ -248,7 +262,7 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothS
 			local raycast = workspace:Raycast(rayOrigin, rayDirection, rayParams)
 
 			if raycast then
-				local weld = wheelPart:FindFirstChild("Weld")
+				local weld = VehiclePhysics.GetWheelPrimaryPart(wheelPart):FindFirstChild("Weld")
 				if weld then
 					-- Place the wheel's CENTER (its pivot) WheelRadius above the actual
 					-- ground contact point, not AT it - otherwise the wheel mesh's own
@@ -285,7 +299,17 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothS
 					end
 
 					rotationState[wheelName] = (rotationState[wheelName] or 0.5) + wheelSurfaceSpeed / 56 --56 should be same as math.rad(number)
-					weld.C0 = weld.C0 * CFrame.Angles(rotationState[wheelName], 0, 0)
+
+					-- Right-side wheels are mirrored outward-facing via the 180deg Y
+					-- flip above. Spinning around a mirrored local X axis is the
+					-- visual opposite of spinning around the unmirrored one - so
+					-- without this, the right side rolls backwards relative to the
+					-- left even though both are being told to roll the same amount.
+					-- (This bug existed for the old single-part wheel too - it just
+					-- didn't show, since a plain symmetric cylinder looks identical
+					-- spinning either direction.)
+					local spinSign = if localOffset.X > 0 then -1 else 1
+					weld.C0 = weld.C0 * CFrame.Angles(spinSign * rotationState[wheelName], 0, 0)
 				end
 			end
 		end

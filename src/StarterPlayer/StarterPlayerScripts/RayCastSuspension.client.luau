@@ -12,13 +12,28 @@ local wheelAttachmentsCache = {} -- [vehicle] = attachments
 local wheelRotationState = {} -- [vehicle] = { FL = angle, ... }
 local drivingStates = {} -- [vehicle] = physics State, only set while THIS client is driving it
 
+-- Returns nil (instead of erroring) if this car hasn't finished loading yet -
+-- e.g. PrimaryPart or a WheelXX attachment not set up yet during the first
+-- few frames after it's added to workspace.Vehicles. Callers should just
+-- skip the vehicle for this frame and it'll pick up again once it's ready.
 local function getWheelAttachments(vehicle)
 	local cached = wheelAttachmentsCache[vehicle]
-	if not cached then
-		cached = VehiclePhysics.GetWheelAttachments(vehicle.PrimaryPart)
-		wheelAttachmentsCache[vehicle] = cached
+	if cached then
+		return cached
 	end
-	return cached
+
+	local chassis = vehicle.PrimaryPart
+	if not chassis then
+		return nil
+	end
+
+	local ok, attachments = pcall(VehiclePhysics.GetWheelAttachments, chassis)
+	if not ok then
+		return nil
+	end
+
+	wheelAttachmentsCache[vehicle] = attachments
+	return attachments
 end
 
 local function onCharacterAdded(character)
@@ -35,6 +50,10 @@ local function onCharacterAdded(character)
 		local carModel = seatPart.Parent
 		local chassis = carModel.PrimaryPart
 		local attachments = getWheelAttachments(carModel)
+		if not attachments then
+			warn("RayCastSuspension: " .. carModel:GetFullName() .. " isn't fully set up (missing PrimaryPart or a WheelXX attachment) - can't drive it")
+			return
+		end
 		local config = VehiclePhysics.GetConfig(chassis)
 		local state = VehiclePhysics.NewState()
 		drivingStates[carModel] = state
@@ -71,26 +90,28 @@ local function onCharacterAdded(character)
 
 	RunService:BindToRenderStep("MoveWheels", 5, function()
 		for _, vehicle in workspace.Vehicles:GetChildren() do
-			local chassis = vehicle.PrimaryPart
 			local attachments = getWheelAttachments(vehicle)
-			local config = VehiclePhysics.GetConfig(chassis)
+			if attachments then
+				local chassis = vehicle.PrimaryPart
+				local config = VehiclePhysics.GetConfig(chassis)
 
-			wheelRotationState[vehicle] = wheelRotationState[vehicle] or {}
+				wheelRotationState[vehicle] = wheelRotationState[vehicle] or {}
 
-			-- Only the car THIS client is currently driving has a real smoothed
-			-- steer value (from the physics loop above) - other cars' front
-			-- wheels stay centered visually, since we don't get their driver's
-			-- steer input replicated to us. Same story for throttle (used for
-			-- the wheelspin visual): only known for the car we're driving.
-			local drivingState = drivingStates[vehicle]
-			local smoothSteer = drivingState and drivingState.SmoothSteer or 0
-			local throttle = 0
-			if drivingState then
-				local seat = vehicle:FindFirstChildWhichIsA("VehicleSeat")
-				throttle = seat and seat.ThrottleFloat or 0
+				-- Only the car THIS client is currently driving has a real smoothed
+				-- steer value (from the physics loop above) - other cars' front
+				-- wheels stay centered visually, since we don't get their driver's
+				-- steer input replicated to us. Same story for throttle (used for
+				-- the wheelspin visual): only known for the car we're driving.
+				local drivingState = drivingStates[vehicle]
+				local smoothSteer = drivingState and drivingState.SmoothSteer or 0
+				local throttle = 0
+				if drivingState then
+					local seat = vehicle:FindFirstChildWhichIsA("VehicleSeat")
+					throttle = seat and seat.ThrottleFloat or 0
+				end
+
+				VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, wheelRotationState[vehicle], throttle)
 			end
-
-			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, wheelRotationState[vehicle], throttle)
 		end
 	end)
 end

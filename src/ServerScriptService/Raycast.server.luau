@@ -4,13 +4,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 
-local defaultWheelModel = ReplicatedStorage.UAZWheel
+local defaultWheelModel = ReplicatedStorage.UAZWheelDetailed
 local VehicleFolder = workspace.Vehicles
 
 local ExistingCars = {} -- [carModel] = { Attachments = ..., State = ... }
 
 local function AddCar(carModel)
 	local chassis = carModel.PrimaryPart
+	if not chassis then
+		warn("VehicleManager: " .. carModel:GetFullName() .. " has no PrimaryPart set - skipping this car")
+		return
+	end
 	local attachments = VehiclePhysics.GetWheelAttachments(chassis)
 
 	ExistingCars[carModel] = {
@@ -44,10 +48,22 @@ local function AddCar(carModel)
 		local clonedWheel = wheelModel:Clone()
 		clonedWheel.Parent = wheelFolder
 		clonedWheel.Name = wheelName
-		clonedWheel.CanCollide = false
-		local weld = Instance.new("Weld", clonedWheel)
+
+		-- Works for both a single Part wheel and a multi-part Model wheel
+		-- (rim/tire/hubcap etc, rigidly welded together internally with the
+		-- model's PrimaryPart as the one part we connect to the chassis).
+		local parts = clonedWheel:IsA("Model") and clonedWheel:GetDescendants() or { clonedWheel }
+		for _, part in parts do
+			if part:IsA("BasePart") then
+				part.CanCollide = false
+				part.Anchored = false
+			end
+		end
+
+		local wheelPrimary = VehiclePhysics.GetWheelPrimaryPart(clonedWheel)
+		local weld = Instance.new("Weld", wheelPrimary)
 		weld.Part0 = chassis
-		weld.Part1 = clonedWheel
+		weld.Part1 = wheelPrimary
 		weld.C0 = CFrame.new(attachment.Position)
 
 		if attachment.Position.X > 0 then
@@ -56,10 +72,20 @@ local function AddCar(carModel)
 	end
 end
 
-for _, carModel in VehicleFolder:GetChildren() do
-	AddCar(carModel)
+local function TryAddCar(carModel)
+	-- One misconfigured car (missing PrimaryPart, missing a WheelXX
+	-- attachment, etc) shouldn't be able to take down every other car's
+	-- suspension by erroring out of this script entirely.
+	local ok, err = pcall(AddCar, carModel)
+	if not ok then
+		warn("VehicleManager: failed to set up " .. carModel:GetFullName() .. ": " .. tostring(err))
+	end
 end
-VehicleFolder.ChildAdded:Connect(AddCar)
+
+for _, carModel in VehicleFolder:GetChildren() do
+	TryAddCar(carModel)
+end
+VehicleFolder.ChildAdded:Connect(TryAddCar)
 
 while true do
 	local delta = RunService.Heartbeat:Wait()
