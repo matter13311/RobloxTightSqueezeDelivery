@@ -51,8 +51,77 @@ local DEFAULTS = {
 	-- between scales how pronounced the lean is - this is a feel knob, not a
 	-- correctness one, so a deliberately arcadey car can turn it down.
 	BodyLean = 1,
+
+	-- Foot brake (S). A friction coefficient like LateralGripStrength, not a
+	-- 0-1 fraction: the most decelerating force one tire can put down is
+	-- BrakeFriction * that tire's share of the car's weight. Brakes act on
+	-- every wheel, not just the driven axle, and the force is applied at the
+	-- contact patch, so hard braking pitches the nose down. Higher than
+	-- LateralGripStrength on purpose - a locked-up-hard stop should out-grip
+	-- a corner, and the clamp below means it can never brake harder than a
+	-- full stop needs, so an over-large value just means "stops in the
+	-- shortest distance the tires allow" rather than snapping backwards.
+	BrakeFriction = 1.8,
+
+	-- Handbrake (Space). Deliberately NOT a stronger foot brake: it locks its
+	-- axle's wheels, and a locked tire is a sliding one. That means two
+	-- separate things, and the second is the whole point:
+	HandbrakeWheels = "Rear", -- "All", "Front" or "Rear" - which axle the handbrake locks. Rear is what makes the back step out
+	HandbrakeLockFriction = 0.8, -- sliding friction of a locked tire along its rolling direction. Lower than BrakeFriction: a skidding tire slows you down WORSE than a rolling one being braked, which is why locking up isn't a shortcut to stopping faster
+	HandbrakeGripMultiplier = 0.18, -- what fraction of its normal LateralGripStrength a locked wheel keeps. A tire already sliding lengthwise has almost nothing left to resist sideways with - this is the number that actually makes the car break loose and skid when you yank it mid-corner at speed
+
+	-- Sound assets. Per-car so a different vehicle can have its own, but they
+	-- default to the shared ones so a new car needs no audio setup at all.
+	HandbrakeSoundId = "rbxassetid://105954464235496",
+	GearShiftSoundId = "rbxassetid://5565325193",
+	ShiftSoundVolume = 0.5,
+	HandbrakeSoundVolume = 0.6,
 }
 VehiclePhysics.Defaults = DEFAULTS
+
+-- Transmission tuning. Unlike everything in DEFAULTS this is a nested table,
+-- so it can't come from an Attribute (Attributes can't hold tables) - it's
+-- config-file-only, and a car's Configs/<name>.luau overrides it key by key
+-- (so a car can specify just `Gears` and inherit the shift timing here).
+--
+-- Each forward gear is { Ratio, SpeedFraction }:
+--   Ratio         torque multiplier applied on top of config.Torque. A low
+--                 gear multiplies torque a lot but is geared short, so it
+--                 runs out of pull almost immediately - that's the tradeoff
+--                 that makes a gearbox feel like one rather than a free
+--                 power boost.
+--   SpeedFraction the share of config.MaxSpeed this gear tops out at, 0-1.
+--                 Drive force fades to zero as the car approaches it, exactly
+--                 like the single-speed model used to do against MaxSpeed.
+--                 The LAST gear should be 1.0, or the car can never reach its
+--                 own MaxSpeed.
+local DEFAULT_TRANSMISSION = {
+	StartingGear = "N", -- "R", "N" or "D" - what the selector reads when you sit down
+	ShiftTime = 0.35, -- seconds an automatic upshift/downshift takes. Drive torque is cut to zero for this whole window, which is the pause you hear and feel between gears
+	-- Upshift once speed reaches this fraction of the CURRENT gear's top
+	-- speed. Not as late as it looks: drive force fades linearly to zero at
+	-- a gear's top speed, so with these ratios the next gear already
+	-- out-pulls the current one from about 0.5 onwards. Shifting a little
+	-- past that (0.62) means each gear is still visibly pulling when it
+	-- hands over, and the new gear picks up harder than the old one was -
+	-- which is what a shift should feel like. Push this near 1.0 and the car
+	-- crawls to every shift point on the 5% of torque it has left there.
+	ShiftUpAt = 0.62,
+	ShiftDownAt = 0.42, -- downshift once speed falls below this fraction of the NEXT GEAR DOWN's top speed. Must stay clearly below ShiftUpAt - the gap between them is the whole hysteresis band, and without one the box hunts up and down every other frame at a steady throttle
+	IdleRpm = 0.12, -- 0-1 floor, so a stopped engine still idles rather than going silent
+	ShiftRpmDrop = 0.55, -- revs fall to this fraction mid-shift (clutch out, engine unloaded) and pick back up in the new gear - the audible "wah-WAH" of shifting
+	RpmSmoothing = 6, -- per-second rate the audible revs chase their target. Higher snaps faster
+	IdlePitch = 0.7, -- engine sound PlaybackSpeed at 0 revs...
+	MaxPitch = 2.2, -- ...and at redline. The sound now tracks REVS, not road speed, so it climbs through a gear and drops on each shift instead of rising once from a standstill to top speed
+	Gears = {
+		{ Ratio = 2.6, SpeedFraction = 0.24 },
+		{ Ratio = 1.7, SpeedFraction = 0.45 },
+		{ Ratio = 1.25, SpeedFraction = 0.7 },
+		{ Ratio = 1.0, SpeedFraction = 1.0 },
+	},
+	Reverse = { Ratio = 2.4, SpeedFraction = 0.28 }, -- single reverse gear: geared short, so backing up is torquey but slow
+}
+VehiclePhysics.DefaultTransmission = DEFAULT_TRANSMISSION
 
 -- Per-car-TYPE tuning lives in ModuleScripts under Configs/, one file per car
 -- type (e.g. Configs/DriftCar.luau), each returning a table of only the
@@ -142,6 +211,26 @@ function VehiclePhysics.GetConfig(chassis)
 		end
 		config[key] = value
 	end
+
+	-- Transmission is the one nested table, so it sits outside the loops
+	-- above: no Attribute tier (Attributes can't hold tables), and merged one
+	-- key deep rather than copied, so a car listing only `Gears` still gets
+	-- every timing/audio value from DEFAULT_TRANSMISSION. `Gears` itself is
+	-- replaced wholesale, which is what you want - half a gear list merged
+	-- onto a longer default one would silently leave stray extra gears on the
+	-- end of the car's ratios.
+	local transmission = {}
+	for key, default in DEFAULT_TRANSMISSION do
+		transmission[key] = default
+	end
+	local fileTransmission = fileConfig and fileConfig.Transmission
+	if fileTransmission then
+		for key, value in fileTransmission do
+			transmission[key] = value
+		end
+	end
+	config.Transmission = transmission
+
 	return config
 end
 
@@ -205,8 +294,21 @@ function VehiclePhysics.NewState()
 end
 
 -- Runs one physics step for one car. Only ever called for the car a player
--- is actively driving (the chassis is unanchored for exactly that long) -
--- `input` is always { Throttle = seat.ThrottleFloat, Steer = seat.SteerFloat }.
+-- is actively driving (the chassis is unanchored for exactly that long).
+--
+-- `input` fields, all optional except Throttle/Steer:
+--   Throttle          -1..1 drive demand. NOT the raw seat ThrottleFloat any
+--                     more - the sign is the GEAR's direction, so holding W
+--                     in reverse arrives here as a negative number and S
+--                     arrives as Brake instead. See Gearbox.luau.
+--   Steer             -1..1, straight from the seat.
+--   Brake             0..1 foot brake (S).
+--   Handbrake         true while Space is held.
+--   TorqueMultiplier  current gear's ratio (defaults to 1 = single-speed).
+--   GearMaxSpeed      current gear's top speed (defaults to config.MaxSpeed).
+--   Rpm               0..1 engine revs, for the engine sound's pitch. Absent
+--                     means "no gearbox here", and the sound falls back to
+--                     tracking road speed.
 function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local carPrim = carModel.PrimaryPart
 
@@ -250,6 +352,16 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 
 			local isFrontWheel = wheelName:sub(1, 1) == "F"
 
+			-- Handbrake locks its axle's wheels outright. "Locked" is not a
+			-- synonym for "braking hard" anywhere below: it swaps this wheel's
+			-- rolling behaviour for sliding behaviour, which costs it most of
+			-- its sideways grip (see axleGrip) as well as changing what it
+			-- does lengthwise. That grip loss is the skid.
+			local isHandbrakeWheel = config.HandbrakeWheels == "All"
+				or (config.HandbrakeWheels == "Front" and isFrontWheel)
+				or (config.HandbrakeWheels == "Rear" and not isFrontWheel)
+			local isLocked = (input.Handbrake == true) and isHandbrakeWheel
+
 			local wheelDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
 			if isFrontWheel then
 				wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-state.SmoothSteer * config.SteerAngle), 0)
@@ -269,6 +381,16 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			local axleGrip = if isFrontWheel
 				then (config.FrontLateralGripStrength or config.LateralGripStrength)
 				else (config.RearLateralGripStrength or config.LateralGripStrength)
+			-- A tire already sliding lengthwise has very little left to resist
+			-- sideways with. Collapsing the locked axle's friction coefficient
+			-- is what makes the back end break away mid-corner - the existing
+			-- saturation model then does the rest for free, since the same
+			-- cornering load that was comfortably under the limit a frame ago
+			-- is now far over it, so the grip force pins at a fixed magnitude
+			-- and the car genuinely slides instead of being snapped straight.
+			if isLocked then
+				axleGrip *= config.HandbrakeGripMultiplier
+			end
 			local wheelWeight = (carPrim.AssemblyMass / 4) * workspace.Gravity
 			local maxLateralImpulse = axleGrip * wheelWeight * delta
 			local neededLateralImpulse = -localVelocity.X * (carPrim.AssemblyMass / 4)
@@ -305,9 +427,48 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- be applied at the contact patch - see the note where it's set.
 			local longitudinalIsStabilizer = false
 
+			-- Both real-friction longitudinal branches (handbrake, foot brake)
+			-- want the same thing: the largest force this tire can put down
+			-- against its direction of travel, but never more than the impulse
+			-- that would bring it to a dead stop this frame. Without that
+			-- second clamp a strong-enough coefficient doesn't just stop the
+			-- car, it drags it backwards through zero and oscillates.
+			local function frictionStopImpulse(coefficient)
+				local maxImpulse = coefficient * wheelWeight * delta
+				local neededImpulse = localVelocity.Z * (carPrim.AssemblyMass / 4)
+				return math.clamp(neededImpulse, -maxImpulse, maxImpulse)
+			end
+
+			local brakeAmount = math.clamp(input.Brake or 0, 0, 1)
+
+			-- Gear selection reaches here as two plain numbers so this loop
+			-- stays gearbox-agnostic: a torque multiplier, and the speed this
+			-- gear tops out at (which the drive force fades toward, exactly as
+			-- it used to fade toward MaxSpeed when there was only one gear).
+			-- Both default to the single-speed behaviour, so the server's
+			-- settle loop and any caller that doesn't know about gears is
+			-- unaffected.
+			local gearTorque = config.Torque * (input.TorqueMultiplier or 1)
+			-- Floored at 1: this is a divisor, and a config that ever produced
+			-- a zero-speed gear would otherwise turn the drive force into NaN
+			-- and fling the car out of the world rather than just driving badly.
+			local gearMaxSpeed = math.max(input.GearMaxSpeed or config.MaxSpeed, 1)
+
 			local longitudinalForce
-			if input.Throttle and input.Throttle ~= 0 and isDriveWheel then
-				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * config.Torque * (1 - math.min(1, math.abs(localVelocity.Z) / config.MaxSpeed))
+			if isLocked then
+				-- Locked and sliding. Note this branch sits ABOVE the throttle
+				-- one, so a locked drive wheel puts no power down at all - on a
+				-- rear-drive car that means the handbrake cuts drive entirely,
+				-- which is correct.
+				longitudinalForce = wheelDirCFrame.LookVector * frictionStopImpulse(config.HandbrakeLockFriction)
+			elseif brakeAmount > 0 and math.abs(localVelocity.Z) > REST_VELOCITY_EPSILON then
+				-- Foot brake, on every wheel rather than just the driven axle.
+				-- A real tire force at the contact patch, so stopping hard
+				-- pitches the nose down through the same moment arm that gives
+				-- the car squat and roll.
+				longitudinalForce = wheelDirCFrame.LookVector * frictionStopImpulse(config.BrakeFriction * brakeAmount)
+			elseif input.Throttle and input.Throttle ~= 0 and isDriveWheel then
+				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
 			elseif math.abs(localVelocity.Z) > config.CoastSpeedThreshold then
 				-- Still going fast enough to be "coasting" - light drag only, so
 				-- momentum carries through instead of slamming to a stop.
@@ -329,9 +490,10 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				-- which this same controller then reads next frame as "still
 				-- moving" and corrects again. That's a positive feedback loop,
 				-- and it shows up as the whole car jittering while stopped.
-				-- Nothing is lost by exempting it: braking with S sets
-				-- Throttle = -1, which takes the drive branch above, so all the
-				-- real braking dive still comes from the contact patch.
+				-- Nothing is lost by exempting it: real braking now has its own
+				-- contact-patch branch above and only falls through to here
+				-- once the car is already crawling, so all the braking dive
+				-- still comes from the patch where it belongs.
 				longitudinalIsStabilizer = true
 
 				-- Below a hair of movement, correcting at all is just chasing
@@ -384,7 +546,21 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	-- from the actual engine part rather than the chassis.
 	local sound = carModel:FindFirstChild("Sound", true)
 	if sound then
-		sound.PlaybackSpeed = 0.8 + carPrim.AssemblyLinearVelocity.Magnitude / config.MaxSpeed
+		if input.Rpm then
+			-- Driven by a gearbox: pitch follows ENGINE revs, so it climbs
+			-- through each gear and drops back on every shift, instead of
+			-- rising once monotonically from a standstill to top speed. The
+			-- gearbox is what decides the revs (including the mid-shift dip) -
+			-- all that happens here is mapping 0-1 onto the pitch range.
+			local transmission = config.Transmission
+			sound.PlaybackSpeed = transmission.IdlePitch
+				+ math.clamp(input.Rpm, 0, 1) * (transmission.MaxPitch - transmission.IdlePitch)
+		else
+			-- No gearbox driving this step (e.g. the server's settle loop) -
+			-- fall back to the old road-speed pitch so a car being simulated
+			-- without a driver still sounds like something.
+			sound.PlaybackSpeed = 0.8 + carPrim.AssemblyLinearVelocity.Magnitude / config.MaxSpeed
+		end
 	end
 end
 
@@ -392,7 +568,7 @@ end
 -- ground and spin/steer, independent of the physics raycast above. Called
 -- from the client for every vehicle it can see (not just the one driven),
 -- since every viewer computes this locally from replicated position data.
-function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, rotationState, throttle)
+function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothSteer, rotationState, throttle, handbrake)
 	local carPrim = vehicle.PrimaryPart
 	local carCFrame = carPrim.CFrame
 	local wheelsFolder = vehicle:FindFirstChild("Wheels")
@@ -434,7 +610,20 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, smoothS
 						:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
 					local wheelSurfaceSpeed = localVelocity.Z
-					if throttle and throttle ~= 0 and config.WheelSpinBoost ~= 0 then
+
+					-- A locked wheel is dragging, not rolling, so it must stop
+					-- turning even while the car is still very much moving.
+					-- Leaving it spinning is the single most obvious tell that
+					-- the handbrake is only pretending to lock anything.
+					local isLocked = handbrake == true
+						and (config.HandbrakeWheels == "All"
+							or (config.HandbrakeWheels == "Front" and wheelName:sub(1, 1) == "F")
+							or (config.HandbrakeWheels == "Rear" and wheelName:sub(1, 1) ~= "F"))
+					if isLocked then
+						wheelSurfaceSpeed = 0
+					end
+
+					if not isLocked and throttle and throttle ~= 0 and config.WheelSpinBoost ~= 0 then
 						local isFrontWheel = wheelName:sub(1, 1) == "F"
 						local isDriveWheel = config.DriveWheels == "All"
 							or (config.DriveWheels == "Front" and isFrontWheel)
