@@ -59,6 +59,7 @@ local Stiffness = 70
 local Damper = 2
 
 local wheelFriction = 5
+local lateralGripStrength = 1 -- keep in sync with the client's lateralGripStrength - 0-1, 1 = never slides sideways
 local maxSpeed = 50 -- keep in sync with the client's maxSpeed, used to scale engine sound pitch
 
 
@@ -111,7 +112,13 @@ while true do
                     local RotationsOnlyWhereDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
                     local LocalVelocity = RotationsOnlyWhereDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
-                    local XForce = carCFrame.RightVector * -LocalVelocity.x * wheelFriction
+                    -- Scaled by mass (a true impulse) rather than a bare coefficient, so this
+                    -- can only ever cancel sideways velocity exactly - never overshoot past
+                    -- zero and flip direction, no matter how strong lateralGripStrength is.
+                    -- Divided across the 4 wheels since each one reads roughly the same
+                    -- velocity and would otherwise each try to cancel the WHOLE car's
+                    -- sideways speed independently, applying up to 4x the needed correction.
+                    local XForce = carCFrame.RightVector * -LocalVelocity.x * (carPrim.AssemblyMass / 4) * lateralGripStrength
                     -- The server never drives a car (nobody's pressing anything while it's
                     -- parked), so unlike the client it always brakes forward/backward too -
                     -- otherwise a car handed back with leftover speed would coast forever.

@@ -14,7 +14,7 @@ local wheelRadius = 1.5
 local Stiffness = 100
 local Damper = 5
 
-local wheelFriction = 10
+local lateralGripStrength = 1 -- 0-1: fraction of sideways slide cancelled per grounded wheel each frame. 1 = never slides sideways, no matter the slope
 local torque = 10
 local maxSpeed = 50
 local steerAngle = 30
@@ -74,7 +74,15 @@ local function onCharacterAdded(character)
                             end
                             local LocalVelocity = RotationsOnlyWhereDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
-                            local XForce = RotationsOnlyWhereDirCFrame.RightVector * -LocalVelocity.x * wheelFriction
+                            -- Scaled by mass (a true impulse, mass * dv) rather than a bare
+                            -- coefficient, so this can only ever cancel sideways velocity
+                            -- exactly - it can't overshoot past zero and flip direction no
+                            -- matter how strong lateralGripStrength is set. Divided across the
+                            -- 4 wheels since each one reads roughly the same velocity and
+                            -- would otherwise each try to cancel the WHOLE car's sideways
+                            -- speed independently - 4 wheels all doing that in the same frame
+                            -- applies up to 4x the needed correction and launches the car.
+                            local XForce = RotationsOnlyWhereDirCFrame.RightVector * -LocalVelocity.x * (carPrim.AssemblyMass / 4) * lateralGripStrength
 
                             local ZForce
                             if seatPart.ThrottleFloat ~= 0 then
