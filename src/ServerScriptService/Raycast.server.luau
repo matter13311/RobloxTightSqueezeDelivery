@@ -4,7 +4,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 
-local defaultWheelModel = ReplicatedStorage.UAZWheelDetailed
+local wheelsFolder = ReplicatedStorage.Wheels
+local defaultWheelModel = wheelsFolder.UAZWheelDetailed
 local VehicleFolder = workspace.Vehicles
 
 local INITIAL_SETTLE_TIME = 5 -- seconds - how long the server runs real suspension physics on a freshly-placed car before freezing it, so it settles onto the ground correctly instead of anchoring wherever it happened to be placed in Studio (often floating or embedded)
@@ -69,10 +70,12 @@ local function AddCar(carModel)
 		end
 	end)
 
-	-- wheels (purely cosmetic - a car can override its wheel mesh with a
-	-- "WheelModelName" attribute naming a different model in ReplicatedStorage)
-	local wheelModelName = chassis:GetAttribute("WheelModelName")
-	local wheelModel = (wheelModelName and ReplicatedStorage:FindFirstChild(wheelModelName)) or defaultWheelModel
+	-- wheels (purely cosmetic - a car can override its wheel mesh via a
+	-- "WheelModelName" attribute on the Chassis, or a WheelModelName entry in
+	-- its Configs/<name>.luau file, naming a different model in
+	-- ReplicatedStorage.Wheels)
+	local wheelModelName = VehiclePhysics.GetConfig(chassis).WheelModelName
+	local wheelModel = (wheelModelName and wheelsFolder:FindFirstChild(wheelModelName)) or defaultWheelModel
 
 	local wheelFolder = Instance.new("Folder", carModel)
 	wheelFolder.Name = "Wheels"

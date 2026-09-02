@@ -79,6 +79,12 @@ end
 -- much lower than FrontLateralGripStrength).
 local OPTIONAL_KEYS = { "FrontLateralGripStrength", "RearLateralGripStrength" }
 
+-- Non-numeric per-car-type overrides that don't belong in DEFAULTS (they're
+-- not physics tuning). Same precedence as everything else: Attribute on the
+-- Chassis > Configs/<name>.luau > nil (falls back to Raycast.server.luau's
+-- own default wheel model).
+local OPTIONAL_STRING_KEYS = { "WheelModelName" }
+
 -- Precedence, highest first: an Attribute set directly on this Chassis
 -- instance > the car-type's Configs/<name>.luau file > DEFAULTS. This lets
 -- you define a car type once in a file, and still nudge one specific
@@ -101,6 +107,17 @@ function VehiclePhysics.GetConfig(chassis)
 		config[key] = value
 	end
 	for _, key in OPTIONAL_KEYS do
+		local value = nil
+		if fileConfig and fileConfig[key] ~= nil then
+			value = fileConfig[key]
+		end
+		local attributeValue = chassis:GetAttribute(key)
+		if attributeValue ~= nil then
+			value = attributeValue
+		end
+		config[key] = value
+	end
+	for _, key in OPTIONAL_STRING_KEYS do
 		local value = nil
 		if fileConfig and fileConfig[key] ~= nil then
 			value = fileConfig[key]
