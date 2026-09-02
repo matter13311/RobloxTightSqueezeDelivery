@@ -32,7 +32,7 @@ local DEFAULTS = {
 	WheelSpinBoost = 0, -- 0 = off. Extra visual wheel-spin speed under throttle at low speed, for a burnout/wheelspin look on drive wheels
 	Torque = 10,
 	MaxSpeed = 50,
-	SteerAngle = 30,
+	SteerAngle = 45,
 	-- 0-1: fraction of a full stop applied per frame once braking. 1 (fully
 	-- instant, every frame, no gradualness) is a bang-bang controller with no
 	-- settling room - any tiny nudge from elsewhere (suspension force not
@@ -82,6 +82,20 @@ local DEFAULTS = {
 	-- brake pedal, which feels backwards to drive.
 	BrakeFriction = 0.3,
 	BrakeRampTime = 0.3, -- seconds for the pedal to travel from released to fully applied. S is a digital key, so without this a tap is indistinguishable from standing on the brake
+
+	-- The same idea for the gas, and the cure for a car that LURCHES off the
+	-- line. A digital key means full torque arrives on a single frame, and at
+	-- a standstill that torque is multiplied by the torque converter's stall
+	-- factor - so the worst spike in the whole drivetrain lands at exactly the
+	-- moment the car is least able to absorb it.
+	--
+	-- Ramping the throttle in fixes the lurch WITHOUT giving up the shove,
+	-- which is the point: pulling away on the flat, the car is already moving
+	-- (and the converter already fading) by the time full torque arrives, so
+	-- the spike never happens. Pushing against a kerb, nothing moves, you hold
+	-- the key for longer than the ramp anyway, and you still get every bit of
+	-- the force. Releasing is instant, so lifting off still cuts power at once.
+	ThrottleRampTime = 0.35,
 
 	-- Handbrake (Space). Deliberately NOT a stronger foot brake: it locks its
 	-- axle's wheels, and a locked tire is a sliding one. That means two

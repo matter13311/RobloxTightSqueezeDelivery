@@ -59,6 +59,7 @@ function Gearbox.new(config)
 		DirectionHold = 0,
 		DirectionHoldProgress = 0, -- 0-1, so the dashboard can show the flip coming
 		BrakeInput = 0, -- ramped pedal position, not the raw key
+		GasInput = 0, -- likewise: ramped, so the car pulls away instead of lurching
 		-- Set for one frame when a shift happens, so the caller can play a
 		-- sound without the gearbox needing to know what a Sound is. The two
 		-- are separate because they are different events with different
@@ -135,6 +136,10 @@ function Gearbox.Update(state, config, delta, signedSpeed, forwardKey, backKey)
 			state.ShiftTimeRemaining = 0
 			state.DirectionHold = 0
 			state.DirectionChangedThisFrame = true
+			-- Start the throttle ramp from closed. The car is at a dead stop
+			-- with the key already held, which is precisely where an
+			-- un-ramped launch would lurch hardest.
+			state.GasInput = 0
 			-- The key the player is holding has just changed meaning under
 			-- them: the S that was braking is now the gas. Re-read both, so
 			-- the car pulls away on this frame instead of sitting still until
@@ -148,18 +153,25 @@ function Gearbox.Update(state, config, delta, signedSpeed, forwardKey, backKey)
 	state.DirectionHoldProgress = math.clamp(state.DirectionHold / math.max(transmission.AutoReverseDelay, 0.001), 0, 1)
 
 	-- Brake wins over gas, so holding both is always the safe outcome.
-	local gas = if goKey and not stopKey then 1 else 0
+	local targetGas = if goKey and not stopKey then 1 else 0
 	local targetBrake = if stopKey then 1 else 0
 
-	-- Pedal travel. The keys are digital, so without this the brake goes from
-	-- nothing to maximum in a single frame and even a tap reads as standing
-	-- on it. Releasing is instant - a real pedal comes back up as fast as you
-	-- lift your foot off it.
+	-- Pedal travel, both pedals. The keys are digital, so without this each
+	-- one goes from nothing to maximum in a single frame: a tap of the brake
+	-- reads as standing on it, and a press of the gas puts peak stall torque
+	-- through the wheels instantly, which is the lurch. Releasing either is
+	-- instant - a real pedal comes back up as fast as you lift your foot.
 	if targetBrake > state.BrakeInput then
 		state.BrakeInput = math.min(targetBrake, state.BrakeInput + delta / math.max(config.BrakeRampTime, 0.001))
 	else
 		state.BrakeInput = targetBrake
 	end
+	if targetGas > state.GasInput then
+		state.GasInput = math.min(targetGas, state.GasInput + delta / math.max(config.ThrottleRampTime, 0.001))
+	else
+		state.GasInput = targetGas
+	end
+	local gas = state.GasInput
 
 	-- Top speed of forward gear `index`, in studs/s.
 	local function gearTopSpeed(index)

@@ -51,6 +51,14 @@ return {
 	BrakeFriction = 0.25,
 	BrakeRampTime = 0.45, -- pedal travel. Longer than DEFAULTS: heavy truck, soft pedal, so a tap is genuinely a tap rather than a stab
 
+	-- Gas pedal travel, and the main cure for the lurch out of reverse. Longer
+	-- than DEFAULTS' 0.35: a loaded truck leans into its power, it doesn't
+	-- snap into it. Full torque still arrives - it just takes half a second,
+	-- by which time the truck is already rolling and the stall multiplier has
+	-- faded, so the spike never lands. Pushing against a kerb you hold W for
+	-- far longer than this, so kerb-climbing is untouched.
+	ThrottleRampTime = 0.5,
+
 	-- Lifting off W should let the truck cruise, not brake. At 0.05 it sheds
 	-- about 5% of its speed per second, so momentum carries a long way and
 	-- you coast between throttle inputs instead of having to feather W.
@@ -69,8 +77,27 @@ return {
 	Transmission = {
 		StartingGear = "D", -- sit down and press W. There is no neutral any more, and no lever to move
 		ShiftTime = 0.45, -- a truck's box is slow and deliberate; drive is fully cut for this whole window
-		ShiftUpAt = 0.62, -- shifts land at 14.9 / 22.3 / 31.0 / 40.3 / 50.8 studs/s
+		-- Shift points, as a fraction of each gear's own top speed. Raised
+		-- from 0.62 so every gear is held noticeably longer before handing
+		-- over: shifts now land at 18.0 / 27.0 / 37.5 / 48.8 / 61.5 studs/s
+		-- instead of 14.9 / 22.3 / 31.0 / 40.3 / 50.8.
+		--
+		-- 0.75 is past the point where the next gear would out-pull this one
+		-- (~0.55), and that's deliberate - it's what makes the engine strain
+		-- and the revs climb near the top of a gear before the shift, rather
+		-- than swapping over the instant it becomes mathematically optimal.
+		-- The outgoing gear still has 25% of its torque left at that point,
+		-- so it never bogs. Don't push much past 0.85: torque fades to zero
+		-- AT a gear's top speed, so a very late shift means crawling the last
+		-- stretch of every gear on almost no power.
+		ShiftUpAt = 0.75,
 		ShiftDownAt = 0.42,
+
+		-- The pause between gears, on top of the longer gears above. Bumped
+		-- with them so the whole box feels like a heavy truck's rather than a
+		-- quick one's - this is the knob if you want the gap itself longer,
+		-- as opposed to more time spent in each gear.
+		ShiftTime = 0.55,
 
 		-- Strong shove from rest, gentle once rolling. See the Torque comment
 		-- above - these two numbers are what let that be a low number.
@@ -79,7 +106,12 @@ return {
 		-- still helping at 6 studs/s, which is nearly half of 1st gear, so 1st
 		-- got shoved through before you noticed it. At 3 the boost is spent
 		-- almost immediately and 1st does its own work for the rest of it.
-		StallTorqueMultiplier = 3.5,
+		-- Dropped from 3.5. Combined with ThrottleRampTime below, this is what
+		-- stops the truck leaping forward the moment it drops into D with W
+		-- already held - the flip happens at a dead standstill, which is
+		-- exactly where the stall multiplier peaks, so it was the single
+		-- biggest force spike in the drivetrain landing at the worst moment.
+		StallTorqueMultiplier = 2.4,
 		StallSpeed = 3,
 
 		-- A loaded truck should take a beat to commit to changing direction,
