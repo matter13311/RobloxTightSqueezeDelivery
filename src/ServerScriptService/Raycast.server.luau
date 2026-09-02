@@ -46,6 +46,16 @@ local function AddCar(carModel)
 	end
 	local attachments = VehiclePhysics.GetWheelAttachments(chassis)
 
+	-- Rigidly weld static decoration (body panels, lights) to the chassis so
+	-- it rides along with suspension movement. Doors and the steering wheel
+	-- are deliberately left out - they'll get their own moving joints later.
+	for _, folderName in { "Body", "Lights", "Engine" } do
+		local folder = carModel:FindFirstChild(folderName)
+		if folder then
+			VehiclePhysics.WeldFolderToChassis(folder, chassis)
+		end
+	end
+
 	-- Parked by default: fully Anchored, so there is no physics running at
 	-- all (and nothing that can jitter) until someone actually drives it.
 	-- Suspension only runs while unanchored, in the driving client's own

@@ -137,6 +137,23 @@ end
 -- Everywhere else in this module treats "the wheel" as this one part - the
 -- only external connection to the chassis - so a multi-part wheel needs no
 -- special-casing anywhere but here.
+-- Rigidly attaches every BasePart under `folder` (at any depth) to `chassis`
+-- via a WeldConstraint, so static decoration (body panels, lights) rides
+-- along with the chassis's suspension movement instead of being left behind.
+-- Not for anything that needs to move independently later (doors on a hinge,
+-- a rotating steering wheel) - don't point this at those folders.
+function VehiclePhysics.WeldFolderToChassis(folder, chassis)
+	for _, part in folder:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Anchored = false
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = chassis
+			weld.Part1 = part
+			weld.Parent = part
+		end
+	end
+end
+
 function VehiclePhysics.GetWheelPrimaryPart(wheelInstance)
 	if wheelInstance:IsA("Model") then
 		assert(wheelInstance.PrimaryPart ~= nil, "Wheel model " .. wheelInstance:GetFullName() .. " needs a PrimaryPart set")
@@ -264,7 +281,10 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		end
 	end
 
-	local sound = carPrim:FindFirstChild("Sound")
+	-- Searched recursively (not just directly on the Chassis) since the engine
+	-- sound now lives under Engine/<enginePart>/Sound instead, so it comes
+	-- from the actual engine part rather than the chassis.
+	local sound = carModel:FindFirstChild("Sound", true)
 	if sound then
 		sound.PlaybackSpeed = 0.8 + carPrim.AssemblyLinearVelocity.Magnitude / config.MaxSpeed
 	end
