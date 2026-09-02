@@ -14,10 +14,11 @@ local wheelRadius = 1.5
 local Stiffness = 100
 local Damper = 5
 
-local wheelFriction = 5
+local wheelFriction = 10
 local torque = 10
 local maxSpeed = 50
 local steerAngle = 30
+local brakeStrength = 10 -- how hard the car auto-brakes when nobody's pressing W/S
 
 local smoothSteer = 0
 
@@ -69,7 +70,21 @@ local function onCharacterAdded(character)
                             local LocalVelocity = RotationsOnlyWhereDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
                             local XForce = RotationsOnlyWhereDirCFrame.RightVector * -LocalVelocity.x * wheelFriction
-                            local ZForce = RotationsOnlyWhereDirCFrame.LookVector * seatPart.ThrottleFloat * torque * (1 - math.min(1, math.abs(LocalVelocity.z)/ maxSpeed)) -- Reduce forward force when steering
+
+                            local ZForce
+                            if seatPart.ThrottleFloat ~= 0 then
+                                ZForce = RotationsOnlyWhereDirCFrame.LookVector * seatPart.ThrottleFloat * torque * (1 - math.min(1, math.abs(LocalVelocity.z)/ maxSpeed)) -- Reduce forward force when steering
+                            else
+                                -- Auto-brake: cancel forward/backward speed the same way XForce
+                                -- always cancels sideways speed. Without this, letting go of
+                                -- W/S applies zero force at all (ThrottleFloat * torque = 0),
+                                -- so the car just coasts forever instead of coming to a stop.
+                                -- NOTE: unlike RightVector, LookVector corresponds to the local
+                                -- -Z axis, not +Z - so LocalVelocity.z is already the negative
+                                -- of forward speed. Do NOT negate it again here (that produces
+                                -- a force in the direction of travel, not opposing it).
+                                ZForce = RotationsOnlyWhereDirCFrame.LookVector * LocalVelocity.z * brakeStrength
+                            end
                             SpringLengthMemory[wheelName] = SpringLength
 
                             carPrim:ApplyImpulseAtPosition(SuspensionForceVec3 + XForce + ZForce, rayOrigin)
@@ -88,6 +103,13 @@ local function onCharacterAdded(character)
             end
         end
     end)
+
+    game.ContextActionService:BindAction("lightButton", function(n, istate, iobject)
+        if humanoid.SeatPart and istate == Enum.UserInputState.Begin then
+            -- game.ReplicatedStorage.SwitchLight:FireServer()
+        end  
+    end, false, Enum.KeyCode.L)
+
 
     local WheelRotations = {}
 

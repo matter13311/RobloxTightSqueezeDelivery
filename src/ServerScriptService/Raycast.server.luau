@@ -60,6 +60,16 @@ local Damper = 2
 
 local wheelFriction = 5
 
+
+-- game.ReplicatedStorage.SwitchLight.OnServerEvent:Connect(function(player)
+--     if player.Character and player.Character.Humanoid.SeatPart and player.Character.Humanoid.SeatPart:FindFirstAncestor('Vehicles') then
+--         local partsModel = player.Character.SeatPart:FindFirstOfClass('Model').Model
+--         partsModel.H1.Light.Enabled = not partsModel.H1.Light.Enabled
+--         partsModel.T2.Light.Enabled = partsModel.H1.Light.Enabled
+--     end
+-- end)
+
+
 while true do
     local delta = game["Run Service"].Heartbeat:Wait()
     for _, carModel in pairs(ExistingCarsTable) do
@@ -98,10 +108,18 @@ while true do
                     local LocalVelocity = RotationsOnlyWhereDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
                     local XForce = carCFrame.RightVector * -LocalVelocity.x * wheelFriction
+                    -- The server never drives a car (nobody's pressing anything while it's
+                    -- parked), so unlike the client it always brakes forward/backward too -
+                    -- otherwise a car handed back with leftover speed would coast forever.
+                    -- NOTE: LookVector is the local -Z axis (not +Z like RightVector is +X),
+                    -- so LocalVelocity.z is already the negative of forward speed - don't
+                    -- negate it again, or this pushes further in the direction of travel
+                    -- instead of opposing it.
+                    local ZForce = carCFrame.LookVector * LocalVelocity.z * wheelFriction
 
                     DisCarSpringLength[wheelName] = SpringLength
 
-                    carPrim:ApplyImpulseAtPosition(SuspensionForceVec3 + XForce, rayOrigin)
+                    carPrim:ApplyImpulseAtPosition(SuspensionForceVec3 + XForce + ZForce, rayOrigin)
 
                 end
 
