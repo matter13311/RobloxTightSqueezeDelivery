@@ -1,40 +1,50 @@
--- The drivetrain between the player's pedals and VehiclePhysics.Step.
+-- The drivetrain between the player's two keys and VehiclePhysics.Step.
 --
 -- VehiclePhysics deliberately knows nothing about gears: it takes a signed
--- throttle, a torque multiplier and a top speed, and that's the entire
--- interface. Everything about WHICH gear that is - the R/N/D selector, the
--- automatic box inside D, the dead window during a shift, the revs the
--- engine sound follows - lives here, so the suspension/grip loop stays the
--- one thing it already was.
+-- throttle, a brake, a torque multiplier and a top speed, and that's the
+-- entire interface. Everything about WHICH gear that is - the direction the
+-- car is in, the automatic box inside D, the dead window during a shift, the
+-- revs the engine sound follows - lives here, so the suspension/grip loop
+-- stays the one thing it already was.
 --
--- Two layers, and it matters that they're separate:
---   * The SELECTOR (R / N / D) is the player's, changed only by Q and E.
+-- There are only two controls, and no gear lever at all:
+--
+--   W   go forwards          S   brake, then reverse
+--
+-- Three layers, and it matters that they're separate:
+--   * The DIRECTION (R / D) is chosen automatically from how the car is
+--     already moving and which key is held. The player never selects it.
 --   * The GEAR (1..#Gears) is the box's own business, and only exists inside
---     D. The player never picks it; it shifts itself on road speed.
+--     D. It shifts itself on road speed.
+--   * The PEDALS are derived from the two keys, and what S means depends on
+--     the direction: in D it's the brake, in R it's the gas.
+--
+-- The direction flip is what makes this work without a lever. S brakes the
+-- car normally; only once the car is fully stopped AND S is still held for
+-- AutoReverseDelay does it drop into reverse. That delay is the whole trick -
+-- without it, braking to a halt would fling you backwards the instant you
+-- touched zero, and with it "brake" and "reverse" can share one key without
+-- ever being ambiguous.
 --
 -- Tuning lives in each car's Configs/<name>.luau under `Transmission` - see
 -- VehiclePhysics.DefaultTransmission for what every key means.
 
 local Gearbox = {}
 
--- Ordered low-to-high, which is what makes "E shifts up, Q shifts down" a
--- single index step rather than a lookup table of special cases.
-local SELECTOR_ORDER = { "R", "N", "D" }
+-- Display order, left to right, on the dashboard. There is no neutral: with
+-- no lever to leave it in, a neutral the player can't select and can't get
+-- out of would only ever be a way for the car to feel broken.
+local SELECTOR_ORDER = { "R", "D" }
 Gearbox.SelectorOrder = SELECTOR_ORDER
 
-local SELECTOR_INDEX = {}
-for index, name in SELECTOR_ORDER do
-	SELECTOR_INDEX[name] = index
-end
-
--- Which way the car is driven in each selector position. This is the whole
--- reason S no longer reverses: direction comes from the GEAR, never from the
--- pedal, so W is always "gas" and its sign is decided here.
-local SELECTOR_DIRECTION = { R = -1, N = 0, D = 1 }
+-- Which way the car is driven in each direction. The sign lives here rather
+-- than on the pedal, which is why W is never "backwards" and S is never
+-- "negative throttle" - the gear decides, the key just asks for power.
+local SELECTOR_DIRECTION = { R = -1, D = 1 }
 
 function Gearbox.new(config)
 	local transmission = config.Transmission
-	local starting = SELECTOR_INDEX[transmission.StartingGear] and transmission.StartingGear or "N"
+	local starting = if SELECTOR_DIRECTION[transmission.StartingGear] then transmission.StartingGear else "D"
 	return {
 		Selector = starting,
 		Gear = 1, -- index into Transmission.Gears; only meaningful while Selector == "D"
@@ -44,43 +54,30 @@ function Gearbox.new(config)
 		PendingGear = nil,
 		ShiftTimeRemaining = 0,
 		Rpm = transmission.IdleRpm,
-		-- Set for one frame whenever a shift starts, so the caller can play a
-		-- sound without the gearbox needing to know what a Sound is.
+		-- How long the "other" key has been held while stopped. Reaching
+		-- AutoReverseDelay flips the direction.
+		DirectionHold = 0,
+		DirectionHoldProgress = 0, -- 0-1, so the dashboard can show the flip coming
+		BrakeInput = 0, -- ramped pedal position, not the raw key
+		-- Set for one frame when a shift happens, so the caller can play a
+		-- sound without the gearbox needing to know what a Sound is. The two
+		-- are separate because they are different events with different
+		-- sounds: the box changing its own gear, versus the car changing
+		-- which way it is pointed.
 		ShiftedThisFrame = false,
+		DirectionChangedThisFrame = false,
 	}
 end
 
--- Q and E. Returns true if the selector actually moved (so the caller only
--- plays the shift sound on a real change, not on Q held at the R end).
-function Gearbox.ShiftSelector(state, direction)
-	local index = SELECTOR_INDEX[state.Selector]
-	local newIndex = math.clamp(index + direction, 1, #SELECTOR_ORDER)
-	if newIndex == index then
-		return false
-	end
-
-	state.Selector = SELECTOR_ORDER[newIndex]
-	-- Any selector change drops the box back to first and cancels a shift in
-	-- progress. Without the reset, going D -> N -> D at speed would re-engage
-	-- whatever gear you happened to leave in, and going D -> R would leave a
-	-- forward gear's ratio driving the car backwards.
-	state.Gear = 1
-	state.PendingGear = nil
-	state.ShiftTimeRemaining = 0
-	return true
-end
-
--- The gear currently PROVIDING drive, or nil while mid-shift / in neutral.
+-- The gear currently PROVIDING drive, or nil while mid-shift.
 local function activeGear(state, transmission)
 	if state.ShiftTimeRemaining > 0 then
 		return nil -- between gears: nothing is engaged
 	end
 	if state.Selector == "R" then
 		return transmission.Reverse
-	elseif state.Selector == "D" then
-		return transmission.Gears[state.Gear]
 	end
-	return nil -- neutral
+	return transmission.Gears[state.Gear]
 end
 
 local function startShift(state, transmission, targetGear)
@@ -89,15 +86,23 @@ local function startShift(state, transmission, targetGear)
 	state.ShiftedThisFrame = true
 end
 
--- Call once per physics frame, before VehiclePhysics.Step. `speed` is the
--- car's road speed in studs/s (unsigned), `gas` is 0..1 from W.
+-- Call once per physics frame, before VehiclePhysics.Step.
+--   signedSpeed  studs/s along the car's own forward axis: positive means
+--                travelling forwards, negative backwards. Signed, not
+--                magnitude, because "am I still rolling forwards?" is
+--                exactly the question the direction flip has to answer.
+--   forwardKey   W is down
+--   backKey      S is down
 --
--- Returns the drive numbers Step wants, so the caller can splice them
--- straight into its input table.
-function Gearbox.Update(state, config, delta, speed, gas)
+-- Returns the numbers Step wants, so the caller can splice them straight
+-- into its input table.
+function Gearbox.Update(state, config, delta, signedSpeed, forwardKey, backKey)
 	local transmission = config.Transmission
 	local gears = transmission.Gears
 	state.ShiftedThisFrame = false
+	state.DirectionChangedThisFrame = false
+
+	local speed = math.abs(signedSpeed)
 
 	if state.ShiftTimeRemaining > 0 then
 		state.ShiftTimeRemaining -= delta
@@ -106,6 +111,54 @@ function Gearbox.Update(state, config, delta, speed, gas)
 			state.Gear = state.PendingGear or state.Gear
 			state.PendingGear = nil
 		end
+	end
+
+	-- What the two keys mean right now. In D, W is the gas and S is the
+	-- brake; in R they swap over. Everything below is written in terms of
+	-- "go" and "stop" so neither the pedals nor the gearbox has to special
+	-- case which way the car happens to be pointed.
+	local goKey = if state.Selector == "D" then forwardKey else backKey
+	local stopKey = if state.Selector == "D" then backKey else forwardKey
+
+	-- Direction flip. The timer only runs while the car is genuinely stopped,
+	-- so braking from speed always brakes first - the count does not even
+	-- start until the car has come to rest, and only then does continuing to
+	-- hold the key mean "and now go the other way". `not goKey` means holding
+	-- both keys never flips you, it just brakes.
+	if stopKey and not goKey and speed <= transmission.StoppedSpeed then
+		state.DirectionHold += delta
+		if state.DirectionHold >= transmission.AutoReverseDelay then
+			state.Selector = if state.Selector == "D" then "R" else "D"
+			-- Whatever gear the forward box was in is meaningless now.
+			state.Gear = 1
+			state.PendingGear = nil
+			state.ShiftTimeRemaining = 0
+			state.DirectionHold = 0
+			state.DirectionChangedThisFrame = true
+			-- The key the player is holding has just changed meaning under
+			-- them: the S that was braking is now the gas. Re-read both, so
+			-- the car pulls away on this frame instead of sitting still until
+			-- they let go and press it again.
+			goKey = if state.Selector == "D" then forwardKey else backKey
+			stopKey = if state.Selector == "D" then backKey else forwardKey
+		end
+	else
+		state.DirectionHold = 0
+	end
+	state.DirectionHoldProgress = math.clamp(state.DirectionHold / math.max(transmission.AutoReverseDelay, 0.001), 0, 1)
+
+	-- Brake wins over gas, so holding both is always the safe outcome.
+	local gas = if goKey and not stopKey then 1 else 0
+	local targetBrake = if stopKey then 1 else 0
+
+	-- Pedal travel. The keys are digital, so without this the brake goes from
+	-- nothing to maximum in a single frame and even a tap reads as standing
+	-- on it. Releasing is instant - a real pedal comes back up as fast as you
+	-- lift your foot off it.
+	if targetBrake > state.BrakeInput then
+		state.BrakeInput = math.min(targetBrake, state.BrakeInput + delta / math.max(config.BrakeRampTime, 0.001))
+	else
+		state.BrakeInput = targetBrake
 	end
 
 	-- Top speed of forward gear `index`, in studs/s.
@@ -125,9 +178,9 @@ function Gearbox.Update(state, config, delta, speed, gas)
 		state.ShiftTimeRemaining = 0
 	end
 
-	-- The automatic box. Only D has one - R is a single gear and N drives
-	-- nothing - and it only shifts while a gear is actually engaged, so a
-	-- shift can't be interrupted halfway by another one.
+	-- The automatic box. Only D has one (R is a single gear), and it only
+	-- shifts while a gear is actually engaged, so a shift cannot be
+	-- interrupted halfway by another one.
 	if state.Selector == "D" and state.ShiftTimeRemaining == 0 then
 		if state.Gear < #gears and speed >= gearTopSpeed(state.Gear) * transmission.ShiftUpAt then
 			startShift(state, transmission, state.Gear + 1)
@@ -150,12 +203,12 @@ function Gearbox.Update(state, config, delta, speed, gas)
 	-- rather than being measured against the car's whole speed range (which
 	-- would read as an implausible plunge to idle on every single shift).
 	local rpmGear = gear
-	if not rpmGear and state.Selector ~= "N" then
+	if not rpmGear then
 		rpmGear = if state.Selector == "R"
 			then transmission.Reverse
 			else gears[state.PendingGear or state.Gear]
 	end
-	local rpmGearMaxSpeed = if rpmGear then rpmGear.SpeedFraction * config.MaxSpeed else config.MaxSpeed
+	local rpmGearMaxSpeed = rpmGear.SpeedFraction * config.MaxSpeed
 
 	-- Revs are measured against the speed this gear SHIFTS at, not the speed
 	-- it would asymptotically top out at, so a gear reaches redline exactly
@@ -164,34 +217,22 @@ function Gearbox.Update(state, config, delta, speed, gas)
 	-- range and never reach the top of the tacho in any gear, and the engine
 	-- note would have nowhere near the same climb-and-drop shape.
 	--
-	-- The top gear and reverse are the exception: nothing shifts out of
-	-- them, so they use their full speed range and redline at their own
-	-- limit rather than pinning early and going flat for the rest of it.
+	-- The top gear and reverse are the exception: nothing shifts out of them,
+	-- so they use their full speed range and redline at their own limit
+	-- rather than pinning early and going flat for the rest of it.
 	local isLastForwardGear = state.Selector == "D" and (state.PendingGear or state.Gear) >= #gears
 	local rpmSpan = if isLastForwardGear or state.Selector == "R" then 1 else transmission.ShiftUpAt
 
-	local targetRpm
-	local revRate = transmission.RpmSmoothing
-	if state.Selector == "N" then
-		-- Out of gear the engine isn't tied to the wheels, so the pedal revs
-		-- it directly - but capped well short of redline and climbing lazily.
-		-- Revving to the limiter in N sounds identical to flooring it in gear,
-		-- which reads as "the car is broken" rather than "you're in neutral";
-		-- a low, slow, obviously-different note is the hint.
-		targetRpm = math.max(transmission.IdleRpm, gas * transmission.NeutralMaxRpm)
-		revRate = transmission.NeutralRevRate
-	else
-		targetRpm = math.clamp(speed / (math.max(rpmGearMaxSpeed, 1) * rpmSpan), 0, 1)
-		-- Sitting on the gas at a standstill should still raise the revs,
-		-- otherwise the engine sounds asleep for the first moment of a launch.
-		targetRpm = math.max(targetRpm, transmission.IdleRpm + gas * 0.15)
-		if state.ShiftTimeRemaining > 0 then
-			-- Mid-shift the engine is unloaded, so the revs sag and then pick
-			-- back up in the new gear - the audible half of a gear change.
-			targetRpm *= transmission.ShiftRpmDrop
-		end
+	local targetRpm = math.clamp(speed / (math.max(rpmGearMaxSpeed, 1) * rpmSpan), 0, 1)
+	-- Sitting on the gas at a standstill should still raise the revs,
+	-- otherwise the engine sounds asleep for the first moment of a launch.
+	targetRpm = math.max(targetRpm, transmission.IdleRpm + gas * 0.15)
+	if state.ShiftTimeRemaining > 0 then
+		-- Mid-shift the engine is unloaded, so the revs sag and then pick
+		-- back up in the new gear - the audible half of a gear change.
+		targetRpm *= transmission.ShiftRpmDrop
 	end
-	state.Rpm += (targetRpm - state.Rpm) * math.min(1, delta * revRate)
+	state.Rpm += (targetRpm - state.Rpm) * math.min(1, delta * transmission.RpmSmoothing)
 
 	-- Torque converter: full StallTorqueMultiplier at a dead stop, fading to
 	-- 1x by StallSpeed. This is what lets Torque be tuned low enough for
@@ -205,22 +246,24 @@ function Gearbox.Update(state, config, delta, speed, gas)
 	end
 
 	return {
-		-- Signed: W in reverse arrives at Step as a negative throttle. Zero
-		-- whenever no gear is engaged, which is what actually cuts the power
-		-- during a shift and makes it a pause rather than a ratio swap.
+		-- Signed: holding S in reverse arrives at Step as a negative
+		-- throttle. Zero whenever no gear is engaged, which is what actually
+		-- cuts the power during a shift and makes it a pause rather than a
+		-- ratio swap.
 		Throttle = if gear then gas * SELECTOR_DIRECTION[state.Selector] else 0,
+		Brake = state.BrakeInput,
 		TorqueMultiplier = if gear then gear.Ratio * converter else 0,
 		GearMaxSpeed = gearMaxSpeed,
 		Rpm = state.Rpm,
 	}
 end
 
--- What the dashboard shows: "R", "N", or the current forward gear's number
--- in D. Mid-shift it reads the gear being engaged, so the display leads the
--- power by a fraction of a second exactly like a real shift indicator.
+-- What the dashboard shows: "R", or the current forward gear's number in D.
+-- Mid-shift it reads the gear being engaged, so the display leads the power
+-- by a fraction of a second exactly like a real shift indicator.
 function Gearbox.DisplayGear(state)
-	if state.Selector ~= "D" then
-		return state.Selector
+	if state.Selector == "R" then
+		return "R"
 	end
 	return tostring(state.PendingGear or state.Gear)
 end

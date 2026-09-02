@@ -67,7 +67,7 @@ return {
 	-- MaxSpeed. That trade is what makes a gearbox feel like one instead of a
 	-- free power boost, and it's why the last gear MUST be SpeedFraction 1.0.
 	Transmission = {
-		StartingGear = "N", -- you start in neutral and shift to D with E, like getting into a real truck. Change to "D" if you'd rather players just drive off
+		StartingGear = "D", -- sit down and press W. There is no neutral any more, and no lever to move
 		ShiftTime = 0.45, -- a truck's box is slow and deliberate; drive is fully cut for this whole window
 		ShiftUpAt = 0.62, -- shifts land at 14.9 / 22.3 / 31.0 / 40.3 / 50.8 studs/s
 		ShiftDownAt = 0.42,
@@ -82,7 +82,11 @@ return {
 		StallTorqueMultiplier = 3.5,
 		StallSpeed = 3,
 
-		NeutralMaxRpm = 0.35, -- a truck idling in neutral shouldn't sound anywhere near redline
+		-- A loaded truck should take a beat to commit to changing direction,
+		-- and it stops the car flipping into reverse the moment a player
+		-- brakes a fraction too long at a drop-off.
+		AutoReverseDelay = 0.55,
+
 		MaxPitch = 1.35, -- a diesel truck should never sound like it is screaming; below DEFAULTS' 1.45
 
 		-- 1st stretched again (0.16 -> 0.20 -> 0.24) so it covers real ground:

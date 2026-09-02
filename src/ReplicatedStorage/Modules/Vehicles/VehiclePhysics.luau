@@ -118,7 +118,19 @@ VehiclePhysics.Defaults = DEFAULTS
 --                 The LAST gear should be 1.0, or the car can never reach its
 --                 own MaxSpeed.
 local DEFAULT_TRANSMISSION = {
-	StartingGear = "N", -- "R", "N" or "D" - what the selector reads when you sit down
+	StartingGear = "D", -- "R" or "D" - what the car is in when you sit down. There is no neutral: the direction is chosen automatically from the keys, so a gear the player can't select and can't leave would only ever read as the car being broken
+
+	-- Automatic direction change. There is no gear lever - S brakes the car,
+	-- and only once it is fully stopped AND S is STILL held for this long does
+	-- the car drop into reverse (and the same the other way, holding W to go
+	-- back into drive). The timer only counts while the car is stopped, so
+	-- braking from speed always brakes first.
+	--
+	-- Too short and braking to a halt at a delivery point flings you
+	-- backwards before you've let go; too long and reversing out of somewhere
+	-- feels unresponsive. Half a second is deliberate without being a wait.
+	AutoReverseDelay = 0.5,
+	StoppedSpeed = 1.5, -- studs/s under which the car counts as "stopped" for that flip. Must be above the speed the low-speed brake controller settles at, or the flip can never trigger
 	ShiftTime = 0.35, -- seconds an automatic upshift/downshift takes. Drive torque is cut to zero for this whole window, which is the pause you hear and feel between gears
 	-- Upshift once speed reaches this fraction of the CURRENT gear's top
 	-- speed. Not as late as it looks: drive force fades linearly to zero at
@@ -149,15 +161,6 @@ local DEFAULT_TRANSMISSION = {
 	-- but enough grunt to climb a kerb? Lower Torque and raise this.
 	StallTorqueMultiplier = 3,
 	StallSpeed = 3, -- studs/s over which the multiplication fades out. Keep this well under the first upshift, or the boost carries the car most of the way through 1st gear and 1st feels like it never happened
-
-	-- Neutral revs. In N the engine isn't connected to the wheels, so the gas
-	-- pedal revs it directly - but letting it wind to redline makes N sound
-	-- exactly like flooring it in gear, and a player who shifted into N by
-	-- accident just hears a screaming engine and assumes the car is broken.
-	-- Capping the revs low and letting them climb slowly makes neutral sound
-	-- obviously different from drive, which is the hint that you're in it.
-	NeutralMaxRpm = 0.4,
-	NeutralRevRate = 2, -- replaces RpmSmoothing while in N. Lower = lazier throttle response, which also reads as "not connected to anything"
 
 	Gears = {
 		{ Ratio = 2.6, SpeedFraction = 0.24 },

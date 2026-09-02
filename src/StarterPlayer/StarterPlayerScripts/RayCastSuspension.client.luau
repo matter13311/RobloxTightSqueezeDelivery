@@ -17,8 +17,6 @@ local player = Players.LocalPlayer
 local EXIT_MARKER_NAME = "DriverExit"
 
 local HANDBRAKE_ACTION = "VehicleHandbrake"
-local SHIFT_UP_ACTION = "VehicleShiftUp"
-local SHIFT_DOWN_ACTION = "VehicleShiftDown"
 local EXIT_ACTION = "VehicleExit"
 
 -- Per-vehicle state for the wheel VISUALS only (every client tracks this for
@@ -170,23 +168,6 @@ local function bindDrivingControls()
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
 
-	local function shiftHandler(direction)
-		return function(_, inputState)
-			if inputState == Enum.UserInputState.Begin and session then
-				if Gearbox.ShiftSelector(session.Gearbox, direction) then
-					-- The lever, not the gearbox: a deliberate driver action
-					-- gets its own louder sound, distinct from the automatic
-					-- changes the box makes on its own inside D.
-					playSound(session.SelectorSound)
-				end
-			end
-			return Enum.ContextActionResult.Sink
-		end
-	end
-
-	ContextActionService:BindAction(SHIFT_UP_ACTION, shiftHandler(1), false, Enum.KeyCode.E)
-	ContextActionService:BindAction(SHIFT_DOWN_ACTION, shiftHandler(-1), false, Enum.KeyCode.Q)
-
 	ContextActionService:BindAction(EXIT_ACTION, function(_, inputState)
 		if inputState == Enum.UserInputState.Begin then
 			tryExitVehicle()
@@ -196,7 +177,7 @@ local function bindDrivingControls()
 end
 
 local function unbindDrivingControls()
-	for _, action in { HANDBRAKE_ACTION, SHIFT_UP_ACTION, SHIFT_DOWN_ACTION, EXIT_ACTION } do
+	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION } do
 		ContextActionService:UnbindAction(action)
 	end
 end
@@ -258,7 +239,6 @@ local function beginDrive(humanoid, seatPart)
 		Dashboard = VehicleDashboard.new(player),
 		Handbrake = false,
 		DriveThrottle = 0,
-		BrakeInput = 0, -- ramped pedal position, not the raw S key
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
 		SelectorSound = createSound(chassis, "GearSelectorSound", config.SelectorSoundId, config.SelectorSoundVolume),
@@ -290,33 +270,31 @@ local function beginDrive(humanoid, seatPart)
 			break
 		end
 
-		-- The seat still reports W as +1 and S as -1, but they're no longer
-		-- two ends of one axis: W is the gas pedal in whatever direction the
-		-- GEAR selects, and S is only ever the brake. Reversing is a gear
-		-- change (Q to R), not a pedal.
+		-- Raw key state, nothing more. What W and S actually DO is the
+		-- gearbox's decision, because it depends on which way the car is
+		-- currently pointed - in D, S is the brake; in R, S is the gas.
 		local throttleFloat = seatPart.ThrottleFloat
-		local gas = math.max(0, throttleFloat)
+		local forwardKey = throttleFloat > 0.1
+		local backKey = throttleFloat < -0.1
 
-		-- S is a digital key, so without this the brake goes from nothing to
-		-- maximum in a single frame and even a tap reads as standing on the
-		-- pedal. Ramping it over BrakeRampTime gives the pedal some travel:
-		-- a tap is a light brake, holding it is a full stop. Releasing is
-		-- instant - a real pedal comes back up as fast as you lift your foot.
-		local targetBrake = math.max(0, -throttleFloat)
-		if targetBrake > mySession.BrakeInput then
-			mySession.BrakeInput = math.min(targetBrake, mySession.BrakeInput + delta / math.max(config.BrakeRampTime, 0.001))
-		else
-			mySession.BrakeInput = targetBrake
-		end
-		local brake = mySession.BrakeInput
+		-- SIGNED speed along the car, not magnitude. The gearbox needs to
+		-- know whether the car is still rolling forwards to decide whether S
+		-- means "keep braking" or "now go backwards", and it must be measured
+		-- along the car's own axis - sliding sideways with the handbrake up
+		-- isn't road speed, and on magnitude the box would happily upshift
+		-- through a skid and the speedo would read the slide.
+		local signedSpeed = chassis.CFrame.LookVector:Dot(chassis.AssemblyLinearVelocity)
+		local speed = math.abs(signedSpeed)
 
-		-- Speed ALONG the car, not raw velocity magnitude. Sliding sideways
-		-- with the handbrake up isn't road speed: on magnitude the box would
-		-- happily upshift through a skid, and the speedo would read the slide.
-		local speed = math.abs(chassis.CFrame.LookVector:Dot(chassis.AssemblyLinearVelocity))
-		local drive = Gearbox.Update(mySession.Gearbox, config, delta, speed, gas)
+		local drive = Gearbox.Update(mySession.Gearbox, config, delta, signedSpeed, forwardKey, backKey)
 		if mySession.Gearbox.ShiftedThisFrame then
 			playSound(mySession.ShiftSound)
+		end
+		if mySession.Gearbox.DirectionChangedThisFrame then
+			-- Swapping between forwards and backwards is the closest thing
+			-- left to a lever movement, so it keeps the louder, more
+			-- mechanical sound rather than the quiet automatic-shift one.
+			playSound(mySession.SelectorSound)
 		end
 		-- Handed to the wheel-visual render step, which runs on its own clock
 		-- and has no other way to know what the gearbox decided this frame.
@@ -325,7 +303,7 @@ local function beginDrive(humanoid, seatPart)
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
 			Steer = seatPart.SteerFloat,
-			Brake = brake,
+			Brake = drive.Brake,
 			Handbrake = mySession.Handbrake,
 			TorqueMultiplier = drive.TorqueMultiplier,
 			GearMaxSpeed = drive.GearMaxSpeed,

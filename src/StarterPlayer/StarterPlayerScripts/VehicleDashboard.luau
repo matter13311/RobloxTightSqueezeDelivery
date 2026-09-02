@@ -26,7 +26,6 @@ local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
 -- do when you touch the gas without reading a single character.
 local SELECTOR_COLOR = {
 	R = Color3.fromRGB(232, 138, 60),
-	N = Color3.fromRGB(120, 130, 148),
 	D = Color3.fromRGB(86, 200, 128),
 }
 
@@ -92,17 +91,19 @@ function Dashboard.new(player)
 	-- and the number is the part that's actually changing while you drive.
 	local gearBox = newFrame(panel, "GearBox", UDim2.fromOffset(14, 14), UDim2.fromOffset(88, 88), Color3.fromRGB(28, 31, 38))
 	corner(gearBox, 10)
-	local gearStroke = stroke(gearBox, SELECTOR_COLOR.N, 2)
+	local gearStroke = stroke(gearBox, SELECTOR_COLOR.D, 2)
 	self.GearStroke = gearStroke
 
-	local gearLabel = newLabel(gearBox, "Gear", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "N", 46, SELECTOR_COLOR.N, Enum.Font.GothamBold)
+	local gearLabel = newLabel(gearBox, "Gear", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "1", 46, SELECTOR_COLOR.D, Enum.Font.GothamBold)
 	self.GearLabel = gearLabel
 
-	-- Selector pills: R N D, left to right, matching Gearbox.SelectorOrder so
-	-- E always moves the highlight right and Q always moves it left.
+	-- Direction pills: R and D. The player never selects these - the car
+	-- picks its own direction from the keys - so this is a readout, not a
+	-- control. It still earns its space: knowing which way the truck is about
+	-- to move before you touch a key is the whole point of showing it.
 	self.Pills = {}
-	local pillWidth = 66
 	local pillGap = 8
+	local pillWidth = (206 - pillGap * (#Gearbox.SelectorOrder - 1)) / #Gearbox.SelectorOrder
 	for index, name in Gearbox.SelectorOrder do
 		local x = 116 + (index - 1) * (pillWidth + pillGap)
 		local pill = newFrame(panel, "Pill" .. name, UDim2.fromOffset(x, 14), UDim2.fromOffset(pillWidth, 30), Color3.fromRGB(28, 31, 38))
@@ -141,7 +142,7 @@ function Dashboard.new(player)
 	newLabel(handbrakeBadge, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "HANDBRAKE", 12, Color3.fromRGB(255, 236, 236), Enum.Font.GothamBold)
 	self.HandbrakeBadge = handbrakeBadge
 
-	self.HintText = "Q / E  gear      W  gas      S  brake      SPACE  handbrake      F  exit"
+	self.HintText = "W  drive      S  brake, hold to reverse      SPACE  handbrake      F  exit"
 	status.Text = self.HintText
 
 	return self
@@ -158,11 +159,19 @@ function Dashboard:Update(gearboxState, speedStuds, handbrakeOn)
 	-- matching visual rather than the number just silently swapping over.
 	self.GearLabel.TextTransparency = if gearboxState.ShiftTimeRemaining > 0 then 0.55 else 0
 
+	-- While the player is holding the opposite key at a standstill, the
+	-- direction they're heading for lights up in proportion to how far
+	-- through AutoReverseDelay they are. It's the only feedback that the hold
+	-- is doing anything at all - without it, half a second of apparently
+	-- nothing happening reads as the car being stuck, which is exactly the
+	-- confusion the automatic box exists to avoid.
+	local pending = gearboxState.DirectionHoldProgress or 0
 	for name, pill in self.Pills do
 		local active = name == selector
-		pill.Stroke.Color = if active then SELECTOR_COLOR[name] else PANEL_EDGE
-		pill.Label.TextColor3 = if active then SELECTOR_COLOR[name] else DIM_TEXT
-		pill.Frame.BackgroundColor3 = if active then Color3.fromRGB(38, 43, 52) else Color3.fromRGB(28, 31, 38)
+		local glow = if active then 1 elseif pending > 0 then pending else 0
+		pill.Stroke.Color = PANEL_EDGE:Lerp(SELECTOR_COLOR[name], glow)
+		pill.Label.TextColor3 = DIM_TEXT:Lerp(SELECTOR_COLOR[name], glow)
+		pill.Frame.BackgroundColor3 = Color3.fromRGB(28, 31, 38):Lerp(Color3.fromRGB(38, 43, 52), glow)
 	end
 
 	local rpm = math.clamp(gearboxState.Rpm, 0, 1)
