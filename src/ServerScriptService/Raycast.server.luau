@@ -46,6 +46,12 @@ local function AddCar(carModel)
 	end
 	local attachments = VehiclePhysics.GetWheelAttachments(chassis)
 
+	-- Roblox draws its own speedometer/throttle HUD for anyone sitting in a
+	-- VehicleSeat, which sits on top of our dashboard. Set on the server so
+	-- it replicates to every player who ever sits in this car, rather than
+	-- being re-disabled per client on each sit.
+	carModel.VehicleSeat.HeadsUpDisplay = false
+
 	-- Rigidly weld static decoration (body panels, lights) to the chassis so
 	-- it rides along with suspension movement. Doors and the steering wheel
 	-- are deliberately left out - they'll get their own moving joints later.

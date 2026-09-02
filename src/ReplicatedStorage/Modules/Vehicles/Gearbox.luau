@@ -171,10 +171,15 @@ function Gearbox.Update(state, config, delta, speed, gas)
 	local rpmSpan = if isLastForwardGear or state.Selector == "R" then 1 else transmission.ShiftUpAt
 
 	local targetRpm
+	local revRate = transmission.RpmSmoothing
 	if state.Selector == "N" then
-		-- Out of gear the engine isn't tied to the wheels at all, so the
-		-- pedal revs it directly - blipping the throttle in neutral.
-		targetRpm = math.max(transmission.IdleRpm, gas)
+		-- Out of gear the engine isn't tied to the wheels, so the pedal revs
+		-- it directly - but capped well short of redline and climbing lazily.
+		-- Revving to the limiter in N sounds identical to flooring it in gear,
+		-- which reads as "the car is broken" rather than "you're in neutral";
+		-- a low, slow, obviously-different note is the hint.
+		targetRpm = math.max(transmission.IdleRpm, gas * transmission.NeutralMaxRpm)
+		revRate = transmission.NeutralRevRate
 	else
 		targetRpm = math.clamp(speed / (math.max(rpmGearMaxSpeed, 1) * rpmSpan), 0, 1)
 		-- Sitting on the gas at a standstill should still raise the revs,
@@ -186,14 +191,25 @@ function Gearbox.Update(state, config, delta, speed, gas)
 			targetRpm *= transmission.ShiftRpmDrop
 		end
 	end
-	state.Rpm += (targetRpm - state.Rpm) * math.min(1, delta * transmission.RpmSmoothing)
+	state.Rpm += (targetRpm - state.Rpm) * math.min(1, delta * revRate)
+
+	-- Torque converter: full StallTorqueMultiplier at a dead stop, fading to
+	-- 1x by StallSpeed. This is what lets Torque be tuned low enough for
+	-- gentle, deliberate acceleration without leaving the car unable to shove
+	-- itself up a kerb from rest - the shove and the acceleration are no
+	-- longer the same number.
+	local converter = 1
+	if gear then
+		local fade = math.clamp(1 - speed / math.max(transmission.StallSpeed, 0.001), 0, 1)
+		converter = 1 + (transmission.StallTorqueMultiplier - 1) * fade
+	end
 
 	return {
 		-- Signed: W in reverse arrives at Step as a negative throttle. Zero
 		-- whenever no gear is engaged, which is what actually cuts the power
 		-- during a shift and makes it a pause rather than a ratio swap.
 		Throttle = if gear then gas * SELECTOR_DIRECTION[state.Selector] else 0,
-		TorqueMultiplier = if gear then gear.Ratio else 0,
+		TorqueMultiplier = if gear then gear.Ratio * converter else 0,
 		GearMaxSpeed = gearMaxSpeed,
 		Rpm = state.Rpm,
 	}

@@ -174,7 +174,10 @@ local function bindDrivingControls()
 		return function(_, inputState)
 			if inputState == Enum.UserInputState.Begin and session then
 				if Gearbox.ShiftSelector(session.Gearbox, direction) then
-					playSound(session.ShiftSound)
+					-- The lever, not the gearbox: a deliberate driver action
+					-- gets its own louder sound, distinct from the automatic
+					-- changes the box makes on its own inside D.
+					playSound(session.SelectorSound)
 				end
 			end
 			return Enum.ContextActionResult.Sink
@@ -215,6 +218,9 @@ local function endDrive(expected)
 	if session.ShiftSound then
 		session.ShiftSound:Destroy()
 	end
+	if session.SelectorSound then
+		session.SelectorSound:Destroy()
+	end
 	if session.HandbrakeSound then
 		session.HandbrakeSound:Destroy()
 	end
@@ -252,7 +258,10 @@ local function beginDrive(humanoid, seatPart)
 		Dashboard = VehicleDashboard.new(player),
 		Handbrake = false,
 		DriveThrottle = 0,
+		BrakeInput = 0, -- ramped pedal position, not the raw S key
+
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
+		SelectorSound = createSound(chassis, "GearSelectorSound", config.SelectorSoundId, config.SelectorSoundVolume),
 		HandbrakeSound = createSound(chassis, "HandbrakeSound", config.HandbrakeSoundId, config.HandbrakeSoundVolume),
 	}
 
@@ -272,37 +281,58 @@ local function beginDrive(humanoid, seatPart)
 	while seatPart.Occupant == humanoid and session == mySession do
 		local delta = RunService.Heartbeat:Wait()
 
+		-- The condition above was true when the frame STARTED; this yield is
+		-- where the session can end underneath us. Pressing F sets
+		-- Humanoid.Sit = false, which fires Seated(false) -> endDrive() while
+		-- we're parked here, so by the time we resume `session` is nil and
+		-- every session.X below would throw. Re-check before touching it.
+		if session ~= mySession then
+			break
+		end
+
 		-- The seat still reports W as +1 and S as -1, but they're no longer
 		-- two ends of one axis: W is the gas pedal in whatever direction the
 		-- GEAR selects, and S is only ever the brake. Reversing is a gear
 		-- change (Q to R), not a pedal.
 		local throttleFloat = seatPart.ThrottleFloat
 		local gas = math.max(0, throttleFloat)
-		local brake = math.max(0, -throttleFloat)
+
+		-- S is a digital key, so without this the brake goes from nothing to
+		-- maximum in a single frame and even a tap reads as standing on the
+		-- pedal. Ramping it over BrakeRampTime gives the pedal some travel:
+		-- a tap is a light brake, holding it is a full stop. Releasing is
+		-- instant - a real pedal comes back up as fast as you lift your foot.
+		local targetBrake = math.max(0, -throttleFloat)
+		if targetBrake > mySession.BrakeInput then
+			mySession.BrakeInput = math.min(targetBrake, mySession.BrakeInput + delta / math.max(config.BrakeRampTime, 0.001))
+		else
+			mySession.BrakeInput = targetBrake
+		end
+		local brake = mySession.BrakeInput
 
 		-- Speed ALONG the car, not raw velocity magnitude. Sliding sideways
 		-- with the handbrake up isn't road speed: on magnitude the box would
 		-- happily upshift through a skid, and the speedo would read the slide.
 		local speed = math.abs(chassis.CFrame.LookVector:Dot(chassis.AssemblyLinearVelocity))
-		local drive = Gearbox.Update(session.Gearbox, config, delta, speed, gas)
-		if session.Gearbox.ShiftedThisFrame then
-			playSound(session.ShiftSound)
+		local drive = Gearbox.Update(mySession.Gearbox, config, delta, speed, gas)
+		if mySession.Gearbox.ShiftedThisFrame then
+			playSound(mySession.ShiftSound)
 		end
 		-- Handed to the wheel-visual render step, which runs on its own clock
 		-- and has no other way to know what the gearbox decided this frame.
-		session.DriveThrottle = drive.Throttle
+		mySession.DriveThrottle = drive.Throttle
 
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
 			Steer = seatPart.SteerFloat,
 			Brake = brake,
-			Handbrake = session.Handbrake,
+			Handbrake = mySession.Handbrake,
 			TorqueMultiplier = drive.TorqueMultiplier,
 			GearMaxSpeed = drive.GearMaxSpeed,
 			Rpm = drive.Rpm,
 		})
 
-		session.Dashboard:Update(session.Gearbox, speed, session.Handbrake)
+		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake)
 	end
 
 	endDrive(mySession)

@@ -40,7 +40,19 @@ local DEFAULTS = {
 	-- based on that instant's reading, then re-appears and gets snapped back
 	-- again next frame - a real, visible jitter, not just an edge case.
 	BrakeStrength = 0.3,
-	CoastDrag = 0.5, -- light drag while coasting above CoastSpeedThreshold
+	-- Drag applied when you lift off the gas above CoastSpeedThreshold, as
+	-- the FRACTION OF SPEED SHED PER SECOND: 0.08 means the car bleeds ~8% of
+	-- its speed each second, so it holds a cruise for a long time instead of
+	-- slowing the moment you stop pressing W. 1/CoastDrag is roughly the
+	-- seconds it takes to shed most of the speed, so lower = more coasting.
+	--
+	-- This used to be a raw per-FRAME impulse, which made it two things it
+	-- should never have been: framerate-dependent (a 120fps client coasted
+	-- half as far as a 60fps one) and mass-dependent (the same 0.5 shed 12%
+	-- per second on a light chassis and 1% on a heavy one). It is now scaled
+	-- by mass and by delta, so both of those cancel out and the number means
+	-- the same thing on every car and every machine.
+	CoastDrag = 0.08,
 	CoastSpeedThreshold = 3, -- studs/s
 	-- 0-1: how far down the tire forces (grip + drive/brake) are applied.
 	-- 1 = at the tire's actual ground contact patch, which is what gives the
@@ -56,25 +68,35 @@ local DEFAULTS = {
 	-- 0-1 fraction: the most decelerating force one tire can put down is
 	-- BrakeFriction * that tire's share of the car's weight. Brakes act on
 	-- every wheel, not just the driven axle, and the force is applied at the
-	-- contact patch, so hard braking pitches the nose down. Higher than
-	-- LateralGripStrength on purpose - a locked-up-hard stop should out-grip
-	-- a corner, and the clamp below means it can never brake harder than a
-	-- full stop needs, so an over-large value just means "stops in the
-	-- shortest distance the tires allow" rather than snapping backwards.
-	BrakeFriction = 1.8,
+	-- contact patch, so hard braking pitches the nose down.
+	--
+	-- The mass cancels out, which makes this directly tunable by feel:
+	--     deceleration   = BrakeFriction * workspace.Gravity   (studs/s^2)
+	--     stopping distance from v = v^2 / (2 * BrakeFriction * Gravity)
+	-- At the default Gravity of 196.2, BrakeFriction 0.6 stops a car from
+	-- 100 studs/s in 0.85s over 42 studs. Values near 1.5+ stop inside a car
+	-- length and read as hitting a wall, not braking.
+	--
+	-- Keep this above HandbrakeLockFriction/2 (the handbrake only locks one
+	-- axle, so its deceleration is halved) or the handbrake out-brakes the
+	-- brake pedal, which feels backwards to drive.
+	BrakeFriction = 0.3,
+	BrakeRampTime = 0.3, -- seconds for the pedal to travel from released to fully applied. S is a digital key, so without this a tap is indistinguishable from standing on the brake
 
 	-- Handbrake (Space). Deliberately NOT a stronger foot brake: it locks its
 	-- axle's wheels, and a locked tire is a sliding one. That means two
 	-- separate things, and the second is the whole point:
 	HandbrakeWheels = "Rear", -- "All", "Front" or "Rear" - which axle the handbrake locks. Rear is what makes the back step out
-	HandbrakeLockFriction = 0.8, -- sliding friction of a locked tire along its rolling direction. Lower than BrakeFriction: a skidding tire slows you down WORSE than a rolling one being braked, which is why locking up isn't a shortcut to stopping faster
+	HandbrakeLockFriction = 0.5, -- sliding friction of a locked tire along its rolling direction. This is PER LOCKED WHEEL, and the handbrake only locks one axle, so the car-wide deceleration it produces is half this - compare BrakeFriction directly against HandbrakeLockFriction/2, not against the raw number
 	HandbrakeGripMultiplier = 0.18, -- what fraction of its normal LateralGripStrength a locked wheel keeps. A tire already sliding lengthwise has almost nothing left to resist sideways with - this is the number that actually makes the car break loose and skid when you yank it mid-corner at speed
 
 	-- Sound assets. Per-car so a different vehicle can have its own, but they
 	-- default to the shared ones so a new car needs no audio setup at all.
 	HandbrakeSoundId = "rbxassetid://105954464235496",
-	GearShiftSoundId = "rbxassetid://5565325193",
-	ShiftSoundVolume = 0.5,
+	GearShiftSoundId = "rbxassetid://13331481802", -- the automatic box changing gear inside D, heard constantly while driving - hence the low volume
+	SelectorSoundId = "rbxassetid://5565325193", -- the driver moving the R/N/D lever with Q/E. A deliberate action, so it stays louder and more mechanical than the automatic shifts above
+	ShiftSoundVolume = 0.25,
+	SelectorSoundVolume = 0.5,
 	HandbrakeSoundVolume = 0.6,
 }
 VehiclePhysics.Defaults = DEFAULTS
@@ -112,7 +134,31 @@ local DEFAULT_TRANSMISSION = {
 	ShiftRpmDrop = 0.55, -- revs fall to this fraction mid-shift (clutch out, engine unloaded) and pick back up in the new gear - the audible "wah-WAH" of shifting
 	RpmSmoothing = 6, -- per-second rate the audible revs chase their target. Higher snaps faster
 	IdlePitch = 0.7, -- engine sound PlaybackSpeed at 0 revs...
-	MaxPitch = 2.2, -- ...and at redline. The sound now tracks REVS, not road speed, so it climbs through a gear and drops on each shift instead of rising once from a standstill to top speed
+	-- ...and at redline. PlaybackSpeed 1.0 is the sound file's own recorded
+	-- pitch, so anything much above ~1.5 is resampling the engine loop far
+	-- past what it was recorded at and starts to sound thin and synthetic.
+	-- This is the knob for "the engine screams before it shifts" - lower it.
+	MaxPitch = 1.45, -- ...and at redline. The sound now tracks REVS, not road speed, so it climbs through a gear and drops on each shift instead of rising once from a standstill to top speed
+	-- Torque converter, and the reason a heavy vehicle can pull away up a
+	-- curb without also accelerating like a sports car once it's rolling.
+	-- Torque is multiplied by StallTorqueMultiplier at a dead standstill and
+	-- fades to 1x by StallSpeed. That splits two things the raw Torque number
+	-- could not separate before: how hard the car can shove from rest (set by
+	-- Torque * gear ratio * this) and how briskly it gains speed afterwards
+	-- (set by Torque * gear ratio alone). Want slow, deliberate acceleration
+	-- but enough grunt to climb a kerb? Lower Torque and raise this.
+	StallTorqueMultiplier = 3,
+	StallSpeed = 3, -- studs/s over which the multiplication fades out. Keep this well under the first upshift, or the boost carries the car most of the way through 1st gear and 1st feels like it never happened
+
+	-- Neutral revs. In N the engine isn't connected to the wheels, so the gas
+	-- pedal revs it directly - but letting it wind to redline makes N sound
+	-- exactly like flooring it in gear, and a player who shifted into N by
+	-- accident just hears a screaming engine and assumes the car is broken.
+	-- Capping the revs low and letting them climb slowly makes neutral sound
+	-- obviously different from drive, which is the hint that you're in it.
+	NeutralMaxRpm = 0.4,
+	NeutralRevRate = 2, -- replaces RpmSmoothing while in N. Lower = lazier throttle response, which also reads as "not connected to anything"
+
 	Gears = {
 		{ Ratio = 2.6, SpeedFraction = 0.24 },
 		{ Ratio = 1.7, SpeedFraction = 0.45 },
@@ -472,7 +518,11 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			elseif math.abs(localVelocity.Z) > config.CoastSpeedThreshold then
 				-- Still going fast enough to be "coasting" - light drag only, so
 				-- momentum carries through instead of slamming to a stop.
-				longitudinalForce = wheelDirCFrame.LookVector * localVelocity.Z * config.CoastDrag
+				longitudinalForce = wheelDirCFrame.LookVector
+					* localVelocity.Z
+					* (carPrim.AssemblyMass / 4)
+					* config.CoastDrag
+					* delta
 			else
 				-- Slow enough that continuing to creep would just look stuck
 				-- rolling - fully brake to a stop. Mass-scaled and clamped to
