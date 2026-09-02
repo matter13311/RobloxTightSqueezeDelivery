@@ -8,7 +8,7 @@ return {
 	RearLateralGripStrength = 0.35, -- rear breaks loose under enough speed/turning - this is what actually drifts
 	WheelSpinBoost = 40, -- visual burnout/wheelspin on the rear wheels under throttle
 	Torque = 110, -- more power to break traction and hold a slide
-	BrakeStrength = 3, -- softer braking, doesn't snap straight the instant you let off
+	BrakeStrength = 0.2, -- 0-1: softer braking, doesn't snap straight the instant you let off
 	SteerAngle = 35,
 	MaxSpeed = 100,
 	Stiffness = 100, -- softer suspension, allows for more body roll and weight transfer

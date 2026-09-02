@@ -23,7 +23,7 @@ local DEFAULTS = {
 	Torque = 10,
 	MaxSpeed = 50,
 	SteerAngle = 30,
-	BrakeStrength = 10, -- how hard it brakes once nearly stopped
+	BrakeStrength = 1, -- 0-1: fraction of a full stop applied per frame once braking. 1 = stops dead instantly, lower = a more gradual stop
 	CoastDrag = 0.5, -- light drag while coasting above CoastSpeedThreshold
 	CoastSpeedThreshold = 3, -- studs/s
 }
@@ -220,7 +220,21 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			else
 				-- No driver (always brake), or slow enough that continuing to
 				-- creep would just look stuck rolling - fully brake to a stop.
-				longitudinalForce = wheelDirCFrame.LookVector * localVelocity.Z * config.BrakeStrength
+				-- Mass-scaled and clamped to the exact impulse a full stop
+				-- needs (BrakeStrength is 0-1, the fraction of that applied
+				-- per frame) - same fix as lateral grip: an unscaled raw
+				-- coefficient here only cancels BrakeStrength/mass of the
+				-- velocity each frame, which for a real car's mass is a weak
+				-- handful of percent - nowhere near enough to hold still
+				-- against a slope or any other small continuous push, so a
+				-- "parked, always braking" car would still slowly creep.
+				local neededLongitudinalImpulse = localVelocity.Z * (carPrim.AssemblyMass / 4)
+				local longitudinalImpulseMagnitude = math.clamp(
+					neededLongitudinalImpulse * config.BrakeStrength,
+					-math.abs(neededLongitudinalImpulse),
+					math.abs(neededLongitudinalImpulse)
+				)
+				longitudinalForce = wheelDirCFrame.LookVector * longitudinalImpulseMagnitude
 			end
 
 			state.SpringLengthMemory[wheelName] = springLength

@@ -17,21 +17,35 @@ local function AddCar(carModel)
 	end
 	local attachments = VehiclePhysics.GetWheelAttachments(chassis)
 
-	ExistingCars[carModel] = {
+	local car = {
 		Attachments = attachments,
 		State = VehiclePhysics.NewState(),
+		Occupied = false,
+		-- os.clock() timestamp the server is allowed to resume simulating
+		-- this car after someone gets out (see the Occupant handler below).
+		ResumeAfter = 0,
 	}
+	ExistingCars[carModel] = car
 
 	chassis:SetNetworkOwner(nil) -- server controls physics for parked cars
 
 	carModel.VehicleSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
 		local occupant = carModel.VehicleSeat.Occupant
 		if occupant then
+			car.Occupied = true
 			local player = Players:GetPlayerFromCharacter(occupant.Parent)
 			if player then
 				chassis:SetNetworkOwner(player)
 			end
 		else
+			car.Occupied = false
+			-- Give network ownership a moment to actually settle back to the
+			-- server before we resume applying forces - SetNetworkOwner(nil)
+			-- is a request that has to replicate, not an instant switch, and
+			-- acting on stale state during that window is what launches the
+			-- car in a random direction right after someone gets out. This
+			-- matches the client's own ~1s grace period on the way out.
+			car.ResumeAfter = os.clock() + 1
 			chassis:SetNetworkOwner(nil)
 		end
 	end)
@@ -89,18 +103,16 @@ VehicleFolder.ChildAdded:Connect(TryAddCar)
 
 while true do
 	local delta = RunService.Heartbeat:Wait()
+	local now = os.clock()
 	for carModel, car in ExistingCars do
-		local chassis = carModel.PrimaryPart
-
-		-- Only simulate suspension while the server actually owns this car's
-		-- physics. SetNetworkOwner(nil) is a request that has to replicate,
-		-- not an instant switch - right after a player exits, the server can
-		-- briefly still be working from stale/inconsistent state before
-		-- ownership has genuinely settled back to it. Applying a corrective
-		-- impulse against that stale state is what launches the car in a
-		-- random direction at exit; skipping until ownership is confirmed
-		-- avoids fighting over data nobody agrees on yet.
-		if chassis:GetNetworkOwner() == nil then
+		-- Gate on whether anyone's actually seated (which we control directly
+		-- and know is accurate), not on chassis:GetNetworkOwner() - that can
+		-- intermittently report non-nil for a parked car with nobody in it at
+		-- all (physics contact with a nearby player, engine-internal ownership
+		-- quirks), which made parked cars randomly drop their suspension for
+		-- a few frames and then "spring back" once it cleared up.
+		if not car.Occupied and now >= car.ResumeAfter then
+			local chassis = carModel.PrimaryPart
 			local config = VehiclePhysics.GetConfig(chassis)
 			VehiclePhysics.Step(carModel, car.Attachments, config, car.State, delta, nil)
 		end
