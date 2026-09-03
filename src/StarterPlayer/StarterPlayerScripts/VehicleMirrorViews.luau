@@ -14,25 +14,10 @@
 -- Stop() when they leave it (see RayCastSuspension.client.luau); nothing here
 -- runs for a bystander, and nothing here replicates.
 --
--- Two ways to produce the image, picked by MIRROR_MODE:
---
---   "Reflect" - a true mirror. Every clone gets its CFrame multiplied by the
---     reflection of the mirror plane, and the viewport camera sits at the
---     player's real eye looking at the glass. This is geometrically correct
---     AND horizontally flipped the way a real mirror is, and it costs no more
---     than the alternative because the reflection is a single CFrame multiply
---     done C-side. The catch is that it relies on Roblox accepting a
---     negative-determinant (improper) rotation matrix through CFrame's
---     12-argument constructor - see probeReflectionSupport below, which
---     checks that at runtime and falls back on its own if it doesn't hold.
---
---   "Camera" - the fallback, and what a reversing camera shows: clones are
---     copied straight across with no transform, and the CAMERA is placed at
---     the glass looking back along the reflected view direction. Correct
---     content, not flipped. Cheaper by a hair, and immune to any weirdness
---     from mirrored geometry (reversed winding order, inside-out shading).
---
--- If the mirrors look inside-out or oddly shaded, set MIRROR_MODE = "Camera".
+-- MIRROR_MODE picks how the image is produced; see the constant for the full
+-- comparison. Short version: "Camera" moves the camera and leaves the world
+-- alone, "Reflect" mirrors the world and leaves the camera at the driver's
+-- eye. "Camera" is the default and the one that works well.
 --
 -- HARD-WON, DO NOT UNDO: the SurfaceGui for each mirror is parented to
 -- PlayerGui with its Adornee set to the glass part - NOT parented to the glass
@@ -47,6 +32,8 @@
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+
+local GameSettings = require(script.Parent.GameSettings)
 
 local VehicleMirrorViews = {}
 
@@ -66,55 +53,67 @@ local state = nil
 
 -- "Camera", "Reflect", or "Auto" (probe, then Reflect if it passes).
 --
--- Defaults to "Camera" because "Reflect" was tried here and does not render:
--- with a full scene correctly built and correctly placed (120 clones, nearest
--- 2.7 studs, nothing on the lens) the glass still came out flat dark grey.
--- That is the signature of reversed winding order - a mirrored transform flips
--- every triangle's facing, so backface culling draws the INSIDE of every part.
+-- Both have been tried in-game. "Camera" is the right answer; "Reflect" is
+-- kept because it is the only route to a true left-right flip, should that
+-- ever be worth its costs.
 --
--- probeReflectionSupport below cannot catch this. It proves the improper
--- matrix survives being assigned to a part and read back, which it does; what
--- it cannot prove is that the renderer will draw the result. So "Auto" passes
--- its probe and then produces a grey wall, which is why it is not the default.
+-- What "Reflect" actually does, observed rather than assumed:
 --
--- The cost of "Camera" is the horizontal flip: this is the view a reversing
--- camera gives, not a mirror. See the note above Stop() for why that is hard
--- to recover in a ViewportFrame, and why it is a soft loss.
+--   It renders, but INSIDE OUT. A mirrored transform reverses every triangle's
+--   winding, so backface culling shows the far side of each surface: lighting
+--   comes out darker and flatter, and surface detail is lost - decals in
+--   particular simply do not appear.
+--
+--   Its aim cannot be corrected by configuration. The camera sits at the
+--   driver's eye and the frustum is symmetric, but MIN_FOV forces it wider
+--   than the glass actually subtends, so it shows a cone of the reflected
+--   world reaching well past the mirror's edges - which is why the left mirror
+--   shows windscreen pillar, and the right one looks like it is filmed from
+--   the middle of the windscreen. Only an oblique frustum would fix that, and
+--   ViewportFrame cannot do one. Yaw/Pitch do not apply here either: AIM_MODE
+--   is consulted only in the "Camera" branch.
+--
+--   It is also the more expensive mode. Aim derives from the head rather than
+--   the chassis, so the driven car cannot be frozen (see FREEZE_OWN_CAR) and
+--   pays ~50 CFrame multiplies per mirror per frame.
 local MIRROR_MODE = "Camera"
 
--- How far around the car to look for things worth putting in the mirror. The
--- query is centred on the chassis and shared by all three mirrors; each one
--- then keeps only what is actually behind its own glass.
-local SCENE_RADIUS = 320
--- Cap on the spatial query itself, before per-mirror filtering.
+-- Three of this module's knobs are player-facing and live in GameSettings
+-- rather than here, so the settings menu can move them at runtime:
 --
--- Careful with this one: GetPartBoundsInRadius does NOT return the nearest
--- MaxParts, it returns an arbitrary MaxParts. So whenever the radius holds
--- more parts than this, every refresh gets a different arbitrary slice and
--- scenery flickers in and out at REFRESH_HZ. It wants to be comfortably above
--- the part count you expect within SCENE_RADIUS, not a performance knob -
--- MAX_SCENE_PARTS is the performance knob, and it picks properly.
+--   MirrorRenderDistance  how far around the car to look, in studs
+--   MirrorDetail          cap on clones per mirror - THE performance knob.
+--                         Candidates are ranked by apparent size, so lowering
+--                         it drops small clutter before it drops buildings.
+--   MirrorRefreshRate     how often each mirror rebuilds what is behind it
 --
--- Raising SCENE_RADIUS makes hitting this cap MORE likely, so the two move
--- together: if distant scenery starts flickering after a radius increase, this
--- is what ran out.
-local MAX_QUERY_PARTS = 3000
--- Cap on clones fed to a single mirror, biggest-looking first. THE
--- performance knob: per-frame cost is roughly this many CFrame writes per
--- mirror, minus the driven car, which is frozen and costs nothing (see
--- FREEZE_OWN_CAR). Drop to ~120 if mobile struggles.
-local MAX_SCENE_PARTS = 260
+-- They are read through the helpers below on every use rather than captured
+-- once, so a change in the menu takes effect on the next refresh.
+local function sceneRadius()
+	return GameSettings.Get("MirrorRenderDistance")
+end
 
--- How often each mirror rebuilds "what is behind me" - the expensive half, a
--- spatial query plus a sort plus a set diff. It does not need to happen every
--- frame; things entering and leaving a 320-stud radius is slow news, and the
--- CFrames of whatever is already in the scene still update at full rate.
+local function maxSceneParts()
+	return GameSettings.Get("MirrorDetail")
+end
+
+local function refreshHz()
+	return GameSettings.Get("MirrorRefreshRate")
+end
+
+-- Cap on the spatial query itself, before per-mirror filtering, and NOT a
+-- performance knob.
 --
--- The three mirrors are refreshed ROUND-ROBIN, one per tick, rather than all
--- together. Refreshing them in the same frame means three sorts of a few
--- thousand candidates back to back, which at this radius is a visible hitch
--- several times a second. Staggering costs nothing and spreads it flat.
-local REFRESH_HZ = 5
+-- GetPartBoundsInRadius does not return the nearest MaxParts, it returns an
+-- arbitrary MaxParts. So whenever the radius holds more parts than this, every
+-- refresh gets a different arbitrary slice and scenery flickers in and out.
+-- It has to stay comfortably above the part count expected at the LARGEST
+-- render distance the settings menu allows, not the default one.
+local MAX_QUERY_PARTS = 3000
+
+-- The three mirrors refresh ROUND-ROBIN, one per tick, rather than all in the
+-- same frame: three sorts of a few thousand candidates back to back is a
+-- visible hitch at a large render distance. Staggering spreads it flat.
 
 -- A mirror outside the player's view keeps its scene alive and simply updates
 -- more slowly - it is never torn down and never re-cloned. That is the whole
@@ -541,7 +540,7 @@ local function queryNearby(state)
 	params.RespectCanCollide = false
 
 	local ok, parts = pcall(function()
-		return workspace:GetPartBoundsInRadius(chassis.Position, SCENE_RADIUS, params)
+		return workspace:GetPartBoundsInRadius(chassis.Position, sceneRadius(), params)
 	end)
 	if not ok then
 		return nil
@@ -557,7 +556,7 @@ local function isWorthCloning(part)
 	return size.X * size.Y * size.Z >= MIN_PART_VOLUME
 end
 
--- Picks the nearest MAX_SCENE_PARTS parts lying on the reflective side of this
+-- Picks the best-looking MirrorDetail parts on the reflective side of this
 -- mirror's plane, then diffs that against what is already in the scene:
 -- newcomers get reparented in (cloned only if never seen before), leavers get
 -- reparented out but kept. Nothing is created or destroyed in the steady
@@ -620,7 +619,7 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 	table.clear(pinned)
 
 	-- The driven car is PINNED: read straight off the model instead of out of
-	-- the spatial query, and exempt from MAX_SCENE_PARTS. Both halves matter.
+	-- the spatial query, and exempt from the MirrorDetail cap. Both halves matter.
 	--
 	-- Out of the query, it was subject to MAX_QUERY_PARTS, and that cap does
 	-- not return the NEAREST parts - it returns an arbitrary subset. So every
@@ -689,7 +688,7 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 		wanted[part] = true
 	end
 	-- Whatever the car did not use, nearest first.
-	local budget = math.max(MAX_SCENE_PARTS - #pinned, 0)
+	local budget = math.max(maxSceneParts() - #pinned, 0)
 	for index = 1, math.min(#candidates, budget) do
 		wanted[candidates[index].Part] = true
 	end
@@ -927,6 +926,23 @@ local function onRenderStep()
 		return
 	end
 
+	-- Switched off in the settings menu. The rigs are left standing rather
+	-- than torn down: turning them back on is then a property write, with the
+	-- scene already populated, instead of re-cloning a few hundred parts in
+	-- one frame. CarDirty is set so the frozen car is re-placed on the way
+	-- back in, since the world will have moved on underneath it.
+	local enabled = GameSettings.Get("MirrorsEnabled")
+	if enabled ~= state.Enabled then
+		state.Enabled = enabled
+		for _, mirror in state.Mirrors do
+			mirror.Gui.Enabled = enabled
+			mirror.CarDirty = true
+		end
+	end
+	if not enabled then
+		return
+	end
+
 	if not state.CarModel.Parent or not state.Chassis.Parent then
 		VehicleMirrorViews.Stop()
 		return
@@ -938,16 +954,14 @@ local function onRenderStep()
 	end
 
 	local now = os.clock()
-	-- One query shared by every mirror, at REFRESH_HZ. nil on the frames in
-	-- between means "keep the scene you have and just move it".
-	-- One mirror per tick, ticking at REFRESH_HZ x mirror count so each still
-	-- refreshes REFRESH_HZ times a second. The query is shared, so it runs
+	-- One mirror per tick, ticking at the refresh rate x mirror count so each
+	-- still refreshes at that rate. The query is shared, so it runs
 	-- once here and only the mirror whose turn it is consumes it; the others
 	-- get nil and keep the scene they already have.
 	local nearby = nil
 	local refreshIndex = nil
 	if now >= state.NextQuery then
-		state.NextQuery = now + 1 / (REFRESH_HZ * #state.Mirrors)
+		state.NextQuery = now + 1 / (refreshHz() * #state.Mirrors)
 		state.RefreshCursor = (state.RefreshCursor % #state.Mirrors) + 1
 		refreshIndex = state.RefreshCursor
 		nearby = queryNearby(state)
@@ -1036,6 +1050,7 @@ function VehicleMirrorViews.Start(carModel, config)
 		Head = player.Character and player.Character:FindFirstChild("Head"),
 		NextQuery = 0,
 		RefreshCursor = 0,
+		Enabled = true,
 		Mode = if MIRROR_MODE == "Auto" then (if reflectSupported then "Reflect" else "Camera") else MIRROR_MODE,
 		FreezeCar = FREEZE_OWN_CAR and AIM_MODE == "Rearward" and (
 			if MIRROR_MODE == "Auto" then not reflectSupported else MIRROR_MODE == "Camera"
