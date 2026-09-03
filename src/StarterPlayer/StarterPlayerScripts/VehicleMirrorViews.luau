@@ -111,6 +111,13 @@ end
 -- render distance the settings menu allows, not the default one.
 local MAX_QUERY_PARTS = 3000
 
+-- How many clones a single refresh tick may CREATE. See the note in
+-- refreshScene: this is the guard that stops a render-distance change or a
+-- dense street from stalling a frame, which the suspension would turn into a
+-- bounce. Ticks happen at the refresh rate times the mirror count, so this is
+-- not as slow to fill as it looks.
+local MAX_NEW_CLONES_PER_REFRESH = 12
+
 -- The three mirrors refresh ROUND-ROBIN, one per tick, rather than all in the
 -- same frame: three sorts of a few thousand candidates back to back is a
 -- visible hitch at a large render distance. Staggering spreads it flat.
@@ -662,25 +669,26 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			-- mirror clipped into it, and the guard threw the whole thing out.
 			local swallowed = transform ~= nil and swallowsPoint(part, camPos, transform)
 			if extentPastPlane(part, surfacePos, normal) > 0 and not swallowed then
-				-- Ranked by APPARENT size - how big the part looks from the
-				-- mirror - rather than by raw distance. Straight nearest-first
-				-- spends the budget on whatever clutter happens to be beside
-				-- you and drops the building a hundred studs back, which is
-				-- exactly backwards for a mirror: the far building is most of
-				-- what you are looking for. Distance is measured to the
-				-- nearest point of the box so something you are parked on
-				-- counts as close, which it is.
-				local dist = (closestPointOnPart(part, surfacePos) - surfacePos).Magnitude
+				-- Ranked by distance to the NEAREST POINT of the part's box,
+				-- not to its centre. That single choice is what lets big
+				-- things compete properly: a building's nearest face is close
+				-- even though its centre is far, and the ground you are
+				-- standing on reads as touching, which it is. An earlier
+				-- version ranked by apparent size instead, and the effect was
+				-- that raising render distance made small objects LESS likely
+				-- to appear - a barrel twenty studs back lost its slot to
+				-- every large thing newly in range, which is the opposite of
+				-- what the setting promises.
 				table.insert(candidates, {
 					Part = part,
-					Score = (part.Size.Magnitude * 0.5) / math.max(dist, 1),
+					Dist = (closestPointOnPart(part, surfacePos) - surfacePos).Magnitude,
 				})
 			end
 		end
 	end
 
 	table.sort(candidates, function(a, b)
-		return a.Score > b.Score
+		return a.Dist < b.Dist
 	end)
 
 	local wanted = {}
@@ -703,12 +711,28 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 		end
 	end
 
-	-- In: reuse a pooled clone if we have one, otherwise build it.
+	-- In: reuse a pooled clone if we have one, otherwise build it - but only
+	-- up to MAX_NEW_CLONES_PER_REFRESH of the latter.
+	--
+	-- Cloning is by far the most expensive thing this module does, and it
+	-- arrives in bursts: raise the render distance, or drive into a dense
+	-- street, and several hundred parts want cloning on the SAME tick. That is
+	-- a frame hitch, and a frame hitch is not a cosmetic problem here - the
+	-- raycast suspension integrates its spring and damper against the frame
+	-- delta (see VehiclePhysics.Step), so a long frame makes the truck
+	-- overshoot, bottom out and bounce. Mirrors must never be able to do that.
+	--
+	-- Spreading creation over ticks costs nothing visually: a part that has to
+	-- wait a tick or two appears a fraction of a second late, which is
+	-- invisible in a mirror, and everything already cloned keeps updating at
+	-- full rate meanwhile.
+	local newClones = 0
 	for source in wanted do
 		local entry = mirror.Pool[source]
-		if not entry then
+		if not entry and newClones < MAX_NEW_CLONES_PER_REFRESH then
 			local clone = makeClone(source)
 			if clone then
+				newClones += 1
 				entry = { Clone = clone, LastSeen = now }
 				mirror.Pool[source] = entry
 			end

@@ -1,4 +1,4 @@
--- The settings menu. Press M to open, M or Escape-equivalent to close.
+-- The settings menu, plus the gear button that advertises it.
 --
 -- Builds itself entirely from GameSettings.GetDefinitions(), so it never names
 -- an individual setting: add one there and a row appears here, in its category,
@@ -10,8 +10,8 @@
 -- the screen every frame, which makes any menu unclickable. Freeing it once on
 -- open does not work - the camera controller simply puts it back. The fix is
 -- to re-assert it every frame at RenderPriority.Last, which runs after the
--- camera has had its say, so ours is the value that survives to the end of the
--- frame. See applyMouseState.
+-- camera has had its say, so ours is the value that survives the frame. See
+-- applyMouseState.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -29,7 +29,7 @@ local MOUSE_STEP = "SettingsMenuMouse"
 local COLORS = {
 	Backdrop = Color3.fromRGB(0, 0, 0),
 	Panel = Color3.fromRGB(28, 30, 34),
-	Header = Color3.fromRGB(20, 22, 25),
+	Row = Color3.fromRGB(20, 22, 25),
 	Category = Color3.fromRGB(150, 200, 255),
 	Text = Color3.fromRGB(235, 237, 240),
 	Muted = Color3.fromRGB(150, 155, 165),
@@ -39,9 +39,17 @@ local COLORS = {
 	ToggleOff = Color3.fromRGB(70, 74, 82),
 }
 
+-- The slider's visible bar is thin, but the area that ACCEPTS a click is this
+-- tall - the bar is centred inside it. Aiming at an 8-pixel line is miserable;
+-- aiming at a 28-pixel band is not, and the two can look identical.
+local SLIDER_HIT_HEIGHT = 28
+local SLIDER_BAR_HEIGHT = 8
+local SLIDER_KNOB = 20
+
 local isOpen = false
 local screenGui
 local rowsParent
+local renderers = {}
 
 -- =========================================================================
 -- Small builders
@@ -62,46 +70,68 @@ local function label(parent, text, size, color, bold)
 	instance.TextSize = size
 	instance.Font = if bold then Enum.Font.GothamBold else Enum.Font.Gotham
 	instance.TextXAlignment = Enum.TextXAlignment.Left
+	instance.TextYAlignment = Enum.TextYAlignment.Top
 	instance.Parent = parent
 	return instance
 end
 
--- Every row is the same shape: title and description on the left, control on
--- the right. Returns the container the caller hangs its control in.
+-- Rows size themselves to their text rather than to a fixed height, so a long
+-- description wraps and the row grows instead of clipping it. The left column
+-- owns the wrapping; the row inherits its height through AutomaticSize.
 local function buildRow(definition, order)
 	local row = Instance.new("Frame")
 	row.Name = definition.Key
-	row.BackgroundColor3 = COLORS.Header
+	row.BackgroundColor3 = COLORS.Row
 	row.BackgroundTransparency = 0.4
 	row.BorderSizePixel = 0
-	row.Size = UDim2.new(1, 0, 0, 64)
+	row.Size = UDim2.new(1, 0, 0, 0)
+	row.AutomaticSize = Enum.AutomaticSize.Y
 	row.LayoutOrder = order
+	-- Absorbs clicks so they never reach the backdrop behind the panel.
+	row.Active = true
 	row.Parent = rowsParent
 	corner(row, 6)
 
 	local padding = Instance.new("UIPadding")
 	padding.PaddingLeft = UDim.new(0, 12)
 	padding.PaddingRight = UDim.new(0, 12)
-	padding.PaddingTop = UDim.new(0, 8)
+	padding.PaddingTop = UDim.new(0, 10)
+	padding.PaddingBottom = UDim.new(0, 10)
 	padding.Parent = row
 
-	local title = label(row, definition.Label, 15, COLORS.Text, true)
-	title.Size = UDim2.new(0.58, 0, 0, 18)
+	local minHeight = Instance.new("UISizeConstraint")
+	minHeight.MinSize = Vector2.new(0, 52)
+	minHeight.Parent = row
+
+	local text = Instance.new("Frame")
+	text.BackgroundTransparency = 1
+	text.Size = UDim2.new(0.56, 0, 0, 0)
+	text.AutomaticSize = Enum.AutomaticSize.Y
+	text.Parent = row
+
+	local textLayout = Instance.new("UIListLayout")
+	textLayout.Padding = UDim.new(0, 3)
+	textLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	textLayout.Parent = text
+
+	local title = label(text, definition.Label, 15, COLORS.Text, true)
+	title.Size = UDim2.new(1, 0, 0, 18)
+	title.LayoutOrder = 1
 
 	if definition.Description then
-		local description = label(row, definition.Description, 12, COLORS.Muted)
-		description.Position = UDim2.new(0, 0, 0, 20)
-		description.Size = UDim2.new(0.58, 0, 0, 34)
+		local description = label(text, definition.Description, 12, COLORS.Muted)
+		description.Size = UDim2.new(1, 0, 0, 0)
+		description.AutomaticSize = Enum.AutomaticSize.Y
 		description.TextWrapped = true
-		description.TextYAlignment = Enum.TextYAlignment.Top
+		description.LayoutOrder = 2
 	end
 
 	local control = Instance.new("Frame")
 	control.Name = "Control"
 	control.BackgroundTransparency = 1
-	control.AnchorPoint = Vector2.new(1, 0.5)
-	control.Position = UDim2.new(1, 0, 0.5, -4)
-	control.Size = UDim2.new(0.38, 0, 0, 32)
+	control.AnchorPoint = Vector2.new(1, 0)
+	control.Position = UDim2.new(1, 0, 0, 0)
+	control.Size = UDim2.new(0.4, 0, 0, 44)
 	control.Parent = row
 
 	return control
@@ -113,27 +143,27 @@ end
 
 local function buildToggle(definition, control)
 	local button = Instance.new("TextButton")
-	button.AnchorPoint = Vector2.new(1, 0.5)
-	button.Position = UDim2.new(1, 0, 0.5, 0)
-	button.Size = UDim2.new(0, 56, 0, 28)
+	button.AnchorPoint = Vector2.new(1, 0)
+	button.Position = UDim2.new(1, 0, 0, 4)
+	button.Size = UDim2.new(0, 60, 0, 30)
 	button.Text = ""
 	button.AutoButtonColor = false
 	button.BorderSizePixel = 0
 	button.Parent = control
-	corner(button, 14)
+	corner(button, 15)
 
 	local knob = Instance.new("Frame")
-	knob.Size = UDim2.new(0, 22, 0, 22)
+	knob.Size = UDim2.new(0, 24, 0, 24)
 	knob.AnchorPoint = Vector2.new(0, 0.5)
 	knob.BackgroundColor3 = COLORS.Text
 	knob.BorderSizePixel = 0
 	knob.Parent = button
-	corner(knob, 11)
+	corner(knob, 12)
 
 	local function render()
 		local on = GameSettings.Get(definition.Key)
 		button.BackgroundColor3 = if on then COLORS.ToggleOn else COLORS.ToggleOff
-		knob.Position = if on then UDim2.new(1, -25, 0.5, 0) else UDim2.new(0, 3, 0.5, 0)
+		knob.Position = if on then UDim2.new(1, -27, 0.5, 0) else UDim2.new(0, 3, 0.5, 0)
 	end
 
 	button.Activated:Connect(function()
@@ -145,40 +175,46 @@ end
 
 local function buildSlider(definition, control)
 	local readout = label(control, "", 13, COLORS.Muted, true)
-	readout.AnchorPoint = Vector2.new(1, 0)
-	readout.Position = UDim2.new(1, 0, 0, 0)
+	readout.Position = UDim2.new(0, 0, 0, 0)
 	readout.Size = UDim2.new(1, 0, 0, 14)
 	readout.TextXAlignment = Enum.TextXAlignment.Right
 
-	-- A TextButton rather than a Frame so it captures input on its own; the
-	-- whole track is clickable, not just the handle, which is far easier to
-	-- hit than a small knob.
-	local track = Instance.new("TextButton")
-	track.Text = ""
-	track.AutoButtonColor = false
-	track.AnchorPoint = Vector2.new(1, 1)
-	track.Position = UDim2.new(1, 0, 1, -4)
-	track.Size = UDim2.new(1, 0, 0, 8)
+	-- The hit area is a TextButton so it captures input itself, and it is far
+	-- taller than the bar drawn inside it. Clicking anywhere along it jumps
+	-- the value, so the knob never has to be hit precisely.
+	local hit = Instance.new("TextButton")
+	hit.Text = ""
+	hit.AutoButtonColor = false
+	hit.BackgroundTransparency = 1
+	hit.AnchorPoint = Vector2.new(1, 1)
+	hit.Position = UDim2.new(1, 0, 1, 0)
+	hit.Size = UDim2.new(1, 0, 0, SLIDER_HIT_HEIGHT)
+	hit.Parent = control
+
+	local track = Instance.new("Frame")
+	track.AnchorPoint = Vector2.new(0.5, 0.5)
+	track.Position = UDim2.fromScale(0.5, 0.5)
+	track.Size = UDim2.new(1, 0, 0, SLIDER_BAR_HEIGHT)
 	track.BackgroundColor3 = COLORS.Track
 	track.BorderSizePixel = 0
-	track.Parent = control
-	corner(track, 4)
+	track.Parent = hit
+	corner(track, SLIDER_BAR_HEIGHT // 2)
 
 	local fill = Instance.new("Frame")
 	fill.BackgroundColor3 = COLORS.Fill
 	fill.BorderSizePixel = 0
 	fill.Size = UDim2.new(0, 0, 1, 0)
 	fill.Parent = track
-	corner(fill, 4)
+	corner(fill, SLIDER_BAR_HEIGHT // 2)
 
 	local knob = Instance.new("Frame")
 	knob.AnchorPoint = Vector2.new(0.5, 0.5)
-	knob.Size = UDim2.new(0, 14, 0, 14)
+	knob.Size = UDim2.new(0, SLIDER_KNOB, 0, SLIDER_KNOB)
 	knob.BackgroundColor3 = COLORS.Text
 	knob.BorderSizePixel = 0
 	knob.ZIndex = 2
 	knob.Parent = track
-	corner(knob, 7)
+	corner(knob, SLIDER_KNOB // 2)
 
 	local function render()
 		local value = GameSettings.Get(definition.Key)
@@ -196,15 +232,15 @@ local function buildSlider(definition, control)
 	end
 
 	local dragging = false
-	track.InputBegan:Connect(function(input)
+	hit.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			setFromX(input.Position.X)
 		end
 	end)
-	-- Tracked on the SERVICE, not on the track: once you are dragging, the
-	-- pointer routinely leaves the 8-pixel-tall bar, and a connection on the
-	-- bar itself would stop receiving movement the moment it did.
+	-- Tracked on the SERVICE, not on the button: once you are dragging, the
+	-- pointer routinely leaves the control entirely, and a connection on the
+	-- control would stop receiving movement the moment it did.
 	UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			setFromX(input.Position.X)
@@ -223,8 +259,6 @@ end
 -- Menu construction
 -- =========================================================================
 
-local renderers = {}
-
 local function buildMenu()
 	screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "SettingsMenu"
@@ -234,6 +268,10 @@ local function buildMenu()
 	screenGui.Enabled = false
 	screenGui.Parent = playerGui
 
+	-- Only the backdrop closes on click. Everything above it sets Active so
+	-- input stops there: a Frame does NOT block clicks by default, which is
+	-- why stray clicks inside the panel used to fall through to here and shut
+	-- the menu.
 	local backdrop = Instance.new("TextButton")
 	backdrop.Text = ""
 	backdrop.AutoButtonColor = false
@@ -246,16 +284,16 @@ local function buildMenu()
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.new(0, 560, 0, 460)
+	panel.Size = UDim2.new(0.5, 0, 0.72, 0)
 	panel.BackgroundColor3 = COLORS.Panel
 	panel.BorderSizePixel = 0
+	panel.Active = true
 	panel.Parent = screenGui
 	corner(panel, 10)
 
-	-- Keeps the panel on screen on small displays without letting it grow
-	-- absurdly wide on ultrawides.
 	local constraint = Instance.new("UISizeConstraint")
-	constraint.MaxSize = Vector2.new(560, 460)
+	constraint.MinSize = Vector2.new(420, 320)
+	constraint.MaxSize = Vector2.new(620, 560)
 	constraint.Parent = panel
 
 	local header = label(panel, "Settings", 20, COLORS.Text, true)
@@ -284,9 +322,10 @@ local function buildMenu()
 	scroll.Size = UDim2.new(1, -28, 1, -82)
 	scroll.BackgroundTransparency = 1
 	scroll.BorderSizePixel = 0
-	scroll.ScrollBarThickness = 5
+	scroll.ScrollBarThickness = 6
 	scroll.CanvasSize = UDim2.new()
 	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.Active = true
 	scroll.Parent = panel
 	rowsParent = scroll
 
@@ -326,12 +365,9 @@ local function buildMenu()
 			if (definition.Category or "General") == category then
 				order += 1
 				local control = buildRow(definition, order)
-				local render
-				if definition.Type == "Toggle" then
-					render = buildToggle(definition, control)
-				else
-					render = buildSlider(definition, control)
-				end
+				local render = if definition.Type == "Toggle"
+					then buildToggle(definition, control)
+					else buildSlider(definition, control)
 				render()
 				renderers[definition.Key] = render
 			end
@@ -339,6 +375,45 @@ local function buildMenu()
 	end
 
 	return backdrop, close
+end
+
+-- A persistent corner button, so the menu is discoverable without having to
+-- know the keybind. Its own ScreenGui rather than a child of the menu's, since
+-- it has to stay visible exactly when the menu is NOT.
+local function buildLauncher(onClick)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "SettingsLauncher"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 99
+	gui.Parent = playerGui
+
+	local holder = Instance.new("Frame")
+	holder.AnchorPoint = Vector2.new(1, 1)
+	holder.Position = UDim2.new(1, -18, 1, -18)
+	holder.Size = UDim2.new(0, 52, 0, 70)
+	holder.BackgroundTransparency = 1
+	holder.Parent = gui
+
+	local button = Instance.new("TextButton")
+	button.Size = UDim2.new(0, 52, 0, 52)
+	button.Position = UDim2.new(0, 0, 0, 0)
+	button.BackgroundColor3 = COLORS.Panel
+	button.BackgroundTransparency = 0.25
+	button.BorderSizePixel = 0
+	button.Text = "\u{2699}"
+	button.TextSize = 26
+	button.TextColor3 = COLORS.Text
+	button.Font = Enum.Font.GothamBold
+	button.Parent = holder
+	corner(button, 26)
+
+	local key = label(holder, "[M]", 12, COLORS.Muted, true)
+	key.Position = UDim2.new(0, 0, 0, 54)
+	key.Size = UDim2.new(1, 0, 0, 14)
+	key.TextXAlignment = Enum.TextXAlignment.Center
+
+	button.Activated:Connect(onClick)
+	return gui
 end
 
 -- =========================================================================
@@ -353,12 +428,15 @@ local function applyMouseState()
 	UserInputService.MouseIconEnabled = true
 end
 
+local launcherGui
+
 local function setOpen(open)
 	if isOpen == open then
 		return
 	end
 	isOpen = open
 	screenGui.Enabled = open
+	launcherGui.Enabled = not open
 
 	if open then
 		RunService:BindToRenderStep(MOUSE_STEP, Enum.RenderPriority.Last.Value, applyMouseState)
@@ -366,13 +444,17 @@ local function setOpen(open)
 		RunService:UnbindFromRenderStep(MOUSE_STEP)
 		-- Handing control back rather than forcing LockCenter: the camera
 		-- controller decides what the cursor should do based on how zoomed in
-		-- the player is, and it will re-lock on its own next frame if they are
-		-- in first person.
+		-- the player is, and it re-locks on its own next frame if they are in
+		-- first person.
 		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	end
 end
 
 local backdrop, close = buildMenu()
+launcherGui = buildLauncher(function()
+	setOpen(true)
+end)
+
 backdrop.Activated:Connect(function()
 	setOpen(false)
 end)
