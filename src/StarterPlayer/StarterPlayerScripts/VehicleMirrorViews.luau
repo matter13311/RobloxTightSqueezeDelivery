@@ -85,7 +85,7 @@ local MIRROR_MODE = "Camera"
 -- How far around the car to look for things worth putting in the mirror. The
 -- query is centred on the chassis and shared by all three mirrors; each one
 -- then keeps only what is actually behind its own glass.
-local SCENE_RADIUS = 140
+local SCENE_RADIUS = 320
 -- Cap on the spatial query itself, before per-mirror filtering.
 --
 -- Careful with this one: GetPartBoundsInRadius does NOT return the nearest
@@ -93,17 +93,27 @@ local SCENE_RADIUS = 140
 -- more parts than this, every refresh gets a different arbitrary slice and
 -- scenery flickers in and out at REFRESH_HZ. It wants to be comfortably above
 -- the part count you expect within SCENE_RADIUS, not a performance knob -
--- MAX_SCENE_PARTS is the performance knob, and it picks by real distance.
-local MAX_QUERY_PARTS = 1200
--- Cap on clones fed to a single mirror, nearest first. THE performance knob:
--- per-frame cost is this times three CFrame writes. Raised from 120 once the
--- car itself was allowed back in, since its own panels take ~50 slots. Drop to ~100 if mobile struggles.
-local MAX_SCENE_PARTS = 180
+-- MAX_SCENE_PARTS is the performance knob, and it picks properly.
+--
+-- Raising SCENE_RADIUS makes hitting this cap MORE likely, so the two move
+-- together: if distant scenery starts flickering after a radius increase, this
+-- is what ran out.
+local MAX_QUERY_PARTS = 3000
+-- Cap on clones fed to a single mirror, biggest-looking first. THE
+-- performance knob: per-frame cost is roughly this many CFrame writes per
+-- mirror, minus the driven car, which is frozen and costs nothing (see
+-- FREEZE_OWN_CAR). Drop to ~120 if mobile struggles.
+local MAX_SCENE_PARTS = 260
 
--- Rebuilding "what is behind me" is the expensive half (a spatial query, a
--- sort and a set diff), and it does not need to happen every frame - things
--- entering and leaving a 140-stud radius is slow news. CFrames of whatever is
--- already in the scene still update at full rate, so nothing stutters.
+-- How often each mirror rebuilds "what is behind me" - the expensive half, a
+-- spatial query plus a sort plus a set diff. It does not need to happen every
+-- frame; things entering and leaving a 320-stud radius is slow news, and the
+-- CFrames of whatever is already in the scene still update at full rate.
+--
+-- The three mirrors are refreshed ROUND-ROBIN, one per tick, rather than all
+-- together. Refreshing them in the same frame means three sorts of a few
+-- thousand candidates back to back, which at this radius is a visible hitch
+-- several times a second. Staggering costs nothing and spreads it flat.
 local REFRESH_HZ = 5
 
 -- A mirror outside the player's view keeps its scene alive and simply updates
@@ -640,21 +650,38 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			-- whose centre can be hundreds of studs away and on the wrong side
 			-- of the mirror even though the ground directly under you is part
 			-- of it, and your own truck, whose panels sit right on the plane.
-			if extentPastPlane(part, surfacePos, normal) > 0 and not swallowsPoint(part, camPos, transform) then
+			-- The lens guard applies ONLY when reflecting. It exists to
+			-- compensate for the one thing a ViewportFrame cannot do - clip
+			-- geometry at the mirror plane - so a part straddling that plane
+			-- does not arrive whole and wrap itself around the camera.
+			--
+			-- Without a reflection there is nothing to compensate for:
+			-- everything sits where it really sits, and if the camera is
+			-- inside a wall then the mirror is genuinely inside a wall.
+			-- Applying the guard there is what made a building vanish when you
+			-- backed up against it: a building is often one big part, the
+			-- mirror clipped into it, and the guard threw the whole thing out.
+			local swallowed = transform ~= nil and swallowsPoint(part, camPos, transform)
+			if extentPastPlane(part, surfacePos, normal) > 0 and not swallowed then
+				-- Ranked by APPARENT size - how big the part looks from the
+				-- mirror - rather than by raw distance. Straight nearest-first
+				-- spends the budget on whatever clutter happens to be beside
+				-- you and drops the building a hundred studs back, which is
+				-- exactly backwards for a mirror: the far building is most of
+				-- what you are looking for. Distance is measured to the
+				-- nearest point of the box so something you are parked on
+				-- counts as close, which it is.
+				local dist = (closestPointOnPart(part, surfacePos) - surfacePos).Magnitude
 				table.insert(candidates, {
 					Part = part,
-					-- Sorted on the nearest point of the box, so a huge part
-					-- you are standing on counts as close (which it is) rather
-					-- than being ranked by its distant centre and cut by
-					-- MAX_SCENE_PARTS. This is why the floor was missing.
-					Dist = (closestPointOnPart(part, surfacePos) - surfacePos).Magnitude,
+					Score = (part.Size.Magnitude * 0.5) / math.max(dist, 1),
 				})
 			end
 		end
 	end
 
 	table.sort(candidates, function(a, b)
-		return a.Dist < b.Dist
+		return a.Score > b.Score
 	end)
 
 	local wanted = {}
@@ -913,9 +940,16 @@ local function onRenderStep()
 	local now = os.clock()
 	-- One query shared by every mirror, at REFRESH_HZ. nil on the frames in
 	-- between means "keep the scene you have and just move it".
+	-- One mirror per tick, ticking at REFRESH_HZ x mirror count so each still
+	-- refreshes REFRESH_HZ times a second. The query is shared, so it runs
+	-- once here and only the mirror whose turn it is consumes it; the others
+	-- get nil and keep the scene they already have.
 	local nearby = nil
+	local refreshIndex = nil
 	if now >= state.NextQuery then
-		state.NextQuery = now + 1 / REFRESH_HZ
+		state.NextQuery = now + 1 / (REFRESH_HZ * #state.Mirrors)
+		state.RefreshCursor = (state.RefreshCursor % #state.Mirrors) + 1
+		refreshIndex = state.RefreshCursor
 		nearby = queryNearby(state)
 	end
 
@@ -927,8 +961,8 @@ local function onRenderStep()
 	-- actually is, it is stable, and it makes the mirror correct for the person
 	-- driving no matter where the player has zoomed to.
 	local eye = state.Head and state.Head.Parent and state.Head.Position or camera.CFrame.Position
-	for _, mirror in state.Mirrors do
-		updateMirror(mirror, nearby, camera, eye, now)
+	for index, mirror in state.Mirrors do
+		updateMirror(mirror, if index == refreshIndex then nearby else nil, camera, eye, now)
 	end
 end
 
@@ -1001,6 +1035,7 @@ function VehicleMirrorViews.Start(carModel, config)
 		Exclude = { mirrorFolder, player.Character },
 		Head = player.Character and player.Character:FindFirstChild("Head"),
 		NextQuery = 0,
+		RefreshCursor = 0,
 		Mode = if MIRROR_MODE == "Auto" then (if reflectSupported then "Reflect" else "Camera") else MIRROR_MODE,
 		FreezeCar = FREEZE_OWN_CAR and AIM_MODE == "Rearward" and (
 			if MIRROR_MODE == "Auto" then not reflectSupported else MIRROR_MODE == "Camera"
