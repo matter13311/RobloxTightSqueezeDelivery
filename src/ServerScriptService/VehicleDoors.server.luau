@@ -20,6 +20,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehicleDoorRig = require(ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
+local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 
 local VehicleFolder = workspace.Vehicles
 local DOOR_SIDES = VehicleDoorRig.Sides
@@ -43,11 +44,21 @@ local DOOR_SWING_TIME = 1
 -- gets the signal) time to actually clear the doorway first.
 local EXIT_CLEAR_TIME = 0.3
 
--- Generous compared to the client's own prompt-visibility range (see
--- VehicleDoorPrompts.client.luau) - this exists to catch a cheated/forged
--- request from way outside the car, not to be the source of truth for
--- exactly how close is "close enough" to see the prompt.
+-- Deliberately looser than the client's own prompt-visibility range (see
+-- MAX_PROMPT_DISTANCE in VehicleDoorPrompts.client.luau) - this exists to
+-- catch a cheated/forged request from way outside the car, not to be the
+-- source of truth for exactly how close is "close enough" to see the prompt.
+-- Keep it comfortably above that number: measured from the same door
+-- attachments, but a player who was legitimately in range when they pressed F
+-- can still have walked or been shoved a little way off by the time the
+-- request lands here.
 local MAX_ENTER_DISTANCE = 12
+
+-- How far above the seat's own centre the character's pivot (its
+-- HumanoidRootPart) is placed just before being welded in - see tryEnter.
+-- Only has to be close enough that the seat weld has no meaningful error left
+-- to resolve; the weld itself decides the exact final position.
+local SEAT_PIVOT_HEIGHT = 2
 
 local doorSoundEvent = Instance.new("RemoteEvent")
 doorSoundEvent.Name = "PlayDoorSound"
@@ -64,12 +75,12 @@ exitVehicleEvent.Parent = ReplicatedStorage
 -- [carModel] = { CarModel, Doors = { Left = {...}, Right = {...} }, Seat, Busy }
 local carsData = {}
 
--- Placeholder for the per-car ownership system planned later (each player
--- spawns their own car and only they may enter it). Both entry paths funnel
--- through this one check, so wiring that in later is a one-function change -
--- e.g. `return carModel:GetAttribute("OwnerUserId") == player.UserId`.
+-- Authoritative ownership gate. The rule itself lives in VehicleOwnership so
+-- the client's "Enter" prompt can ask the same question and never offer a car
+-- that would be refused here - but this is the copy that decides, and it runs
+-- on a request the client cannot forge past.
 local function playerCanEnter(player, carModel)
-	return true
+	return VehicleOwnership.CanEnter(player, carModel)
 end
 
 -- GetJoints() returns both classic joints (Weld, Motor6D, ...), which use
@@ -215,6 +226,28 @@ local function tryEnter(carData, side, player)
 			fireDoorSound(player, door.Part, "Close")
 			task.wait(DOOR_SWING_TIME)
 			return
+		end
+
+		-- Put the character ON the seat, facing the way the seat faces, BEFORE
+		-- welding them to it. Seat:Sit() creates a rigid weld and leaves the
+		-- solver to resolve whatever error is left between the two ends - and
+		-- an anchored car cannot resolve anything, because an anchored
+		-- assembly does not simulate at all. So the entire error was still
+		-- sitting there unresolved at the moment the car was unanchored, at
+		-- which point both ends were dynamic and the solver split the
+		-- correction between them by mass: instead of the character being
+		-- pulled into the seat, the CAR swung round to line up with whichever
+		-- way the character happened to be facing when they pressed F. Landing
+		-- them on the seat first leaves the weld with essentially no error to
+		-- resolve, so there is nothing left to swing the car with.
+		local seatPivot = carData.Seat.CFrame * CFrame.new(0, SEAT_PIVOT_HEIGHT, 0)
+		character:PivotTo(seatPivot)
+		local rootPart = character:FindFirstChild("HumanoidRootPart")
+		if rootPart then
+			-- They were running a moment ago. Once welded that momentum
+			-- becomes the whole car's momentum.
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+			rootPart.AssemblyAngularVelocity = Vector3.zero
 		end
 
 		carData.Seat:Sit(humanoid)

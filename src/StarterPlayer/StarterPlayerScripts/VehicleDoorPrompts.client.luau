@@ -8,40 +8,45 @@
 -- the prompt and fires EnterVehicle when it's triggered - which door that
 -- resolves to is VehicleDoors.server.luau's call, based on which one the
 -- player is actually standing closer to at that moment.
+--
+-- Nothing here is a security boundary. Whether a player may actually enter is
+-- decided by the server (VehicleDoors.server.luau) using the same
+-- VehicleOwnership rule this script asks - so what's on screen matches what
+-- would happen, but a client that lies about it still gets refused.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CustomPrompt = require(ReplicatedStorage.Modules.UI.CustomPrompt)
 local VehicleDoorRig = require(ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
+local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 
 local player = Players.LocalPlayer
 local VehicleFolder = workspace.Vehicles
--- Measured from the seat (roughly the car's center), not a door directly, so
--- this needs enough radius to comfortably reach either side from outside.
-local MAX_PROMPT_DISTANCE = 10
+
+-- Measured to the nearer DOOR, not to the seat at the car's centre. Measuring
+-- from the centre meant the radius had to cover half the length of the truck
+-- before it reached a door at all, so the prompt appeared while the player was
+-- still well clear of the car - and appeared just as readily standing at the
+-- back of the tray, nowhere near a way in. Door-relative, this is the real
+-- "close enough to reach the handle" distance, so it can be small.
+local MAX_PROMPT_DISTANCE = 6
 
 local enterVehicleEvent = ReplicatedStorage:WaitForChild("EnterVehicle")
 
 -- [carModel] = CustomPrompt
 local carPrompts = {}
--- [carModel] = function that re-checks that car's own prompt against both
--- its Occupant and playerSeated below
-local carRefreshers = {}
-
--- Belt-and-suspenders on top of each car's own Occupant check: no "Enter"
--- prompt should ever show while the LOCAL player is seated in ANYTHING, not
--- just this car - covers it even if something upstream about a specific
--- car's Occupant replication is ever delayed or missed.
-local playerSeated = false
-
-local function refreshAllCarPrompts()
-	for _, refresh in carRefreshers do
-		refresh()
-	end
-end
 
 local function setupCarPrompts(carModel)
+	-- Never build a second prompt for a car that already has one. Both the
+	-- startup sweep and the ChildAdded handler can reach the same car, and a
+	-- duplicate would parent a second billboard to the same seat that nothing
+	-- holds a reference to - so tearing the car down would leave it behind,
+	-- permanently visible, with no way to reach it.
+	if carPrompts[carModel] then
+		return true
+	end
+
 	local doors = VehicleDoorRig.GetDoors(carModel)
 	local seat = carModel:FindFirstChildOfClass("VehicleSeat")
 	if not (doors and doors.Left and doors.Right and seat) then
@@ -52,20 +57,34 @@ local function setupCarPrompts(carModel)
 		Text = "Enter Vehicle",
 		KeyCode = Enum.KeyCode.F,
 		MaxActivationDistance = MAX_PROMPT_DISTANCE,
+		-- The billboard still floats over the seat (centred over the cab, so
+		-- it reads the same from either side), but range is judged from the
+		-- door openings.
+		DistanceFrom = { doors.Left.FrameAttachment, doors.Right.FrameAttachment },
+		-- Re-asked every frame rather than pushed from event handlers. The
+		-- previous version drove this off Seat.Occupant changing and the local
+		-- Humanoid.Seated firing, and a prompt that outlives EITHER of those -
+		-- a car that finished replicating with someone already in it, a
+		-- Seated event during a respawn, a car whose seat reference went stale -
+		-- had no way back to hidden and simply stayed on screen. Asking the
+		-- live values every frame has no such failure mode.
+		--
+		-- CustomPrompt separately hides any prompt while the local player is
+		-- seated in anything at all, so that case is covered even if this
+		-- car's own Occupant hasn't replicated yet.
+		ShouldShow = function()
+			-- Occupant covers "somebody is in this car" from the CAR's side,
+			-- which is the half CustomPrompt's own seated check cannot see
+			-- (that one only knows about the local player). Together they
+			-- close the gap in both directions: this car being occupied by
+			-- anyone, and the local player being inside anything at all.
+			return seat.Occupant == nil and VehicleOwnership.CanEnter(player, carModel)
+		end,
 	})
 	prompt.Triggered:Connect(function()
 		enterVehicleEvent:FireServer(carModel)
 	end)
 	carPrompts[carModel] = prompt
-
-	-- Nobody should see an "Enter" prompt on a car that's already occupied -
-	-- that includes the driver looking at their own door from inside.
-	local function refresh()
-		prompt:SetEnabled(seat.Occupant == nil and not playerSeated)
-	end
-	seat:GetPropertyChangedSignal("Occupant"):Connect(refresh)
-	carRefreshers[carModel] = refresh
-	refresh()
 	return true
 end
 
@@ -101,21 +120,8 @@ local function teardownCarPrompts(carModel)
 	if prompt then
 		prompt:Destroy()
 		carPrompts[carModel] = nil
-		carRefreshers[carModel] = nil
 	end
 end
-
-local function onCharacterAdded(character)
-	local humanoid = character:WaitForChild("Humanoid")
-	humanoid.Seated:Connect(function(seated)
-		playerSeated = seated
-		refreshAllCarPrompts()
-	end)
-end
-if player.Character then
-	onCharacterAdded(player.Character)
-end
-player.CharacterAdded:Connect(onCharacterAdded)
 
 for _, carModel in VehicleFolder:GetChildren() do
 	trySetupCarPrompts(carModel)

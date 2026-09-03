@@ -10,6 +10,16 @@ local VehicleFolder = workspace.Vehicles
 
 local INITIAL_SETTLE_TIME = 5 -- seconds - how long the server runs real suspension physics on a freshly-placed car before freezing it, so it settles onto the ground correctly instead of anchoring wherever it happened to be placed in Studio (often floating or embedded)
 
+-- Frames the server holds the car in its parked pose after unanchoring it,
+-- before handing the driver network ownership. The real cure for the car
+-- swinging round on entry is seating the character properly in the first
+-- place (see tryEnter in VehicleDoors.server.luau); this is the safety net for
+-- whatever residual the weld still has to settle, and it has to happen while
+-- the SERVER still owns the chassis - once ownership is the driver's, their
+-- client's physics state is authoritative and anything written here is
+-- overwritten by the next replication tick.
+local SEAT_SETTLE_FRAMES = 3
+
 -- Runs real suspension physics briefly so a freshly-placed car (which may be
 -- floating or embedded, wherever it was left in Studio) settles onto the
 -- ground properly, then Anchors it there. Only ever runs once, at setup -
@@ -144,7 +154,28 @@ local function AddCar(carModel)
 		if occupant then
 			local player = Players:GetPlayerFromCharacter(occupant.Parent)
 			if player then
+				local pose = chassis.CFrame
 				chassis.Anchored = false
+
+				-- Hold the parked pose for a few frames while the server still
+				-- owns the chassis, so anything the seat weld still wants to
+				-- settle gets absorbed here instead of showing up as the car
+				-- lurching or swinging as the driver takes over. Setting CFrame
+				-- on a part moves its whole assembly, so the seated character
+				-- comes along rather than being left behind.
+				for _ = 1, SEAT_SETTLE_FRAMES do
+					if carModel.VehicleSeat.Occupant ~= occupant then
+						return -- got out, died or disconnected mid-settle
+					end
+					chassis.CFrame = pose
+					chassis.AssemblyLinearVelocity = Vector3.zero
+					chassis.AssemblyAngularVelocity = Vector3.zero
+					RunService.Heartbeat:Wait()
+				end
+
+				if carModel.VehicleSeat.Occupant ~= occupant then
+					return
+				end
 				chassis:SetNetworkOwner(player)
 			end
 		else
