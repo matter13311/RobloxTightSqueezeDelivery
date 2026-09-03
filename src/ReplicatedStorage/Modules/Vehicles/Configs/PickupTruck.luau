@@ -3,6 +3,7 @@
 -- proportionally more of both than DEFAULTS just to hold ride height and
 -- accelerate at a normal rate - bumped up from DEFAULTS accordingly.
 return {
+	SteerAngle = 40,
 	DriveWheels = "Rear",
 	WheelModelName = "PickupTruckWheel",
 	WheelRadius = 1.8485, -- half of PickupTruckWheel's 3.697-stud Size.Y/Z - must track that mesh's actual size, not DEFAULTS' 1.5

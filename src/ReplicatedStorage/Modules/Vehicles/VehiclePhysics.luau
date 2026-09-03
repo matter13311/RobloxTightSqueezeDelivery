@@ -703,6 +703,12 @@ function VehiclePhysics.GetSteeringWheelPart(carModel)
 	return found:FindFirstChild("SteeringWheel") or found:FindFirstChildWhichIsA("BasePart")
 end
 
+-- Surface speed a burnout's drive wheels are shown spinning at when the car
+-- doesn't set WheelSpinBoost (which is off by default, and is about wheelspin
+-- on a normal launch - a different thing). Purely a visual number: nothing in
+-- the physics knows or cares how fast a wheel is turning.
+local BURNOUT_SPIN_SPEED = 45
+
 -- `input` fields, all optional:
 --   SmoothSteer  -1..1, only known for the car this client drives
 --   Throttle     gear-aware drive demand, for the wheelspin visual
@@ -740,6 +746,11 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 			if raycast then
 				local weld = VehiclePhysics.GetWheelPrimaryPart(wheelPart):FindFirstChild("Weld")
 				if weld then
+					local isFrontWheel = wheelName:sub(1, 1) == "F"
+					local isDriveWheel = config.DriveWheels == "All"
+						or (config.DriveWheels == "Front" and isFrontWheel)
+						or (config.DriveWheels == "Rear" and not isFrontWheel)
+
 					-- Place the wheel's CENTER (its pivot) WheelRadius above the actual
 					-- ground contact point, not AT it - otherwise the wheel mesh's own
 					-- radius sinks its bottom half straight into the ground, since a
@@ -750,12 +761,26 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 					if localOffset.X > 0 then
 						weld.C0 = weld.C0 * CFrame.Angles(0, math.rad(180), 0)
 					end
-					if wheelName:sub(1, 1) == "F" then
+					if isFrontWheel then
 						weld.C0 = weld.C0 * CFrame.Angles(0, -math.rad(smoothSteer * config.SteerAngle), 0)
 					end
 
-					local localVelocity = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
-						:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
+					-- The wheel's OWN frame, steer included - the same frame
+					-- Step measures grip in, and it has to be, or the effects
+					-- contradict the physics. In the chassis frame a steered
+					-- front wheel that is rolling perfectly still shows a
+					-- sideways velocity of speed * sin(steer), purely because
+					-- it is pointed somewhere the car is not: at 20 studs/s on
+					-- half lock that is 20 * sin(20deg) = 6.8 studs/s, over
+					-- this truck's 6.5 threshold, so every ordinary turn
+					-- screeched and smoked while the physics considered the
+					-- tire completely gripped. Rotating the frame with the
+					-- wheel takes that term out and leaves only genuine slip.
+					local wheelDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
+					if isFrontWheel then
+						wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-smoothSteer * config.SteerAngle), 0)
+					end
+					local localVelocity = wheelDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
 					local wheelSurfaceSpeed = localVelocity.Z
 
@@ -765,26 +790,37 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 					-- the handbrake is only pretending to lock anything.
 					local isLocked = handbrake == true
 						and (config.HandbrakeWheels == "All"
-							or (config.HandbrakeWheels == "Front" and wheelName:sub(1, 1) == "F")
-							or (config.HandbrakeWheels == "Rear" and wheelName:sub(1, 1) ~= "F"))
+							or (config.HandbrakeWheels == "Front" and isFrontWheel)
+							or (config.HandbrakeWheels == "Rear" and not isFrontWheel))
 					if isLocked then
-						wheelSurfaceSpeed = 0
+						-- A burnout is the driven axle overpowering the locked
+						-- brake, so those wheels are the one thing the
+						-- handbrake does NOT hold still - they were being
+						-- forced to zero along with everything else, which is
+						-- why the rears sat frozen during one. There is no road
+						-- speed to derive their spin from (the car going
+						-- nowhere is what makes it a burnout), so it comes
+						-- straight off the throttle. Negated because this is
+						-- a velocity in the wheel's own frame, where forward is
+						-- -Z (CFrame.lookAt points a CFrame's -Z along the
+						-- direction given) - so positive throttle has to
+						-- produce a NEGATIVE surface speed to spin the same way
+						-- driving forwards does.
+						wheelSurfaceSpeed = if input.Burnout and isDriveWheel
+							then -throttle * (if config.WheelSpinBoost ~= 0 then config.WheelSpinBoost else BURNOUT_SPIN_SPEED)
+							else 0
 					end
 
-					if not isLocked and throttle and throttle ~= 0 and config.WheelSpinBoost ~= 0 then
-						local isFrontWheel = wheelName:sub(1, 1) == "F"
-						local isDriveWheel = config.DriveWheels == "All"
-							or (config.DriveWheels == "Front" and isFrontWheel)
-							or (config.DriveWheels == "Rear" and not isFrontWheel)
-						if isDriveWheel then
-							-- Wheelspin: under throttle, the tire's surface can move
-							-- faster than the car actually is - it's spinning "in
-							-- place" rather than purely rolling with the ground. Fades
-							-- out as the car catches up to MaxSpeed, so it reads as a
-							-- burnout/wheelspin rather than the wheel spinning forever.
-							local slipRoom = math.max(0, 1 - math.abs(localVelocity.Z) / config.MaxSpeed)
-							wheelSurfaceSpeed += throttle * config.WheelSpinBoost * slipRoom
-						end
+					if not isLocked and isDriveWheel and throttle ~= 0 and config.WheelSpinBoost ~= 0 then
+						-- Wheelspin: under throttle, the tire's surface can move
+						-- faster than the car actually is - it's spinning "in
+						-- place" rather than purely rolling with the ground. Fades
+						-- out as the car catches up to MaxSpeed, so it reads as a
+						-- burnout/wheelspin rather than the wheel spinning forever.
+						-- Negated for the same reason as the burnout case
+						-- above: forward is -Z in this frame.
+						local slipRoom = math.max(0, 1 - math.abs(localVelocity.Z) / config.MaxSpeed)
+						wheelSurfaceSpeed -= throttle * config.WheelSpinBoost * slipRoom
 					end
 
 					rotationState[wheelName] = (rotationState[wheelName] or 0.5) + wheelSurfaceSpeed / 56 --56 should be same as math.rad(number)
@@ -826,14 +862,13 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 						-- going anywhere, and nothing in this model tracks
 						-- wheel rotation independently of road speed. It's an
 						-- unambiguous, deliberate two-key action though, so
-						-- the driver's client just declares it.
-						if input.Burnout then
-							local isDriveWheel = config.DriveWheels == "All"
-								or (config.DriveWheels == "Front" and wheelName:sub(1, 1) == "F")
-								or (config.DriveWheels == "Rear" and wheelName:sub(1, 1) ~= "F")
-							if isDriveWheel then
-								slip = math.max(slip, config.TractionSlipThreshold * 1.6)
-							end
+						-- the driver's client just declares it - but only for
+						-- the wheels actually being driven. The undriven axle
+						-- is standing still doing nothing during a burnout and
+						-- has no business smoking.
+						local burningOut = input.Burnout == true and isDriveWheel
+						if burningOut then
+							slip = math.max(slip, config.TractionSlipThreshold * 1.6)
 						end
 
 						-- The two gates. A car has to actually be travelling
@@ -843,7 +878,7 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 						-- screeching and smoking forever. A burnout is exempt,
 						-- since being stationary is the whole point of it.
 						local carSpeed = carPrim.AssemblyLinearVelocity.Magnitude
-						local counts = input.Burnout
+						local counts = burningOut
 							or (carSpeed >= config.TractionMinCarSpeed and slip >= config.TractionSlipThreshold)
 						input.SlipOut[wheelName] = if counts then slip else 0
 					end

@@ -19,6 +19,17 @@ local EXIT_MARKER_NAME = "DriverExit"
 
 local HANDBRAKE_ACTION = "VehicleHandbrake"
 local EXIT_ACTION = "VehicleExit"
+local STEER_ACTION = "VehicleSteer"
+
+-- Which way A/D are being held right now, read straight off the keys instead
+-- of off VehicleSeat.SteerFloat. The seat derives its axes from
+-- Humanoid.MoveDirection, which is a UNIT vector: holding W and D together
+-- gives it (0.707, 0, -0.707), so SteerFloat drops from 1 to 0.707 the moment
+-- you touch the gas and the wheels visibly unwind ~30% of their lock. Keys are
+-- digital, so this doesn't happen here. Gamepad/touch steering is genuinely
+-- analog and still comes from the seat (see steerInput).
+local steerLeftHeld = false
+local steerRightHeld = false
 
 -- Per-vehicle state for the wheel VISUALS only (every client tracks this for
 -- every car it can see, not just the one it's driving - see UpdateWheelVisuals).
@@ -151,6 +162,19 @@ local function tryExitVehicle()
 	end)
 end
 
+-- Full lock is full lock whether or not you're also on the gas. On a keyboard
+-- that means reading A/D directly, because the seat's own SteerFloat is a
+-- component of a normalised move vector and shrinks to 0.707 as soon as W is
+-- added. Nothing held on the keyboard falls back to the seat, which is what
+-- keeps gamepad thumbsticks and the mobile steering slider analog.
+local function steerInput(seatPart)
+	local keyboardSteer = (if steerRightHeld then 1 else 0) - (if steerLeftHeld then 1 else 0)
+	if keyboardSteer ~= 0 then
+		return keyboardSteer
+	end
+	return seatPart.SteerFloat
+end
+
 local function bindDrivingControls()
 	-- High priority + Sink is what stops Space from reaching the default
 	-- character controls at all, so it never sets Humanoid.Jump and never
@@ -170,6 +194,20 @@ local function bindDrivingControls()
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
 
+	-- Passes the keys through rather than sinking them: the seat still sees
+	-- them (it's what turns the character to face the car's heading and what
+	-- other clients replicate), we just don't trust its steer axis.
+	ContextActionService:BindAction(STEER_ACTION, function(_, inputState, inputObject)
+		local key = inputObject.KeyCode
+		local held = inputState == Enum.UserInputState.Begin
+		if key == Enum.KeyCode.A or key == Enum.KeyCode.Left then
+			steerLeftHeld = held
+		elseif key == Enum.KeyCode.D or key == Enum.KeyCode.Right then
+			steerRightHeld = held
+		end
+		return Enum.ContextActionResult.Pass
+	end, false, Enum.KeyCode.A, Enum.KeyCode.D, Enum.KeyCode.Left, Enum.KeyCode.Right)
+
 	ContextActionService:BindAction(EXIT_ACTION, function(_, inputState)
 		if inputState == Enum.UserInputState.Begin then
 			tryExitVehicle()
@@ -179,9 +217,11 @@ local function bindDrivingControls()
 end
 
 local function unbindDrivingControls()
-	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION } do
+	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION, STEER_ACTION } do
 		ContextActionService:UnbindAction(action)
 	end
+	steerLeftHeld = false
+	steerRightHeld = false
 end
 
 -- `expected` guards against a stale drive loop tearing down the session that
@@ -313,7 +353,7 @@ local function beginDrive(humanoid, seatPart)
 
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
-			Steer = seatPart.SteerFloat,
+			Steer = steerInput(seatPart),
 			Brake = drive.Brake,
 			Handbrake = mySession.Handbrake,
 			TorqueMultiplier = drive.TorqueMultiplier,
