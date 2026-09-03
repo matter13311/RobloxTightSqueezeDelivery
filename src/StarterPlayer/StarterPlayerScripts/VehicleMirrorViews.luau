@@ -133,6 +133,31 @@ local MAX_PIXELS_PER_STUD = 2000
 
 local MAX_DISTANCE = 60
 
+-- Clones are placed in the VIEWPORT's own space rather than at their real
+-- world coordinates, with the mirror camera parked permanently here. See the
+-- comment above the placement loops in updateMirror for why.
+local VIEWPORT_ANCHOR = CFrame.identity
+
+-- Hold the driven car still in viewport space instead of re-placing it every
+-- frame. It is welded to the same chassis the mirror is, so its position in
+-- the mirror genuinely cannot change - recomputing it each frame is not just
+-- wasted work, it is wasted work that reintroduces floating-point shimmer.
+--
+-- The tradeoff: anything on the car that moves RELATIVE to the chassis stops
+-- moving in the mirror too, so your own wheels do not visibly spin there. At
+-- mirror size that is close to unnoticeable and worth the trade; set false to
+-- go back to per-frame placement and get it back.
+--
+-- Only applies in "Camera" + "Rearward", the one combination where the view is
+-- derived purely from the chassis. "Physical" and "Reflect" both aim off the
+-- driver's HEAD, which drifts independently, so the car's place in the mirror
+-- is genuinely not constant there and freezing it would smear. Start() checks
+-- this and falls back to per-frame placement on its own.
+local FREEZE_OWN_CAR = true
+-- How far the mirror has to shift relative to the chassis before the frozen
+-- car is rebuilt - i.e. the door it is mounted on swinging open.
+local FREEZE_EPSILON = 1e-4
+
 -- Draw the mirrors through anything in front of them.
 --
 -- This exists for one specific problem: a SurfaceGui seen through a partly
@@ -403,6 +428,7 @@ local function buildRig(mirrorPart, aim)
 	local camera = Instance.new("Camera")
 	camera.Name = "MirrorCamera"
 	camera.Parent = viewport
+	camera.CFrame = VIEWPORT_ANCHOR
 	viewport.CurrentCamera = camera
 
 	-- THE thing that makes a ViewportFrame work on a world surface, and it is
@@ -436,6 +462,13 @@ local function buildRig(mirrorPart, aim)
 		Pool = {},
 		-- [sourcePart] = clone, the subset currently parented into World.
 		Active = {},
+		-- Active, split by whether the source rides on the driven car. Only
+		-- ActiveWorld is walked every frame; ActiveCar is written once and
+		-- then left alone until the mirror moves relative to the chassis.
+		ActiveCar = {},
+		ActiveWorld = {},
+		CarDirty = true,
+		FrozenBasis = nil,
 		NextUpdate = 0,
 	}
 end
@@ -639,6 +672,8 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 		if not wanted[source] then
 			clone.Parent = nil
 			mirror.Active[source] = nil
+			mirror.ActiveCar[source] = nil
+			mirror.ActiveWorld[source] = nil
 		end
 	end
 
@@ -657,6 +692,13 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			if not mirror.Active[source] then
 				entry.Clone.Parent = mirror.World
 				mirror.Active[source] = entry.Clone
+				if state.FreezeCar and state.CarParts[source] then
+					mirror.ActiveCar[source] = entry.Clone
+					-- Never placed yet, so the frozen set owes it a position.
+					mirror.CarDirty = true
+				else
+					mirror.ActiveWorld[source] = entry.Clone
+				end
 			end
 		end
 	end
@@ -668,6 +710,8 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			entry.Clone:Destroy()
 			mirror.Pool[source] = nil
 			mirror.Active[source] = nil
+			mirror.ActiveCar[source] = nil
+			mirror.ActiveWorld[source] = nil
 		end
 	end
 end
@@ -748,6 +792,7 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 
 	local transform
 	local camPos
+	local worldViewCF
 	local filterNormal = normal
 	if state.Mode == "Reflect" then
 		-- World gets mirrored, camera stays at the player's real eye. This is
@@ -756,7 +801,7 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 		-- exactly as it would in life.
 		transform = reflectionCFrame(surfacePos, normal)
 		camPos = eye
-		viewCamera.CFrame = CFrame.lookAt(eye, surfacePos, up)
+		worldViewCF = CFrame.lookAt(eye, surfacePos, up)
 	else
 		-- World is copied as-is and the camera does the work instead. Sitting
 		-- it AT the glass rather than at the reflected eye matters: the
@@ -783,7 +828,7 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 			outDir = reflectVector((surfacePos - eye).Unit, normal)
 		end
 		camPos = surfacePos + normal * 0.05
-		viewCamera.CFrame = CFrame.lookAt(camPos, camPos + outDir, up)
+		worldViewCF = CFrame.lookAt(camPos, camPos + outDir, up)
 		-- The car is deliberately NOT excluded any more. It used to be, because
 		-- with a centre-point plane test the dashboard landed on the lens; the
 		-- box tests in refreshScene handle that properly now, rejecting only
@@ -802,15 +847,52 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 		refreshScene(mirror, nearby, surfacePos, filterNormal, now, camPos, transform)
 	end
 
-	if transform then
-		for source, clone in mirror.Active do
-			clone.CFrame = transform * source.CFrame
-		end
-	else
-		for source, clone in mirror.Active do
-			clone.CFrame = source.CFrame
+	-- Everything is placed in the VIEWPORT's own space, not at real world
+	-- coordinates: the camera stays parked at VIEWPORT_ANCHOR and clones are
+	-- written relative to it. Two payoffs, both of which otherwise show up as
+	-- jitter.
+	--
+	-- 1. The car becomes free. A part welded to the chassis and a mirror
+	--    welded to that same chassis never move relative to each other, so the
+	--    car's position IN VIEWPORT SPACE is a constant. Compute it once and
+	--    it is correct forever. That is the snapshot idea done as arithmetic
+	--    rather than as a captured image, which Roblox gives no way to take.
+	-- 2. Precision. Clones sit near the origin instead of out at the map's
+	--    real coordinates, so the multiply chain keeps far more significant
+	--    figures. Error out there reads as shimmer at mirror magnification.
+	local toViewport = VIEWPORT_ANCHOR * worldViewCF:Inverse()
+
+	-- The frozen car is rebuilt only when the mirror has actually moved
+	-- relative to the chassis - in practice, when the door it is mounted on
+	-- swings open. One CFrame compare per mirror replaces ~50 multiplies.
+	if state.FreezeCar then
+		local basis = state.Chassis.CFrame:Inverse() * glassCF
+		if not (mirror.FrozenBasis and mirror.FrozenBasis:FuzzyEq(basis, FREEZE_EPSILON)) then
+			mirror.FrozenBasis = basis
+			mirror.CarDirty = true
 		end
 	end
+
+	if transform then
+		if mirror.CarDirty then
+			for source, clone in mirror.ActiveCar do
+				clone.CFrame = toViewport * transform * source.CFrame
+			end
+		end
+		for source, clone in mirror.ActiveWorld do
+			clone.CFrame = toViewport * transform * source.CFrame
+		end
+	else
+		if mirror.CarDirty then
+			for source, clone in mirror.ActiveCar do
+				clone.CFrame = toViewport * source.CFrame
+			end
+		end
+		for source, clone in mirror.ActiveWorld do
+			clone.CFrame = toViewport * source.CFrame
+		end
+	end
+	mirror.CarDirty = false
 end
 
 local function onRenderStep()
@@ -920,6 +1002,9 @@ function VehicleMirrorViews.Start(carModel, config)
 		Head = player.Character and player.Character:FindFirstChild("Head"),
 		NextQuery = 0,
 		Mode = if MIRROR_MODE == "Auto" then (if reflectSupported then "Reflect" else "Camera") else MIRROR_MODE,
+		FreezeCar = FREEZE_OWN_CAR and AIM_MODE == "Rearward" and (
+			if MIRROR_MODE == "Auto" then not reflectSupported else MIRROR_MODE == "Camera"
+		),
 	}
 
 	-- After the camera has been placed for this frame, so the mirrors are
@@ -944,6 +1029,8 @@ function VehicleMirrorViews.Stop()
 			mirror.Pool[source] = nil
 		end
 		table.clear(mirror.Active)
+		table.clear(mirror.ActiveCar)
+		table.clear(mirror.ActiveWorld)
 	end
 
 	state = nil
