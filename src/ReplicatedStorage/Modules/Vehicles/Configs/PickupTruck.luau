@@ -3,6 +3,22 @@
 -- proportionally more of both than DEFAULTS just to hold ride height and
 -- accelerate at a normal rate - bumped up from DEFAULTS accordingly.
 return {
+	-- Where each mirror points, in degrees - see DEFAULT_MIRRORS in
+	-- VehiclePhysics for what the numbers mean and how they merge (per mirror,
+	-- then per field, so you can override just one value and keep the rest).
+	--
+	-- Yaw swings the view outward from straight-back; the sign that means
+	-- "outward" depends on the chassis' forward axis, and on this truck that
+	-- works out to negative on the left and positive on the right. Pitch tilts
+	-- it down toward the road. Tuned by eye from the driver's seat: enough yaw
+	-- to get the truck's own flank out of the way, enough pitch to see kerbs
+	-- rather than sky.
+	Mirrors = {
+		LeftMirror = { Yaw = -15, Pitch = 15 },
+		RightMirror = { Yaw = 15, Pitch = 15 },
+		RearViewMirror = { Yaw = 0, Pitch = 4 },
+	},
+
 	SteerAngle = 40,
 
 	-- Speed-sensitive steering, and the cure for the truck scrubbing off

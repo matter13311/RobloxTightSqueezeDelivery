@@ -82,43 +82,6 @@ local state = nil
 -- to recover in a ViewportFrame, and why it is a soft loss.
 local MIRROR_MODE = "Camera"
 
--- Prints one line per mirror per second while driving: the mode in use, the
--- canvas resolution actually derived for that glass, how many clones are in
--- its viewport and the FOV. A mirror showing nothing and a mirror showing the
--- wrong thing look identical from the driver's seat, and these four numbers
--- tell them apart immediately - Clones=0 means the scene is empty, everything
--- else means it is rendering and the problem is where it is pointed.
-local DEBUG = true
-
--- The follow-up to DEBUG_FLAT_COLOR, and a three-way answer from one playtest.
--- Drops the real scene entirely and renders a magenta background plus two
--- known-good cubes bolted twelve studs in front of the viewport camera: a RED
--- one parented straight to the ViewportFrame, and a GREEN one parented into
--- the World folder exactly like a real clone.
---
---   Grey             -> the ViewportFrame is not drawing at all, even its own
---                       background. Everything inside it is irrelevant.
---   Magenta only     -> it draws 2D but no 3D. Camera or parenting.
---   Magenta + red    -> 3D works, but NOT through the World folder.
---   Magenta + both   -> the whole render path is healthy, and the real scene is
---                       simply not producing anything to look at: either the
---                       world behind the truck is empty, or selection is
---                       throwing away everything worth showing.
-local DEBUG_TEST_SCENE = false
-
--- The blunter version of the same test, and the one to reach for FIRST: puts a
--- solid red Frame over the whole SurfaceGui. No ViewportFrame, no camera, no
--- clones - just "can a plain GUI colour reach this surface at all".
---
---   Red   -> the SurfaceGui is on the right part, on a face you can see, and
---            nothing is covering it. The display path is sound.
---   Grey  -> it never gets there, and no amount of work on what is INSIDE the
---            viewport can matter. Look at Face, at occluders, at the part.
---
--- Both flags are echoed in the debug line as flat=/test= so there is never any
--- doubt about whether the test you think you are running is running.
-local DEBUG_FLAT_COLOR = false
-
 -- How far around the car to look for things worth putting in the mirror. The
 -- query is centred on the chassis and shared by all three mirrors; each one
 -- then keeps only what is actually behind its own glass.
@@ -218,7 +181,7 @@ local MIRROR_FOV = 40
 --     back; a modelled one usually is not, or not by enough.
 --
 --   "Rearward" - ignore the glass orientation and aim off the CHASSIS:
---     straight back, yawed outward by MIRROR_YAW for the side the mirror is
+--     straight back, yawed outward by the car config Yaw for the side it is
 --     on. Not physically derived, but it always shows the road behind the
 --     truck no matter how the mesh was built, which is the entire point of
 --     having a mirror.
@@ -227,29 +190,19 @@ local MIRROR_FOV = 40
 -- the mirror meshes are actually angled the way real ones are.
 local AIM_MODE = "Rearward"
 
--- ===== THE TWO KNOBS FOR AIMING THE MIRRORS =====
--- Both are in degrees, both only apply to AIM_MODE = "Rearward", and both can
--- be overridden per mirror with a MirrorYaw / MirrorPitch attribute on the
--- mirror part or its Glass (handy for nudging one mirror without a rebuild).
-
--- Swing OUTWARD from straight-back. Positive = toward the car's left, so the
--- left mirror wants positive and the right mirror negative. Raise the
--- magnitude to see less of your own car and more of the lane beside you;
--- lower it to keep the car's flank in frame as a reference.
-local MIRROR_YAW = {
-	LeftMirror = -15,
-	RightMirror = 15,
-	RearViewMirror = 0,
-}
-
--- Tilt DOWN from the horizon. Positive = downward. Higher values put more road
--- and less sky in the mirror, which is usually what you want for judging gaps
--- and kerbs; 0 looks straight back at the horizon.
-local MIRROR_PITCH = {
-	LeftMirror = 15,
-	RightMirror = 15,
-	RearViewMirror = 4,
-}
+-- ===== WHERE THE MIRROR ANGLES LIVE =====
+--
+-- Not here any more. Yaw and Pitch are per CAR TYPE, in that car's
+-- ReplicatedStorage/Modules/Vehicles/Configs/<name>.luau under a `Mirrors`
+-- table - defaults and the full explanation are in VehiclePhysics, at
+-- DEFAULT_MIRRORS. They belong there because the right angle depends on the
+-- cab: body width, how far the mirrors stand off it and how high the driver
+-- sits all change what frames the road instead of the truck's own flank, so a
+-- van and a low sports car want genuinely different numbers.
+--
+-- Precedence per mirror, highest first: a MirrorYaw / MirrorPitch attribute on
+-- the mirror part or its Glass (for nudging one instance live in Studio) >
+-- that car's config file > DEFAULT_MIRRORS.
 
 -- Greebles cost the same per frame as a wall and contribute nothing at mirror
 -- resolution.
@@ -265,7 +218,7 @@ local NEAR_CLIP_MARGIN = 0.35
 -- in, so an unchanging mirror is never the culling's fault - a mirror out of
 -- view then costs exactly what one in view costs. Turn back on once the image
 -- itself is right; see OFFSCREEN_HZ for why it cannot cause a blank frame.
-local CULL_WHEN_OFFSCREEN = false
+local CULL_WHEN_OFFSCREEN = true
 
 -- Clones are never destroyed on the frame they leave view - they are just
 -- unparented, so coming back is a reparent rather than a re-clone. This is
@@ -391,7 +344,7 @@ local function faceOf(mirrorPart, glass)
 	return name
 end
 
-local function buildRig(mirrorPart)
+local function buildRig(mirrorPart, aim)
 	local glass = findGlass(mirrorPart)
 	if not glass then
 		return nil
@@ -435,7 +388,7 @@ local function buildRig(mirrorPart)
 	local viewport = Instance.new("ViewportFrame")
 	viewport.Name = "View"
 	viewport.Size = UDim2.fromScale(1, 1)
-	viewport.BackgroundColor3 = if DEBUG_TEST_SCENE then Color3.fromRGB(255, 0, 255) else VIEWPORT_BACKGROUND
+	viewport.BackgroundColor3 = VIEWPORT_BACKGROUND
 	viewport.BackgroundTransparency = 0
 	viewport.BorderSizePixel = 0
 	viewport.Ambient = VIEWPORT_AMBIENT
@@ -447,35 +400,6 @@ local function buildRig(mirrorPart)
 	world.Name = "World"
 	world.Parent = viewport
 
-	if DEBUG_FLAT_COLOR then
-		local flat = Instance.new("Frame")
-		flat.Name = "FlatTest"
-		flat.Size = UDim2.fromScale(1, 1)
-		flat.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-		flat.BorderSizePixel = 0
-		flat.ZIndex = 10
-		flat.Parent = gui
-	end
-
-	local testDirect, testFolder
-	if DEBUG_TEST_SCENE then
-		-- Deliberately parented to two DIFFERENT places: straight into the
-		-- ViewportFrame, and into the same World folder the real clones go
-		-- into. If only the first shows up, the folder is the bug.
-		testDirect = Instance.new("Part")
-		testDirect.Name = "TestDirect"
-		testDirect.Size = Vector3.new(4, 4, 4)
-		testDirect.Color = Color3.fromRGB(255, 0, 0)
-		testDirect.Anchored = true
-		testDirect.CanCollide = false
-		testDirect.Parent = viewport
-
-		testFolder = testDirect:Clone()
-		testFolder.Name = "TestFolder"
-		testFolder.Color = Color3.fromRGB(0, 255, 0)
-		testFolder.Parent = world
-	end
-
 	local camera = Instance.new("Camera")
 	camera.Name = "MirrorCamera"
 	camera.Parent = viewport
@@ -485,13 +409,8 @@ local function buildRig(mirrorPart)
 	-- not optional: a SurfaceGui parented directly to the BasePart renders 2D
 	-- children (Frames, TextLabels) perfectly well, but any ViewportFrame
 	-- inside it comes out blank. It has to live in PlayerGui with Adornee
-	-- pointing at the part instead.
-	--
-	-- This cost several rounds of debugging: every measurable number said the
-	-- scene was built, placed and aimed correctly, and a solid red test Frame
-	-- on the same SurfaceGui drew fine, because a plain Frame is exactly the
-	-- case that still works when parented to the part. Only the ViewportFrame
-	-- was affected. If a mirror ever goes blank again, check this first.
+	-- pointing at the part instead. If a mirror ever goes blank, check this
+	-- first.
 	--
 	-- Enabled is held off until the tree has settled and the camera is
 	-- assigned, so nothing is ever shown mid-construction.
@@ -504,19 +423,14 @@ local function buildRig(mirrorPart)
 	end)
 
 	return {
-		Part = mirrorPart,
 		Glass = glass,
 		Axes = axes,
-		CanvasPixels = Vector2.new(faceWidth * gui.PixelsPerStud, faceHeight * gui.PixelsPerStud),
 		Gui = gui,
-		Viewport = viewport,
 		Camera = camera,
 		World = world,
 		FovScale = glass:GetAttribute("MirrorFovScale") or mirrorPart:GetAttribute("MirrorFovScale") or FOV_SCALE,
-		Yaw = glass:GetAttribute("MirrorYaw") or mirrorPart:GetAttribute("MirrorYaw") or MIRROR_YAW[mirrorPart.Name] or 0,
-		Pitch = glass:GetAttribute("MirrorPitch") or mirrorPart:GetAttribute("MirrorPitch") or MIRROR_PITCH[mirrorPart.Name] or 0,
-		TestDirect = testDirect,
-		TestFolder = testFolder,
+		Yaw = glass:GetAttribute("MirrorYaw") or mirrorPart:GetAttribute("MirrorYaw") or aim.Yaw or 0,
+		Pitch = glass:GetAttribute("MirrorPitch") or mirrorPart:GetAttribute("MirrorPitch") or aim.Pitch or 0,
 		-- [sourcePart] = { Clone = ..., LastSeen = t }. Entries stay here
 		-- after leaving view; only Parent is cleared.
 		Pool = {},
@@ -852,13 +766,13 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 			-- Straight back off the chassis (carCFrame.LookVector is the car's
 			-- forward - see VehiclePhysics), then yawed outward and pitched
 			-- down. Deliberately ignores the glass's own orientation: see
-			-- AIM_MODE. Adjust with MIRROR_YAW / MIRROR_PITCH.
+			-- AIM_MODE. Adjust in the car config (see DEFAULT_MIRRORS).
 			local back = -state.Chassis.CFrame.LookVector
 			local yawed = (CFrame.fromAxisAngle(Vector3.yAxis, math.rad(mirror.Yaw)) * back).Unit
 			-- Pitch about the horizontal axis perpendicular to the aim, so
 			-- "down" stays down regardless of how far the mirror is yawed out.
 			-- Negated because a positive rotation about that axis lifts the
-			-- aim, and MIRROR_PITCH is written as degrees DOWN.
+			-- aim, and Pitch is written as degrees DOWN.
 			local pitchAxis = yawed:Cross(Vector3.yAxis)
 			if pitchAxis.Magnitude > 1e-4 then
 				outDir = (CFrame.fromAxisAngle(pitchAxis.Unit, math.rad(-mirror.Pitch)) * yawed).Unit
@@ -884,42 +798,19 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 		filterNormal = outDir
 	end
 
-	if DEBUG_TEST_SCENE then
-		-- Pin both cubes twelve studs down the camera's own look vector, one
-		-- either side, so they cannot possibly be out of frame or behind it.
-		local camCF = viewCamera.CFrame
-		mirror.TestDirect.CFrame = camCF * CFrame.new(-3, 0, -12)
-		mirror.TestFolder.CFrame = camCF * CFrame.new(3, 0, -12)
-		mirror.Aim = camCF.LookVector
-		mirror.SurfacePos = surfacePos
-		return
-	end
-
 	if nearby then
 		refreshScene(mirror, nearby, surfacePos, filterNormal, now, camPos, transform)
 	end
-	mirror.Aim = viewCamera.CFrame.LookVector
-	mirror.SurfacePos = surfacePos
 
-	local nearest = math.huge
 	if transform then
 		for source, clone in mirror.Active do
-			local cf = transform * source.CFrame
-			clone.CFrame = cf
-			if DEBUG then
-				nearest = math.min(nearest, (cf.Position - camPos).Magnitude)
-			end
+			clone.CFrame = transform * source.CFrame
 		end
 	else
 		for source, clone in mirror.Active do
-			local cf = source.CFrame
-			clone.CFrame = cf
-			if DEBUG then
-				nearest = math.min(nearest, (cf.Position - camPos).Magnitude)
-			end
+			clone.CFrame = source.CFrame
 		end
 	end
-	mirror.Nearest = nearest
 end
 
 local function onRenderStep()
@@ -950,63 +841,12 @@ local function onRenderStep()
 	-- are the same place, but in third person the camera sits twenty studs
 	-- behind the truck - and every piece of geometry here is derived from the
 	-- eye, so from out there the mirror is computed for a viewpoint that has
-	-- the whole cab between it and the glass. A wildly swinging FieldOfView in
-	-- the debug line (24 -> 71 -> 36) is that happening. The head is where a
-	-- driver's eye actually is, it is stable, and it makes the mirror correct
-	-- for the person driving no matter where the player has zoomed to.
+	-- the whole cab between it and the glass. The head is where a driver's eye
+	-- actually is, it is stable, and it makes the mirror correct for the person
+	-- driving no matter where the player has zoomed to.
 	local eye = state.Head and state.Head.Parent and state.Head.Position or camera.CFrame.Position
 	for _, mirror in state.Mirrors do
 		updateMirror(mirror, nearby, camera, eye, now)
-	end
-
-	if DEBUG and now >= state.NextDebug then
-		state.NextDebug = now + 1
-		for _, mirror in state.Mirrors do
-			local active = 0
-			for _ in mirror.Active do
-				active += 1
-			end
-			-- How far the mirror is aimed from straight-back along the chassis.
-			-- Near 0 means it looks down the road behind you; near 180 means it
-			-- is pointed at the windscreen, which is the single most likely
-			-- reason a mirror renders a featureless wall.
-			local offBack = -1
-			if mirror.Aim then
-				local back = -state.Chassis.CFrame.LookVector
-				offBack = math.deg(math.acos(math.clamp(mirror.Aim:Dot(back), -1, 1)))
-			end
-			-- What the driver's eye actually hits on the way to the glass. If
-			-- this is anything other than the Glass part itself, THAT is what
-			-- is being looked at - the mirror is behind it and no amount of
-			-- work on the viewport contents will ever be visible.
-			local blocker = "?"
-			if mirror.SurfacePos then
-				local params = RaycastParams.new()
-				params.FilterType = Enum.RaycastFilterType.Exclude
-				params.FilterDescendantsInstances = { player.Character }
-				local hit = workspace:Raycast(eye, mirror.SurfacePos - eye, params)
-				blocker = if hit then hit.Instance.Name else "none"
-			end
-
-			print(
-				string.format(
-					"[Mirror] %s mode=%s/%s canvas=%dx%d clones=%d fov=%.1f nearest=%.2f offBack=%.0fdeg hits=%s face=%s flat=%s test=%s",
-					mirror.Part.Name,
-					state.Mode,
-					AIM_MODE,
-					mirror.CanvasPixels.X,
-					mirror.CanvasPixels.Y,
-					active,
-					mirror.Camera.FieldOfView,
-					mirror.Nearest or -1,
-					offBack,
-					blocker,
-					mirror.Gui.Face.Name,
-					tostring(DEBUG_FLAT_COLOR),
-					tostring(DEBUG_TEST_SCENE)
-				)
-			)
-		end
 	end
 end
 
@@ -1014,7 +854,7 @@ end
 -- Public API
 -- =========================================================================
 
-function VehicleMirrorViews.Start(carModel)
+function VehicleMirrorViews.Start(carModel, config)
 	VehicleMirrorViews.Stop()
 
 	local mirrorFolder = carModel:FindFirstChild("Mirror")
@@ -1034,11 +874,17 @@ function VehicleMirrorViews.Start(carModel)
 		end
 	end
 
+	-- Aim angles come from the car's own config (VehiclePhysics DEFAULT_MIRRORS
+	-- merged with Configs/<name>.luau). The empty fallback keeps a caller that
+	-- passes no config working - every mirror just reads 0/0 and looks straight
+	-- back, which is wrong but harmless and obvious.
+	local mirrorAims = (config and config.Mirrors) or {}
+
 	local mirrors = {}
 	for _, name in MIRROR_NAMES do
 		local part = mirrorFolder:FindFirstChild(name)
 		if part and part:IsA("BasePart") then
-			local rig = buildRig(part)
+			local rig = buildRig(part, mirrorAims[name] or {})
 			if rig then
 				table.insert(mirrors, rig)
 			end
@@ -1073,7 +919,6 @@ function VehicleMirrorViews.Start(carModel)
 		Exclude = { mirrorFolder, player.Character },
 		Head = player.Character and player.Character:FindFirstChild("Head"),
 		NextQuery = 0,
-		NextDebug = 0,
 		Mode = if MIRROR_MODE == "Auto" then (if reflectSupported then "Reflect" else "Camera") else MIRROR_MODE,
 	}
 

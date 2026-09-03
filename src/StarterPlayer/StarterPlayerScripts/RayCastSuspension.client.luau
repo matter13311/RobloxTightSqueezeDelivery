@@ -11,6 +11,7 @@ local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
 local VehicleControls = require(script.Parent.VehicleControls)
 local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
+local VehicleZoom = require(script.Parent.VehicleZoom)
 
 local player = Players.LocalPlayer
 
@@ -338,6 +339,7 @@ local function endDrive(expected)
 
 	unbindDrivingControls()
 	VehicleMirrorViews.Stop()
+	VehicleZoom.Stop()
 	session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	session.Dashboard:Destroy()
 	if session.ShiftSound then
@@ -415,7 +417,10 @@ local function beginDrive(humanoid, seatPart)
 	-- this client - so they are built here and torn down in endDrive rather
 	-- than living with the model. A bystander (or a driver of a different car)
 	-- never pays for them. See VehicleMirrorViews.
-	VehicleMirrorViews.Start(carModel)
+	VehicleMirrorViews.Start(carModel, config)
+	-- Hold right mouse to zoom in - mainly so the far door mirror is
+	-- readable. Session-scoped like the mirrors, so it cannot fire on foot.
+	VehicleZoom.Start()
 
 	local mySession = session
 

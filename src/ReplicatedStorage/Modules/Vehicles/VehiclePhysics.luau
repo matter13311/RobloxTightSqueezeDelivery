@@ -294,6 +294,32 @@ local OPTIONAL_KEYS = {
 -- own default wheel model).
 local OPTIONAL_STRING_KEYS = { "WheelModelName" }
 
+-- Where each mirror POINTS, in degrees, consumed by VehicleMirrorViews on the
+-- client. Per car type, because it depends entirely on the cab: how wide the
+-- body is, how far out the mirrors sit and how high the driver's head is all
+-- change the angle that frames the road nicely instead of the truck's own
+-- flank. A van and a low sports car want quite different numbers.
+--
+--   Yaw    swing OUTWARD from straight-back. Bigger magnitude = less of your
+--          own bodywork and more of the lane beside you. Which SIGN points
+--          outward depends on the chassis' forward axis, so don't reason about
+--          it - if a mirror swings the wrong way, flip the sign. On the
+--          PickupTruck the left mirror is negative and the right positive.
+--   Pitch  tilt DOWN from the horizon, positive is downward. Bigger = more
+--          road and less sky, which is what helps for kerbs and tight gaps.
+--
+-- Only used when VehicleMirrorViews is in AIM_MODE "Rearward" (its default),
+-- which ignores how the mirror mesh happens to be rotated. In "Physical" mode
+-- the aim comes off the glass itself and these are not consulted.
+--
+-- These values are the ones tuned by eye on the PickupTruck; they are a
+-- reasonable starting point for any car, not a physical constant.
+local DEFAULT_MIRRORS = {
+	LeftMirror = { Yaw = -15, Pitch = 15 },
+	RightMirror = { Yaw = 15, Pitch = 15 },
+	RearViewMirror = { Yaw = 0, Pitch = 4 },
+}
+
 -- Precedence, highest first: an Attribute set directly on this Chassis
 -- instance > the car-type's Configs/<name>.luau file > DEFAULTS. This lets
 -- you define a car type once in a file, and still nudge one specific
@@ -356,6 +382,29 @@ function VehiclePhysics.GetConfig(chassis)
 		end
 	end
 	config.Transmission = transmission
+
+	-- Mirrors merge one level DEEPER than Transmission: per mirror name, and
+	-- then per field within it. A car that only wants to widen its left mirror
+	-- writes Mirrors = { LeftMirror = { Yaw = 40 } } and keeps the default
+	-- Pitch, plus both other mirrors untouched. Replacing wholesale (the way
+	-- Gears is) would silently zero the fields it didn't mention, and an
+	-- unstated angle reading as 0 is a mirror aimed at the horizon.
+	local mirrors = {}
+	local fileMirrors = fileConfig and fileConfig.Mirrors
+	for name, defaults in DEFAULT_MIRRORS do
+		local merged = {}
+		for key, value in defaults do
+			merged[key] = value
+		end
+		local override = fileMirrors and fileMirrors[name]
+		if override then
+			for key, value in override do
+				merged[key] = value
+			end
+		end
+		mirrors[name] = merged
+	end
+	config.Mirrors = mirrors
 
 	return config
 end
