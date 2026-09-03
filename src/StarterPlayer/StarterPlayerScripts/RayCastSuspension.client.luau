@@ -7,8 +7,23 @@ local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics
 local Gearbox = require(ReplicatedStorage.Modules.Vehicles.Gearbox)
 local VehicleDashboard = require(script.Parent.VehicleDashboard)
 local VehicleEffects = require(script.Parent.VehicleEffects)
+local VehicleLights = require(script.Parent.VehicleLights)
+local VehicleControls = require(script.Parent.VehicleControls)
 
 local player = Players.LocalPlayer
+
+-- Braking/reversing/burnout state is only known to the client actually
+-- driving a car - a bystander can't derive it from replicated velocity the
+-- way cornering slip can (see VehicleEffects.luau). This RemoteEvent is how
+-- the driving client tells the server, which stamps it onto the vehicle as
+-- Attributes for everyone else to read straight off - see
+-- VehicleNetworkState.server.luau.
+local vehicleNetworkState = ReplicatedStorage:WaitForChild("VehicleNetworkState")
+
+-- How much the ramped throttle has to move before it's worth another
+-- RemoteEvent - without this, DriveThrottle's continuous ramp would fire one
+-- every single frame the whole time the pedal is moving.
+local NET_THROTTLE_EPSILON = 0.05
 
 -- Name of the Attachment (or Part) that marks where the driver is put down
 -- when they press F. Put one on the Chassis, at GROUND level just outside the
@@ -20,6 +35,9 @@ local EXIT_MARKER_NAME = "DriverExit"
 local HANDBRAKE_ACTION = "VehicleHandbrake"
 local EXIT_ACTION = "VehicleExit"
 local STEER_ACTION = "VehicleSteer"
+local HEADLIGHT_ACTION = "VehicleHeadlights"
+local TURN_SIGNAL_LEFT_ACTION = "VehicleTurnSignalLeft"
+local TURN_SIGNAL_RIGHT_ACTION = "VehicleTurnSignalRight"
 
 -- Which way A/D are being held right now, read straight off the keys instead
 -- of off VehicleSeat.SteerFloat. The seat derives its axes from
@@ -80,6 +98,29 @@ local function createSound(parent, name, soundId, volume)
 	sound.RollOffMaxDistance = 150
 	sound.Parent = parent
 	return sound
+end
+
+-- Fires only when something a bystander would actually see has changed,
+-- rather than every frame - booleans are compared exactly, Throttle against
+-- NET_THROTTLE_EPSILON since it ramps continuously while accelerating.
+local function sendNetworkStateIfChanged(mySession, carModel)
+	local sent = mySession.NetSent
+	local changed = sent.Braking ~= mySession.Braking
+		or sent.Reversing ~= mySession.Reversing
+		or sent.Burnout ~= mySession.Burnout
+		or sent.Handbrake ~= mySession.Handbrake
+		or math.abs(sent.Throttle - mySession.DriveThrottle) >= NET_THROTTLE_EPSILON
+	if not changed then
+		return
+	end
+
+	sent.Braking = mySession.Braking
+	sent.Reversing = mySession.Reversing
+	sent.Burnout = mySession.Burnout
+	sent.Handbrake = mySession.Handbrake
+	sent.Throttle = mySession.DriveThrottle
+
+	vehicleNetworkState:FireServer(carModel, sent.Braking, sent.Reversing, sent.Burnout, sent.Handbrake, sent.Throttle)
 end
 
 local function playSound(sound)
@@ -214,10 +255,31 @@ local function bindDrivingControls()
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.F)
+
+	ContextActionService:BindAction(HEADLIGHT_ACTION, function(_, inputState)
+		if inputState == Enum.UserInputState.Begin and session then
+			VehicleControls.ToggleHeadlights(session.CarModel)
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.KeyCode.L)
+
+	ContextActionService:BindAction(TURN_SIGNAL_LEFT_ACTION, function(_, inputState)
+		if inputState == Enum.UserInputState.Begin and session then
+			VehicleControls.ToggleTurnSignal(session.CarModel, "Left")
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.KeyCode.Q)
+
+	ContextActionService:BindAction(TURN_SIGNAL_RIGHT_ACTION, function(_, inputState)
+		if inputState == Enum.UserInputState.Begin and session then
+			VehicleControls.ToggleTurnSignal(session.CarModel, "Right")
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.KeyCode.E)
 end
 
 local function unbindDrivingControls()
-	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION, STEER_ACTION } do
+	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION, STEER_ACTION, HEADLIGHT_ACTION, TURN_SIGNAL_LEFT_ACTION, TURN_SIGNAL_RIGHT_ACTION } do
 		ContextActionService:UnbindAction(action)
 	end
 	steerLeftHeld = false
@@ -282,6 +344,12 @@ local function beginDrive(humanoid, seatPart)
 		Handbrake = false,
 		DriveThrottle = 0,
 		Burnout = false,
+		Braking = false,
+		Reversing = false,
+		-- Last state actually sent over the network - starts at sentinel
+		-- values so the very first frame always sends, even though 0/false
+		-- match Throttle/Handbrake's own initial values above.
+		NetSent = { Braking = false, Reversing = false, Burnout = false, Handbrake = false, Throttle = -math.huge },
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
 		SelectorSound = createSound(chassis, "GearSelectorSound", config.SelectorSoundId, config.SelectorSoundVolume),
@@ -351,6 +419,13 @@ local function beginDrive(humanoid, seatPart)
 			and drive.Throttle ~= 0
 			and speed < config.TractionMinCarSpeed
 
+		-- Selector == "R" rather than Throttle < 0, so the reverse light is on
+		-- for the whole time the car is in reverse gear - including sitting
+		-- still with no gas held - the same as a real reverse light.
+		mySession.Braking = drive.Brake > 0
+		mySession.Reversing = mySession.Gearbox.Selector == "R"
+		sendNetworkStateIfChanged(mySession, carModel)
+
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
 			Steer = steerInput(seatPart),
@@ -389,15 +464,6 @@ local function onCharacterAdded(character)
 	humanoid.Died:Connect(function()
 		endDrive()
 	end)
-
-	-- Headlights placeholder, kept from before the gearbox work: bound for the
-	-- whole character rather than per drive session, and does nothing until
-	-- the SwitchLight remote actually exists.
-	ContextActionService:BindAction("lightButton", function(_, inputState)
-		if humanoid.SeatPart and inputState == Enum.UserInputState.Begin then
-			-- game.ReplicatedStorage.SwitchLight:FireServer()
-		end
-	end, false, Enum.KeyCode.L)
 end
 
 -- Rotates the steering wheel prop in the cab to match the road wheels. The
@@ -452,6 +518,7 @@ end
 -- the model.
 workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	VehicleEffects.Clear(vehicle)
+	VehicleLights.Clear(vehicle)
 	wheelAttachmentsCache[vehicle] = nil
 	wheelRotationState[vehicle] = nil
 	wheelSlipState[vehicle] = nil
@@ -462,6 +529,14 @@ end)
 -- is bound once for the client rather than per character spawn.
 RunService:BindToRenderStep("MoveWheels", 5, function()
 	for _, vehicle in workspace.Vehicles:GetChildren() do
+		-- Headlights and turn signals are switch state, not driving
+		-- telemetry - they react to their own Attribute-changed signals (see
+		-- VehicleLights) and matter even for a parked, Anchored car (e.g. a
+		-- driver left the headlights on when they got out), so this runs
+		-- unconditionally rather than inside the Anchored check below.
+		VehicleLights.EnsureHeadlights(vehicle)
+		VehicleLights.EnsureTurnSignals(vehicle)
+
 		local attachments = getWheelAttachments(vehicle)
 		local chassis = attachments and vehicle.PrimaryPart
 		-- Parked cars are Anchored and don't need their wheels touched at
@@ -474,10 +549,11 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 
 			-- Only the car THIS client is currently driving has a real smoothed
 			-- steer value (from the physics loop above) - other cars' front
-			-- wheels stay centered visually, since we don't get their driver's
-			-- steer input replicated to us. Same story for throttle (used for
-			-- the wheelspin visual) and the handbrake (used to stop locked
-			-- wheels turning): only known for the car we're driving.
+			-- wheels stay centered visually, since steering isn't replicated at
+			-- all. Throttle/handbrake/burnout/braking/reversing ARE replicated
+			-- for other cars (see VehicleNetworkState), just at lower fidelity
+			-- (see sendNetworkStateIfChanged) since they don't need to be
+			-- frame-perfect the way the driver's own steering feel does.
 			wheelSlipState[vehicle] = wheelSlipState[vehicle] or {}
 
 			local drivingState = drivingStates[vehicle]
@@ -485,6 +561,8 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			local throttle = 0
 			local handbrake = false
 			local burnout = false
+			local isBraking = false
+			local isReversing = false
 			if session and session.CarModel == vehicle then
 				-- The GEAR's drive demand, not the raw seat axis. S is the
 				-- brake now, so feeding ThrottleFloat straight in here would
@@ -492,6 +570,19 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				throttle = session.DriveThrottle
 				handbrake = session.Handbrake
 				burnout = session.Burnout
+				isBraking = session.Braking
+				isReversing = session.Reversing
+			else
+				-- Someone else's car (or nobody's driving it): there's no
+				-- local session to read, so fall back to whatever the driving
+				-- client last reported over VehicleNetworkState. Defaults
+				-- match a car nobody is driving - see the Occupant reset in
+				-- Raycast.server.luau.
+				throttle = vehicle:GetAttribute("NetThrottle") or 0
+				handbrake = vehicle:GetAttribute("NetHandbrake") or false
+				burnout = vehicle:GetAttribute("NetBurnout") or false
+				isBraking = vehicle:GetAttribute("NetBraking") or false
+				isReversing = vehicle:GetAttribute("NetReversing") or false
 			end
 
 			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, wheelRotationState[vehicle], {
@@ -502,6 +593,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				SlipOut = wheelSlipState[vehicle],
 			})
 			VehicleEffects.Update(vehicle, config, wheelSlipState[vehicle])
+			VehicleLights.Update(vehicle, isBraking, isReversing)
 			updateSteeringWheel(vehicle, config, smoothSteer)
 		end
 	end

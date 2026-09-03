@@ -107,6 +107,13 @@ local function AddCar(carModel)
 	-- being re-disabled per client on each sit.
 	carModel.VehicleSeat.HeadsUpDisplay = false
 
+	-- Light switches are a physical position, not driving telemetry - they
+	-- start off/centered and stay wherever a driver last left them, rather
+	-- than resetting when the car is vacated (see the Occupant listener
+	-- below, which only resets the Net* driving telemetry).
+	carModel:SetAttribute("HeadlightsOn", false)
+	carModel:SetAttribute("TurnSignal", "None")
+
 	-- Rigidly weld static decoration (body panels, lights) to the chassis so
 	-- it rides along with suspension movement. Doors and the steering wheel
 	-- are deliberately left out - the steering wheel gets its own animatable
@@ -141,6 +148,15 @@ local function AddCar(carModel)
 			end
 		else
 			chassis.Anchored = true
+			-- Nobody's left to keep sending updates for these, so clear them
+			-- rather than leaving the last driver's state stuck (e.g. a
+			-- bystander walking up to a parked car that's frozen mid-brake
+			-- light because that's how its last driver left it).
+			carModel:SetAttribute("NetBraking", false)
+			carModel:SetAttribute("NetReversing", false)
+			carModel:SetAttribute("NetBurnout", false)
+			carModel:SetAttribute("NetHandbrake", false)
+			carModel:SetAttribute("NetThrottle", 0)
 		end
 	end)
 
