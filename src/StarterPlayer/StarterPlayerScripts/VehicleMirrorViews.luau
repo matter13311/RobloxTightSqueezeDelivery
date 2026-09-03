@@ -123,18 +123,51 @@ local MAX_NEW_CLONES_PER_REFRESH = 12
 -- makes scenery blink.
 local OCCLUSION_GRACE = 1.0
 
+-- Parts with a bounding radius above this are never occlusion-tested. See
+-- isVisible: one ray cannot stand in for a floor or a building face, and those
+-- are the occluders rather than the occluded.
+local OCCLUSION_MAX_RADIUS = 40
+
+-- Time constant, in seconds, for smoothing the chassis frame the whole mirror
+-- view is derived from.
+--
+-- The raycast suspension leaves a constant fine tremor in the chassis'
+-- orientation - real, correct, and far too small to notice looking out of the
+-- windscreen. A mirror magnifies it: at a 40 degree field of view a fraction
+-- of a degree of chassis shake swings the entire mirrored scene, which is what
+-- reads as the mirror being choppy rather than the game being slow.
+--
+-- Everything the mirror uses - camera position, aim, and the glass plane - is
+-- rebuilt from this smoothed frame plus constant offsets, NOT from the live
+-- glass CFrame. That matters for more than smoothness: it is what keeps the
+-- frozen car valid, since car and camera stay rigid to the same frame.
+--
+-- Small enough to be imperceptible as lag (50ms), large enough to kill the
+-- tremor. Raise if it still shimmers, lower if the mirror feels rubbery.
+local AIM_SMOOTHING_TAU = 0.05
+-- Beyond this much movement in one frame it is a teleport or a respawn, not
+-- motion; smoothing across it would smear the view for a moment.
+local AIM_SNAP_DISTANCE = 25
+
 -- The three mirrors refresh ROUND-ROBIN, one per tick, rather than all in the
 -- same frame: three sorts of a few thousand candidates back to back is a
 -- visible hitch at a large render distance. Staggering spreads it flat.
 
 -- A mirror outside the player's view keeps its scene alive and simply updates
--- more slowly - it is never torn down and never re-cloned. That is the whole
--- reason there is no blank frame when it comes back into view: the clones were
--- there the entire time, at most a sixth of a second stale.
-local OFFSCREEN_HZ = 6
--- Slack on the frustum test, as a fraction of the viewport, so a mirror
--- hovering at the edge of the screen doesn't flicker between rates.
-local VIEW_MARGIN = 0.25
+-- more slowly - it is never torn down and never re-cloned. That is why there
+-- is no blank frame when it comes back into view: the clones were there the
+-- whole time, at most a fraction of a second stale.
+--
+-- Both numbers are deliberately generous. The in-view test samples the glass's
+-- CENTRE POINT only, and a door mirror sits far out toward the edge of the
+-- screen, so a mirror can be plainly visible while its centre reads as off
+-- screen. Getting that wrong throttles a mirror the player is looking at,
+-- which is indistinguishable from the mirror being broken - and the saving is
+-- small either way, since there are only ever three of these. Erring toward
+-- doing the work is the right trade.
+local OFFSCREEN_HZ = 12
+-- Slack on the frustum test, as a fraction of the viewport.
+local VIEW_MARGIN = 0.5
 
 -- Resolution is specified as a CANVAS SIZE, not as pixels-per-stud, and this
 -- is not a nicety - a door mirror's glass is about one stud across, so any
@@ -647,15 +680,36 @@ local function insideFrustum(position, radius, view)
 end
 
 -- Can the mirror actually SEE this part, or is a wall in the way? One ray from
--- the camera to the part's centre: if the first thing it meets is the part
--- itself, it is visible.
+-- the camera: if the first thing it meets is the part itself, it is visible.
+--
+-- Aimed at the NEAREST POINT of the part, not its centre. Aiming at the centre
+-- works for props and fails badly for anything large: the floor's centre can be
+-- hundreds of studs away with a building in between, so the ground under your
+-- own wheels tests as hidden and the mirror loses its floor. The nearest point
+-- of the floor is directly below the mirror, which is the honest question.
+--
+-- Parts bigger than OCCLUSION_MAX_RADIUS skip the test entirely. A single ray
+-- cannot represent a 2000-stud baseplate at all, and structural geometry of
+-- that size is what does the OCCLUDING - it is almost never the thing that
+-- ought to be culled.
 --
 -- The car and the mirror hardware are excluded from the ray rather than
 -- treated as occluders. They genuinely do block the view, but they are also
 -- millimetres from the camera and would cull huge amounts of what you can
 -- plainly see past them.
 local function isVisible(part, view, params)
-	local hit = workspace:Raycast(view.Origin, part.Position - view.Origin, params)
+	if part.Size.Magnitude * 0.5 > OCCLUSION_MAX_RADIUS then
+		return true
+	end
+	local target = closestPointOnPart(part, view.Origin)
+	local direction = target - view.Origin
+	local distance = direction.Magnitude
+	if distance < 0.5 then
+		return true
+	end
+	-- Overshoot slightly: the target sits exactly ON the surface, and a ray
+	-- ending precisely there can miss it to floating point.
+	local hit = workspace:Raycast(view.Origin, direction.Unit * (distance + 0.5), params)
 	return hit == nil or hit.Instance == part
 end
 
@@ -871,7 +925,11 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 		return
 	end
 
-	local glassCF = glass.CFrame
+	-- The glass's placement relative to the chassis, which is a constant while
+	-- the door is shut, re-applied to the SMOOTHED chassis frame. Reading
+	-- glass.CFrame directly would put the suspension tremor straight back in.
+	local basis = state.Chassis.CFrame:Inverse() * glass.CFrame
+	local glassCF = state.SmoothChassisCF * basis
 	local axes = mirror.Axes
 	-- The reflective plane is the FACE of the glass, not its centre - on a
 	-- thick part those differ by enough to skew the image noticeably.
@@ -942,7 +1000,7 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 			-- forward - see VehiclePhysics), then yawed outward and pitched
 			-- down. Deliberately ignores the glass's own orientation: see
 			-- AIM_MODE. Adjust in the car config (see DEFAULT_MIRRORS).
-			local back = -state.Chassis.CFrame.LookVector
+			local back = -state.SmoothChassisCF.LookVector
 			local yawed = (CFrame.fromAxisAngle(Vector3.yAxis, math.rad(mirror.Yaw)) * back).Unit
 			-- Pitch about the horizontal axis perpendicular to the aim, so
 			-- "down" stays down regardless of how far the mirror is yawed out.
@@ -1004,8 +1062,10 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 	-- The frozen car is rebuilt only when the mirror has actually moved
 	-- relative to the chassis - in practice, when the door it is mounted on
 	-- swings open. One CFrame compare per mirror replaces ~50 multiplies.
+	-- `basis` is the glass relative to the chassis, computed at the top of this
+	-- function. It is constant while the door is shut, so a change in it means
+	-- the door has swung and the frozen car has to be re-placed.
 	if state.FreezeCar then
-		local basis = state.Chassis.CFrame:Inverse() * glassCF
 		if not (mirror.FrozenBasis and mirror.FrozenBasis:FuzzyEq(basis, FREEZE_EPSILON)) then
 			mirror.FrozenBasis = basis
 			mirror.CarDirty = true
@@ -1034,7 +1094,7 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 	mirror.CarDirty = false
 end
 
-local function onRenderStep()
+local function onRenderStep(dt)
 	if not state then
 		return
 	end
@@ -1064,6 +1124,20 @@ local function onRenderStep()
 	local camera = workspace.CurrentCamera
 	if not camera then
 		return
+	end
+
+	-- One smoothed chassis frame per FRAME, shared by all three mirrors, so
+	-- they cannot drift apart from each other.
+	local chassisCF = state.Chassis.CFrame
+	if
+		not state.SmoothChassisCF
+		or (chassisCF.Position - state.SmoothChassisCF.Position).Magnitude > AIM_SNAP_DISTANCE
+	then
+		state.SmoothChassisCF = chassisCF
+	else
+		-- Frame-rate independent: the same wall-clock smoothing whatever the
+		-- framerate, rather than more smoothing on a faster machine.
+		state.SmoothChassisCF = state.SmoothChassisCF:Lerp(chassisCF, 1 - math.exp(-dt / AIM_SMOOTHING_TAU))
 	end
 
 	local now = os.clock()
