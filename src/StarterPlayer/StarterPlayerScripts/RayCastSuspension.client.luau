@@ -10,6 +10,7 @@ local VehicleEffects = require(script.Parent.VehicleEffects)
 local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
 local VehicleControls = require(script.Parent.VehicleControls)
+local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
 
 local player = Players.LocalPlayer
 
@@ -336,6 +337,7 @@ local function endDrive(expected)
 	end
 
 	unbindDrivingControls()
+	VehicleMirrorViews.Stop()
 	session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	session.Dashboard:Destroy()
 	if session.ShiftSound then
@@ -408,6 +410,12 @@ local function beginDrive(humanoid, seatPart)
 	-- Jumping state itself however it was triggered.
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
 	bindDrivingControls()
+
+	-- Live mirrors exist ONLY for the car this client is driving, and only on
+	-- this client - so they are built here and torn down in endDrive rather
+	-- than living with the model. A bystander (or a driver of a different car)
+	-- never pays for them. See VehicleMirrorViews.
+	VehicleMirrorViews.Start(carModel)
 
 	local mySession = session
 
