@@ -164,11 +164,15 @@ return {
 			{ Ratio = 0.86, SpeedFraction = 1.00 }, -- 6th: overdrive, and the only gear that reaches MaxSpeed
 		},
 
-		-- Reverse: both numbers cut. Ratio 2.8 -> 1.6 takes the shove out (it
-		-- was pulling harder than 1st gear forwards), and SpeedFraction
-		-- 0.25 -> 0.13 caps it at 13 studs/s, so backing up is a deliberate
-		-- crawl. The stall boost still applies here, so 14 * 1.6 * 3.5 = 78
-		-- from a standstill is plenty to reverse off a kerb.
-		Reverse = { Ratio = 1.6, SpeedFraction = 1 },
+		-- Reverse. Ratio 2.6 stays just under 1st gear's 3.2 so forward
+		-- pull-away is still the strongest launch in the car, but reverse now
+		-- gets real shove instead of the anemic 1.6 it had before (that value,
+		-- paired with a SpeedFraction that had drifted to 1 by accident, left
+		-- the engine barely revving in reverse - it sounded and felt weak even
+		-- though the actual speed cap was fine). SpeedFraction 0.45 caps
+		-- reverse at 45 studs/s: well under the truck's 100 studs/s forward
+		-- top speed, but a real speed you can build up to, with revs that
+		-- climb properly on the way there instead of sitting near idle.
+		Reverse = { Ratio = 2.6, SpeedFraction = 0.45 },
 	},
 }
