@@ -63,6 +63,14 @@ local DEFINITIONS = {
 	},
 	{
 		Category = "Mirrors",
+		Key = "MirrorOcclusionCulling",
+		Label = "Hide what's behind walls",
+		Description = "Stop the mirrors drawing objects a wall is in front of - the furniture inside a closed building, for example. Costs a little CPU to work out, and spends the Detail budget above on things you can actually see instead.",
+		Type = "Toggle",
+		Default = true,
+	},
+	{
+		Category = "Mirrors",
 		Key = "MirrorRefreshRate",
 		Label = "Refresh rate",
 		Description = "How often each mirror re-checks what is behind you. This is NOT the frame rate of the mirror - what is already in view moves every frame regardless. Lower only makes things appear and disappear slightly later.",

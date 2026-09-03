@@ -118,6 +118,11 @@ local MAX_QUERY_PARTS = 3000
 -- not as slow to fill as it looks.
 local MAX_NEW_CLONES_PER_REFRESH = 12
 
+-- How long a part stays in the mirror after the occlusion ray last saw it.
+-- See the note in refreshScene: without this, one ray clipping a lamp post
+-- makes scenery blink.
+local OCCLUSION_GRACE = 1.0
+
 -- The three mirrors refresh ROUND-ROBIN, one per tick, rather than all in the
 -- same frame: three sorts of a few thousand candidates back to back is a
 -- visible hitch at a large render distance. Staggering spreads it flat.
@@ -470,6 +475,7 @@ local function buildRig(mirrorPart, aim)
 		Gui = gui,
 		Camera = camera,
 		World = world,
+		Aspect = faceWidth / math.max(faceHeight, 1e-6),
 		FovScale = glass:GetAttribute("MirrorFovScale") or mirrorPart:GetAttribute("MirrorFovScale") or FOV_SCALE,
 		Yaw = glass:GetAttribute("MirrorYaw") or mirrorPart:GetAttribute("MirrorYaw") or aim.Yaw or 0,
 		Pitch = glass:GetAttribute("MirrorPitch") or mirrorPart:GetAttribute("MirrorPitch") or aim.Pitch or 0,
@@ -619,9 +625,43 @@ local function swallowsPoint(part, worldPos, transform)
 		and math.abs(localPos.Z) < half.Z + NEAR_CLIP_MARGIN
 end
 
+-- Is any part of this box inside the mirror camera's view cone?
+--
+-- This is the cheapest large win available here. The half-space test above
+-- keeps everything BEHIND the mirror - a full 180 degrees - but the mirror
+-- only shows about 40 degrees vertically and 65 horizontally. Without this,
+-- roughly six times more geometry is cloned than can ever appear, and all of
+-- it competes for the same MirrorDetail budget as the things you can see.
+--
+-- Deliberately conservative: the part's bounding radius is added to the
+-- frustum limits, so anything even partly in view is kept. Cheaper to clone a
+-- few extra than to have scenery pop in at the edges of the glass.
+local function insideFrustum(position, radius, view)
+	local localPos = view.CF:PointToObjectSpace(position)
+	local depth = -localPos.Z
+	if depth < -radius then
+		return false
+	end
+	return math.abs(localPos.X) <= depth * view.TanH + radius
+		and math.abs(localPos.Y) <= depth * view.TanV + radius
+end
+
+-- Can the mirror actually SEE this part, or is a wall in the way? One ray from
+-- the camera to the part's centre: if the first thing it meets is the part
+-- itself, it is visible.
+--
+-- The car and the mirror hardware are excluded from the ray rather than
+-- treated as occluders. They genuinely do block the view, but they are also
+-- millimetres from the camera and would cull huge amounts of what you can
+-- plainly see past them.
+local function isVisible(part, view, params)
+	local hit = workspace:Raycast(view.Origin, part.Position - view.Origin, params)
+	return hit == nil or hit.Instance == part
+end
+
 local candidates = {}
 local pinned = {}
-local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, transform)
+local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, transform, view)
 	table.clear(candidates)
 	table.clear(pinned)
 
@@ -668,7 +708,13 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			-- backed up against it: a building is often one big part, the
 			-- mirror clipped into it, and the guard threw the whole thing out.
 			local swallowed = transform ~= nil and swallowsPoint(part, camPos, transform)
-			if extentPastPlane(part, surfacePos, normal) > 0 and not swallowed then
+			local renderedCentre = if transform then transform * part.Position else part.Position
+			local radius = part.Size.Magnitude * 0.5
+			if
+				extentPastPlane(part, surfacePos, normal) > 0
+				and not swallowed
+				and insideFrustum(renderedCentre, radius, view)
+			then
 				-- Ranked by distance to the NEAREST POINT of the part's box,
 				-- not to its centre. That single choice is what lets big
 				-- things compete properly: a building's nearest face is close
@@ -695,10 +741,44 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 	for _, part in pinned do
 		wanted[part] = true
 	end
-	-- Whatever the car did not use, nearest first.
+
+	-- Whatever the car did not use, nearest first, skipping anything a wall is
+	-- in front of.
+	--
+	-- The occlusion test walks the SORTED list and stops once the budget is
+	-- full, so it costs at most one ray per slot rather than one per candidate.
+	-- That ordering is the whole reason it is affordable: testing everything
+	-- the query returned would be thousands of rays a tick, testing only what
+	-- could actually be shown is a few hundred.
+	local occlusionOn = GameSettings.Get("MirrorOcclusionCulling")
 	local budget = math.max(maxSceneParts() - #pinned, 0)
-	for index = 1, math.min(#candidates, budget) do
-		wanted[candidates[index].Part] = true
+	local filled = 0
+	for index = 1, #candidates do
+		if filled >= budget then
+			break
+		end
+		local part = candidates[index].Part
+		local entry = mirror.Pool[part]
+		local visible = true
+		if occlusionOn then
+			if isVisible(part, view, state.OcclusionParams) then
+				if entry then
+					entry.LastVisible = now
+				end
+			else
+				-- A grace period, because a single ray to a single point is a
+				-- blunt test: a part can flick behind a lamp post for one tick
+				-- and back. Dropping it instantly makes scenery blink. Only
+				-- something hidden CONTINUOUSLY for this long actually goes.
+				visible = entry ~= nil
+					and entry.LastVisible ~= nil
+					and (now - entry.LastVisible) < OCCLUSION_GRACE
+			end
+		end
+		if visible then
+			wanted[part] = true
+			filled += 1
+		end
 	end
 
 	-- Out: still pooled, just not rendered.
@@ -733,7 +813,7 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			local clone = makeClone(source)
 			if clone then
 				newClones += 1
-				entry = { Clone = clone, LastSeen = now }
+				entry = { Clone = clone, LastSeen = now, LastVisible = now }
 				mirror.Pool[source] = entry
 			end
 		end
@@ -894,7 +974,16 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 	end
 
 	if nearby then
-		refreshScene(mirror, nearby, surfacePos, filterNormal, now, camPos, transform)
+		-- The frustum the mirror camera actually sees, handed to refreshScene so
+		-- it can reject anything outside it. TanH comes off the glass's own
+		-- shape - a wide, short mirror sees a wide, short cone.
+		local tanV = math.tan(math.rad(viewCamera.FieldOfView) * 0.5)
+		refreshScene(mirror, nearby, surfacePos, filterNormal, now, camPos, transform, {
+			CF = worldViewCF,
+			Origin = camPos,
+			TanV = tanV,
+			TanH = tanV * mirror.Aspect,
+		})
 	end
 
 	-- Everything is placed in the VIEWPORT's own space, not at real world
@@ -1071,6 +1160,14 @@ function VehicleMirrorViews.Start(carModel, config)
 		-- inside its head - a full-size clone of it right at the eye would fill
 		-- the rear-view mirror with the inside of a torso.
 		Exclude = { mirrorFolder, player.Character },
+		-- Reused every occlusion ray rather than rebuilt per cast. The car and
+		-- the mirror are excluded as occluders on purpose - see isVisible.
+		OcclusionParams = (function()
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = { carModel, player.Character }
+			return params
+		end)(),
 		Head = player.Character and player.Character:FindFirstChild("Head"),
 		NextQuery = 0,
 		RefreshCursor = 0,
