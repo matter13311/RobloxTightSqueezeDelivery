@@ -33,6 +33,7 @@ local DEFAULTS = {
 	Torque = 10,
 	MaxSpeed = 50,
 	SteerAngle = 45,
+
 	-- How fast the steering moves, in "steer units per second" - the input is
 	-- -1..1, so a value of 5 reaches full lock in 1/5 of a second. This is
 	-- steering FEEL, entirely separate from SteerAngle above, which is how far
@@ -264,7 +265,28 @@ end
 -- different grip - e.g. a drift car wants the front to hold on for
 -- steering control while the rear breaks loose (RearLateralGripStrength
 -- much lower than FrontLateralGripStrength).
-local OPTIONAL_KEYS = { "FrontLateralGripStrength", "RearLateralGripStrength" }
+--
+-- Speed-sensitive steering is optional for the same reason: a steered tire's
+-- grip force points perpendicular to the WHEEL, not to the car, so a fraction
+-- sin(steer) of it always points backwards along the car. That's cornering
+-- drag - real physics, and why a car coasting into a hard turn slows down
+-- markedly. It can't be removed without making the tire force fictional, but
+-- a real driver can't hold full lock at speed either; the wheels would just
+-- scrub. Set both to taper the lock available from the full SteerAngle at a
+-- standstill down to HighSpeedSteerAngle by SteerAngleFalloffSpeed studs/s
+-- (which defaults to MaxSpeed), so parking-speed manoeuvring keeps every
+-- degree of lock and cruising doesn't scrub. Leaving HighSpeedSteerAngle
+-- unset steers exactly as before.
+--
+-- The steering wheel prop in the cab is deliberately NOT tapered: it reflects
+-- what the driver is asking for, and a wheel that stopped moving at speed
+-- would read as a broken animation.
+local OPTIONAL_KEYS = {
+	"FrontLateralGripStrength",
+	"RearLateralGripStrength",
+	"HighSpeedSteerAngle",
+	"SteerAngleFalloffSpeed",
+}
 
 -- Non-numeric per-car-type overrides that don't belong in DEFAULTS (they're
 -- not physics tuning). Same precedence as everything else: Attribute on the
@@ -413,6 +435,22 @@ end
 --   Rpm               0..1 engine revs, for the engine sound's pitch. Absent
 --                     means "no gearbox here", and the sound falls back to
 --                     tracking road speed.
+-- Degrees of lock available at this road speed - see HighSpeedSteerAngle in
+-- DEFAULTS. Both the physics and the wheel visuals go through here, and they
+-- have to: a front wheel drawn at an angle the grip model isn't using would
+-- put the smoke and screech back out of step with the handling.
+function VehiclePhysics.SteerAngleAtSpeed(config, speed)
+	local highSpeedAngle = config.HighSpeedSteerAngle
+	if not highSpeedAngle then
+		return config.SteerAngle
+	end
+	-- Floored at 1: this is a divisor, and a zero here would hand every
+	-- caller a NaN steer angle rather than merely steering badly.
+	local falloffSpeed = math.max(config.SteerAngleFalloffSpeed or config.MaxSpeed, 1)
+	local t = math.clamp(speed / falloffSpeed, 0, 1)
+	return config.SteerAngle + (highSpeedAngle - config.SteerAngle) * t
+end
+
 function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local carPrim = carModel.PrimaryPart
 
@@ -428,6 +466,8 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	state.SmoothSteer = if math.abs(steerDiff) <= steerStep
 		then targetSteer
 		else state.SmoothSteer + math.sign(steerDiff) * steerStep
+
+	local steerAngle = VehiclePhysics.SteerAngleAtSpeed(config, carPrim.AssemblyLinearVelocity.Magnitude)
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -476,7 +516,7 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 
 			local wheelDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
 			if isFrontWheel then
-				wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-state.SmoothSteer * config.SteerAngle), 0)
+				wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-state.SmoothSteer * steerAngle), 0)
 			end
 			local localVelocity = wheelDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 
@@ -730,6 +770,10 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 		return
 	end
 
+	-- Computed from replicated velocity, so a bystander lands on the same
+	-- angle the driver's own physics step is using.
+	local steerAngle = VehiclePhysics.SteerAngleAtSpeed(config, carPrim.AssemblyLinearVelocity.Magnitude)
+
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = { vehicle }
@@ -762,7 +806,7 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 						weld.C0 = weld.C0 * CFrame.Angles(0, math.rad(180), 0)
 					end
 					if isFrontWheel then
-						weld.C0 = weld.C0 * CFrame.Angles(0, -math.rad(smoothSteer * config.SteerAngle), 0)
+						weld.C0 = weld.C0 * CFrame.Angles(0, -math.rad(smoothSteer * steerAngle), 0)
 					end
 
 					-- The wheel's OWN frame, steer included - the same frame
@@ -778,7 +822,7 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 					-- wheel takes that term out and leaves only genuine slip.
 					local wheelDirCFrame = CFrame.lookAt(Vector3.zero, carCFrame.LookVector, carCFrame.UpVector)
 					if isFrontWheel then
-						wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-smoothSteer * config.SteerAngle), 0)
+						wheelDirCFrame = wheelDirCFrame * CFrame.Angles(0, math.rad(-smoothSteer * steerAngle), 0)
 					end
 					local localVelocity = wheelDirCFrame:ToObjectSpace(CFrame.new(carPrim:GetVelocityAtPosition(raycast.Position)))
 

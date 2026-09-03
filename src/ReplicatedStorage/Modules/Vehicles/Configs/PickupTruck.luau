@@ -4,6 +4,21 @@
 -- accelerate at a normal rate - bumped up from DEFAULTS accordingly.
 return {
 	SteerAngle = 40,
+
+	-- Speed-sensitive steering, and the cure for the truck scrubbing off
+	-- speed the moment you turn while coasting. A steered tire's grip force
+	-- is perpendicular to the WHEEL, so sin(steer) of it points backwards
+	-- along the car - at 40 degrees that is 64% of a cornering force the tires
+	-- are allowed to make 1.5g of, which is more deceleration than the brake
+	-- pedal produces. Full lock stays available where this truck actually
+	-- needs it (threading gaps and backing onto driveways at walking pace) and
+	-- tapers to a cruising amount by 55 studs/s.
+	--
+	-- TUNING: still losing too much speed mid-corner? Lower HighSpeedSteerAngle
+	-- or SteerAngleFalloffSpeed. Turning circle at speed feel too lazy? Raise
+	-- them. Setting HighSpeedSteerAngle = nil restores the old behaviour.
+	HighSpeedSteerAngle = 12,
+	SteerAngleFalloffSpeed = 55,
 	DriveWheels = "Rear",
 	WheelModelName = "PickupTruckWheel",
 	WheelRadius = 1.8485, -- half of PickupTruckWheel's 3.697-stud Size.Y/Z - must track that mesh's actual size, not DEFAULTS' 1.5
