@@ -117,7 +117,8 @@ local function AddCar(carModel)
 	-- Rigidly weld static decoration (body panels, lights) to the chassis so
 	-- it rides along with suspension movement. Doors and the steering wheel
 	-- are deliberately left out - the steering wheel gets its own animatable
-	-- joint just below, and doors will get theirs later.
+	-- joint just below, and doors get theirs (a HingeConstraint each) from
+	-- VehicleDoors.server.luau.
 	for _, folderName in { "Body", "Lights", "Engine" } do
 		local folder = carModel:FindFirstChild(folderName)
 		if folder then

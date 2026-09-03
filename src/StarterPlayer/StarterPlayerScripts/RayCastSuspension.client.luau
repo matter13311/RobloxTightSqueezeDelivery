@@ -20,6 +20,12 @@ local player = Players.LocalPlayer
 -- VehicleNetworkState.server.luau.
 local vehicleNetworkState = ReplicatedStorage:WaitForChild("VehicleNetworkState")
 
+-- Pressing F to get out no longer unseats immediately - it asks
+-- VehicleDoors.server.luau to open the right door first, which fires this
+-- back once it's open. Only then does the actual unseat + step-out below
+-- run, so you never see the character walk through a closed door.
+local exitVehicleRemote = ReplicatedStorage:WaitForChild("ExitVehicle")
+
 -- How much the ramped throttle has to move before it's worth another
 -- RemoteEvent - without this, DriveThrottle's continuous ramp would fire one
 -- every single frame the whole time the pedal is moving.
@@ -172,15 +178,19 @@ local function exitCFrame(carModel, chassis, humanoid, rootPart)
 	return CFrame.lookAt(standPosition, standPosition + outward.Unit)
 end
 
-local function tryExitVehicle()
-	if not session then
+-- The actual unseat + step-out, run only once the server confirms the door
+-- is open (see exitVehicleRemote.OnClientEvent below). `mySession` is
+-- captured at request time so a session that's already ended (or been
+-- replaced) by the time the door finishes opening doesn't get acted on.
+local function performExit(mySession)
+	if session ~= mySession then
 		return
 	end
 
-	local humanoid = session.Humanoid
+	local humanoid = mySession.Humanoid
 	local character = humanoid.Parent
-	local carModel = session.CarModel
-	local chassis = session.Chassis
+	local carModel = mySession.CarModel
+	local chassis = mySession.Chassis
 	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
 
 	humanoid.Sit = false
@@ -202,6 +212,30 @@ local function tryExitVehicle()
 		rootPart.AssemblyAngularVelocity = Vector3.zero
 	end)
 end
+
+-- Requests the exit - doesn't unseat anything itself. ExitRequested guards
+-- against spamming F while the door is still swinging open.
+local EXIT_REQUEST_TIMEOUT = 5 -- seconds - if the server never answers (dropped request, error on its end), let F work again rather than locking the player out for the rest of the drive
+local function tryExitVehicle()
+	if not session or session.ExitRequested then
+		return
+	end
+	session.ExitRequested = true
+	local mySession = session
+	exitVehicleRemote:FireServer()
+
+	task.delay(EXIT_REQUEST_TIMEOUT, function()
+		if session == mySession and session.ExitRequested then
+			session.ExitRequested = false
+		end
+	end)
+end
+
+exitVehicleRemote.OnClientEvent:Connect(function()
+	if session then
+		performExit(session)
+	end
+end)
 
 -- Full lock is full lock whether or not you're also on the gas. On a keyboard
 -- that means reading A/D directly, because the seat's own SteerFloat is a
@@ -346,6 +380,7 @@ local function beginDrive(humanoid, seatPart)
 		Burnout = false,
 		Braking = false,
 		Reversing = false,
+		ExitRequested = false,
 		-- Last state actually sent over the network - starts at sentinel
 		-- values so the very first frame always sends, even though 0/false
 		-- match Throttle/Handbrake's own initial values above.
