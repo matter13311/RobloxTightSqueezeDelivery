@@ -20,6 +20,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CustomPrompt = require(ReplicatedStorage.Modules.UI.CustomPrompt)
 local VehicleDoorRig = require(ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local player = Players.LocalPlayer
 local VehicleFolder = workspace.Vehicles
@@ -48,7 +49,7 @@ local function setupCarPrompts(carModel)
 	end
 
 	local doors = VehicleDoorRig.GetDoors(carModel)
-	local seat = carModel:FindFirstChildOfClass("VehicleSeat")
+	local seat = VehicleSeats.GetDriverSeat(carModel)
 	if not (doors and doors.Left and doors.Right and seat) then
 		return false -- not fully set up yet - the retry below will catch it once it is
 	end
@@ -110,7 +111,7 @@ local function trySetupCarPrompts(carModel)
 			end
 		end
 		if carModel.Parent == VehicleFolder and not carPrompts[carModel] then
-			warn("VehicleDoorPrompts: gave up waiting for " .. carModel:GetFullName() .. " to have Left/RightDoorAttachment hinges and a VehicleSeat")
+			warn("VehicleDoorPrompts: gave up waiting for " .. carModel:GetFullName() .. " to have Left/RightDoorAttachment hinges and a DriverSeat")
 		end
 	end)
 end

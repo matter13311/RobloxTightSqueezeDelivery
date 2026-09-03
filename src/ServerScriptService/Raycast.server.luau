@@ -3,10 +3,26 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local wheelsFolder = ReplicatedStorage.Wheels
 local defaultWheelModel = wheelsFolder.UAZWheelDetailed
 local VehicleFolder = workspace.Vehicles
+
+-- Same recursive lookup VehiclePhysics.Step uses to find the engine sound
+-- (Engine/<enginePart>/Sound) - kept here too since starting/stopping it is
+-- occupancy, not physics, and doesn't belong in the Step loop.
+local function SetEngineSoundPlaying(carModel, playing)
+	local sound = carModel:FindFirstChild("Sound", true)
+	if not sound then
+		return
+	end
+	if playing and not sound.IsPlaying then
+		sound:Play()
+	elseif not playing and sound.IsPlaying then
+		sound:Stop()
+	end
+end
 
 local INITIAL_SETTLE_TIME = 5 -- seconds - how long the server runs real suspension physics on a freshly-placed car before freezing it, so it settles onto the ground correctly instead of anchoring wherever it happened to be placed in Studio (often floating or embedded)
 
@@ -24,7 +40,7 @@ local SEAT_SETTLE_FRAMES = 3
 -- floating or embedded, wherever it was left in Studio) settles onto the
 -- ground properly, then Anchors it there. Only ever runs once, at setup -
 -- this is not the old always-on parked-car loop, it's a one-time calibration.
-local function SettleThenAnchor(carModel, chassis, attachments)
+local function SettleThenAnchor(carModel, chassis, attachments, driverSeat)
 	local config = VehiclePhysics.GetConfig(chassis)
 	local state = VehiclePhysics.NewState()
 
@@ -36,14 +52,14 @@ local function SettleThenAnchor(carModel, chassis, attachments)
 		local delta = RunService.Heartbeat:Wait()
 		-- Someone may have already gotten in while this was still settling -
 		-- back off immediately rather than fighting the driving client.
-		if carModel.VehicleSeat.Occupant then
+		if driverSeat.Occupant then
 			return
 		end
 		elapsed += delta
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, { Throttle = 0, Steer = 0 })
 	end
 
-	if not carModel.VehicleSeat.Occupant then
+	if not driverSeat.Occupant then
 		chassis.Anchored = true
 	end
 end
@@ -109,13 +125,18 @@ local function AddCar(carModel)
 		warn("VehicleManager: " .. carModel:GetFullName() .. " has no PrimaryPart set - skipping this car")
 		return
 	end
+	local driverSeat = VehicleSeats.GetDriverSeat(carModel)
+	if not driverSeat then
+		warn("VehicleManager: " .. carModel:GetFullName() .. " has no DriverSeat - skipping this car")
+		return
+	end
 	local attachments = VehiclePhysics.GetWheelAttachments(chassis)
 
 	-- Roblox draws its own speedometer/throttle HUD for anyone sitting in a
 	-- VehicleSeat, which sits on top of our dashboard. Set on the server so
 	-- it replicates to every player who ever sits in this car, rather than
 	-- being re-disabled per client on each sit.
-	carModel.VehicleSeat.HeadsUpDisplay = false
+	driverSeat.HeadsUpDisplay = false
 
 	-- Light switches are a physical position, not driving telemetry - they
 	-- start off/centered and stay wherever a driver last left them, rather
@@ -123,6 +144,10 @@ local function AddCar(carModel)
 	-- below, which only resets the Net* driving telemetry).
 	carModel:SetAttribute("HeadlightsOn", false)
 	carModel:SetAttribute("TurnSignal", "None")
+
+	-- Engine starts off: the Sound instance is pre-placed in the model and may
+	-- have been left Playing in Studio, so this can't just assume silence.
+	SetEngineSoundPlaying(carModel, false)
 
 	-- Rigidly weld static decoration (body panels, lights) to the chassis so
 	-- it rides along with suspension movement. Doors and the steering wheel
@@ -149,11 +174,13 @@ local function AddCar(carModel)
 	-- its actual resting pose before freezing it there for real.
 	chassis.Anchored = true
 
-	carModel.VehicleSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
-		local occupant = carModel.VehicleSeat.Occupant
+	driverSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
+		local occupant = driverSeat.Occupant
 		if occupant then
 			local player = Players:GetPlayerFromCharacter(occupant.Parent)
 			if player then
+				SetEngineSoundPlaying(carModel, true)
+
 				local pose = chassis.CFrame
 				chassis.Anchored = false
 
@@ -164,7 +191,7 @@ local function AddCar(carModel)
 				-- on a part moves its whole assembly, so the seated character
 				-- comes along rather than being left behind.
 				for _ = 1, SEAT_SETTLE_FRAMES do
-					if carModel.VehicleSeat.Occupant ~= occupant then
+					if driverSeat.Occupant ~= occupant then
 						return -- got out, died or disconnected mid-settle
 					end
 					chassis.CFrame = pose
@@ -173,13 +200,14 @@ local function AddCar(carModel)
 					RunService.Heartbeat:Wait()
 				end
 
-				if carModel.VehicleSeat.Occupant ~= occupant then
+				if driverSeat.Occupant ~= occupant then
 					return
 				end
 				chassis:SetNetworkOwner(player)
 			end
 		else
 			chassis.Anchored = true
+			SetEngineSoundPlaying(carModel, false)
 			-- Nobody's left to keep sending updates for these, so clear them
 			-- rather than leaving the last driver's state stuck (e.g. a
 			-- bystander walking up to a parked car that's frozen mid-brake
@@ -189,6 +217,7 @@ local function AddCar(carModel)
 			carModel:SetAttribute("NetBurnout", false)
 			carModel:SetAttribute("NetHandbrake", false)
 			carModel:SetAttribute("NetThrottle", 0)
+			carModel:SetAttribute("NetRpm", 0)
 		end
 	end)
 
@@ -229,7 +258,7 @@ local function AddCar(carModel)
 		end
 	end
 
-	task.spawn(SettleThenAnchor, carModel, chassis, attachments)
+	task.spawn(SettleThenAnchor, carModel, chassis, attachments, driverSeat)
 end
 
 local function TryAddCar(carModel)

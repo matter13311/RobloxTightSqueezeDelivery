@@ -12,6 +12,8 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+
 local remote = Instance.new("RemoteEvent")
 remote.Name = "VehicleNetworkState"
 remote.Parent = ReplicatedStorage
@@ -30,14 +32,23 @@ local function toThrottle(value)
 	return math.clamp(value, -1, 1)
 end
 
-remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle)
+-- Rpm is Gearbox's 0-1 normalized value (see Gearbox.new's IdleRpm floor),
+-- never signed like throttle.
+local function toRpm(value)
+	if typeof(value) ~= "number" then
+		return 0
+	end
+	return math.clamp(value, 0, 1)
+end
+
+remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm)
 	if typeof(vehicle) ~= "Instance" or not vehicle:IsA("Model") or vehicle.Parent ~= workspace.Vehicles then
 		return
 	end
 
-	-- Only the player actually sitting in THIS car may speak for it - without
-	-- this check any client could puppet any other car's lights and effects.
-	local seat = vehicle:FindFirstChildOfClass("VehicleSeat")
+	-- Only the DRIVER of this car may speak for it - a passenger sitting in a
+	-- PassengerSeat has no throttle/brake/handbrake of their own to report.
+	local seat = VehicleSeats.GetDriverSeat(vehicle)
 	local occupant = seat and seat.Occupant
 	local occupantPlayer = occupant and Players:GetPlayerFromCharacter(occupant.Parent)
 	if occupantPlayer ~= player then
@@ -49,4 +60,5 @@ remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, i
 	vehicle:SetAttribute("NetBurnout", toBoolean(isBurnout))
 	vehicle:SetAttribute("NetHandbrake", toBoolean(isHandbrake))
 	vehicle:SetAttribute("NetThrottle", toThrottle(throttle))
+	vehicle:SetAttribute("NetRpm", toRpm(rpm))
 end)

@@ -20,7 +20,10 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehicleDoorRig = require(ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
+local VehicleExits = require(ReplicatedStorage.Modules.Vehicles.VehicleExits)
+local VehicleMirrors = require(ReplicatedStorage.Modules.Vehicles.VehicleMirrors)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local VehicleFolder = workspace.Vehicles
 local DOOR_SIDES = VehicleDoorRig.Sides
@@ -176,18 +179,6 @@ local function nearestDoorSideToPosition(carData, referencePosition)
 	return bestSide, bestDistance
 end
 
--- Where the player is about to end up standing after getting out - the
--- DriverExit marker if the car has one, otherwise just the seat.
-local function exitReferencePosition(carData)
-	local marker = carData.CarModel:FindFirstChild("DriverExit", true)
-	if marker and marker:IsA("Attachment") then
-		return marker.WorldPosition
-	elseif marker and marker:IsA("BasePart") then
-		return marker.Position
-	end
-	return carData.Seat.Position
-end
-
 local function tryEnter(carData, side, player)
 	if carData.Busy or carData.Seat.Occupant then
 		return
@@ -211,8 +202,13 @@ local function tryEnter(carData, side, player)
 	-- getting in can land while Busy is still true from this same sequence,
 	-- and get silently dropped (see tryExit's own Busy check) while the
 	-- client sits there waiting for a server response that never comes.
+	local door
 	local ok, err = pcall(function()
-		local door = carData.Doors[side]
+		door = carData.Doors[side]
+		-- Off for the whole swing - otherwise a player standing right where
+		-- the door swings open gets physically shoved by it while walking up
+		-- to enter.
+		setDoorCollision(door.Model, false)
 		setDoorOpen(door.Hinge, true)
 		fireDoorSound(player, door.Part, "Open")
 
@@ -225,6 +221,7 @@ local function tryEnter(carData, side, player)
 			setDoorOpen(door.Hinge, false)
 			fireDoorSound(player, door.Part, "Close")
 			task.wait(DOOR_SWING_TIME)
+			setDoorCollision(door.Model, true)
 			return
 		end
 
@@ -256,6 +253,7 @@ local function tryEnter(carData, side, player)
 		setDoorOpen(door.Hinge, false)
 		fireDoorSound(player, door.Part, "Close")
 		task.wait(DOOR_SWING_TIME)
+		setDoorCollision(door.Model, true)
 	end)
 
 	-- Safety net: if the sequence above errored before reaching its own
@@ -263,6 +261,10 @@ local function tryEnter(carData, side, player)
 	carData.Busy = false
 	if not ok then
 		warn("VehicleDoors: enter sequence errored for " .. carData.CarModel:GetFullName() .. ": " .. tostring(err))
+		-- Whatever step failed, don't leave the door permanently un-collidable.
+		if door then
+			setDoorCollision(door.Model, true)
+		end
 	end
 end
 
@@ -270,7 +272,8 @@ local function tryExit(carData, player)
 	if carData.Busy or not carData.Seat.Occupant then
 		return
 	end
-	local occupantPlayer = Players:GetPlayerFromCharacter(carData.Seat.Occupant.Parent)
+	local occupantCharacter = carData.Seat.Occupant.Parent
+	local occupantPlayer = Players:GetPlayerFromCharacter(occupantCharacter)
 	if occupantPlayer ~= player then
 		return
 	end
@@ -279,7 +282,15 @@ local function tryExit(carData, player)
 
 	local door
 	local ok, err = pcall(function()
-		local side = nearestDoorSideToPosition(carData, exitReferencePosition(carData))
+		-- Picks the seat's preferred exit if it's clear, otherwise the
+		-- nearest other one that is - see VehicleExits.ChooseExit. Whichever
+		-- door is physically closer to that exit is the one that opens, so
+		-- the visible door always matches where the player actually steps out.
+		local chosenExit = VehicleExits.ChooseExit(carData.CarModel, carData.Seat, occupantCharacter)
+		local exitPosition = chosenExit
+			and (if chosenExit:IsA("Attachment") then chosenExit.WorldPosition else chosenExit.Position)
+			or carData.Seat.Position
+		local side = nearestDoorSideToPosition(carData, exitPosition)
 		door = carData.Doors[side]
 		setDoorOpen(door.Hinge, true)
 		fireDoorSound(player, door.Part, "Open")
@@ -292,8 +303,10 @@ local function tryExit(carData, player)
 		task.wait(DOOR_SWING_TIME)
 		-- Go-ahead: the driving client does its own unseat + step-out (see
 		-- tryExitVehicle in RayCastSuspension.client.luau) once it gets this.
+		-- The chosen exit attachment goes with it, so the client steps out at
+		-- the same spot this door choice was based on.
 		if player.Parent then
-			exitVehicleEvent:FireClient(player)
+			exitVehicleEvent:FireClient(player, chosenExit)
 		end
 		carData.Busy = false -- released as soon as the client's been told to go - the closing tail below doesn't need to block anything else
 
@@ -318,9 +331,9 @@ end
 
 local function setupCarDoors(carModel)
 	local doors = VehicleDoorRig.GetDoors(carModel)
-	local seat = carModel:FindFirstChildOfClass("VehicleSeat")
+	local seat = VehicleSeats.GetDriverSeat(carModel)
 	if not (doors and doors.Left and doors.Right and seat) then
-		warn("VehicleDoors: " .. carModel:GetFullName() .. " is missing a Left/RightDoorAttachment HingeConstraint or a VehicleSeat - skipping doors")
+		warn("VehicleDoors: " .. carModel:GetFullName() .. " is missing a Left/RightDoorAttachment HingeConstraint or a DriverSeat - skipping doors")
 		return
 	end
 
@@ -338,6 +351,11 @@ local function setupCarDoors(carModel)
 		removeExternalJoints(door.Model)
 		configureHinge(door.Hinge, side)
 	end
+
+	-- Runs after removeExternalJoints above, since it creates a weld that
+	-- leads outside the door model on purpose (door -> mirror) - the exact
+	-- shape removeExternalJoints exists to strip out. See VehicleMirrors.
+	VehicleMirrors.AttachToDoors(carModel, doors)
 end
 
 local function trySetupCarDoors(carModel)

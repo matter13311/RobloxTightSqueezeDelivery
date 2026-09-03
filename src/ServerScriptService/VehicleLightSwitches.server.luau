@@ -7,6 +7,8 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+
 local toggleHeadlights = Instance.new("RemoteEvent")
 toggleHeadlights.Name = "ToggleHeadlights"
 toggleHeadlights.Parent = ReplicatedStorage
@@ -21,7 +23,7 @@ local function driverOf(vehicle)
 	if typeof(vehicle) ~= "Instance" or not vehicle:IsA("Model") or vehicle.Parent ~= workspace.Vehicles then
 		return nil
 	end
-	local seat = vehicle:FindFirstChildOfClass("VehicleSeat")
+	local seat = VehicleSeats.GetDriverSeat(vehicle)
 	local occupant = seat and seat.Occupant
 	return occupant and Players:GetPlayerFromCharacter(occupant.Parent)
 end

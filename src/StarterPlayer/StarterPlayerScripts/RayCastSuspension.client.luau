@@ -7,6 +7,7 @@ local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics
 local Gearbox = require(ReplicatedStorage.Modules.Vehicles.Gearbox)
 local VehicleDashboard = require(script.Parent.VehicleDashboard)
 local VehicleEffects = require(script.Parent.VehicleEffects)
+local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
 local VehicleControls = require(script.Parent.VehicleControls)
 
@@ -30,13 +31,7 @@ local exitVehicleRemote = ReplicatedStorage:WaitForChild("ExitVehicle")
 -- RemoteEvent - without this, DriveThrottle's continuous ramp would fire one
 -- every single frame the whole time the pedal is moving.
 local NET_THROTTLE_EPSILON = 0.05
-
--- Name of the Attachment (or Part) that marks where the driver is put down
--- when they press F. Put one on the Chassis, at GROUND level just outside the
--- driver's door - the character's standing height is added on top of it here,
--- so you're placing their feet, not their torso. Missing one isn't fatal:
--- exitCFrame below falls back to dropping them beside the car instead.
-local EXIT_MARKER_NAME = "DriverExit"
+local NET_RPM_EPSILON = 0.03
 
 local HANDBRAKE_ACTION = "VehicleHandbrake"
 local EXIT_ACTION = "VehicleExit"
@@ -116,6 +111,7 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		or sent.Burnout ~= mySession.Burnout
 		or sent.Handbrake ~= mySession.Handbrake
 		or math.abs(sent.Throttle - mySession.DriveThrottle) >= NET_THROTTLE_EPSILON
+		or math.abs(sent.Rpm - mySession.DriveRpm) >= NET_RPM_EPSILON
 	if not changed then
 		return
 	end
@@ -125,8 +121,17 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 	sent.Burnout = mySession.Burnout
 	sent.Handbrake = mySession.Handbrake
 	sent.Throttle = mySession.DriveThrottle
+	sent.Rpm = mySession.DriveRpm
 
-	vehicleNetworkState:FireServer(carModel, sent.Braking, sent.Reversing, sent.Burnout, sent.Handbrake, sent.Throttle)
+	vehicleNetworkState:FireServer(
+		carModel,
+		sent.Braking,
+		sent.Reversing,
+		sent.Burnout,
+		sent.Handbrake,
+		sent.Throttle,
+		sent.Rpm
+	)
 end
 
 local function playSound(sound)
@@ -139,12 +144,11 @@ local function playSound(sound)
 	end
 end
 
--- Where the driver ends up after pressing F. `chassis` is used for the
--- fallback and for facing, `marker` is the DriverExit Attachment/Part if the
--- car has one.
-local function exitCFrame(carModel, chassis, humanoid, rootPart)
-	local marker = carModel:FindFirstChild(EXIT_MARKER_NAME, true)
-
+-- Where the driver/passenger ends up after pressing F. `chassis` is used for
+-- the fallback and for facing, `marker` is whichever Exit# Attachment (or
+-- Part) VehicleDoors.server.luau picked - see VehicleExits.ChooseExit - or
+-- nil if the car has none set up.
+local function exitCFrame(carModel, chassis, humanoid, rootPart, marker)
 	local footPosition
 	if marker and marker:IsA("Attachment") then
 		footPosition = marker.WorldPosition
@@ -182,7 +186,7 @@ end
 -- is open (see exitVehicleRemote.OnClientEvent below). `mySession` is
 -- captured at request time so a session that's already ended (or been
 -- replaced) by the time the door finishes opening doesn't get acted on.
-local function performExit(mySession)
+local function performExit(mySession, exitMarker)
 	if session ~= mySession then
 		return
 	end
@@ -206,7 +210,7 @@ local function performExit(mySession)
 		if humanoid.SeatPart then
 			return -- didn't actually get out (something re-seated them)
 		end
-		character:PivotTo(exitCFrame(carModel, chassis, humanoid, rootPart))
+		character:PivotTo(exitCFrame(carModel, chassis, humanoid, rootPart, exitMarker))
 		-- Otherwise you keep the car's momentum and get flung down the road.
 		rootPart.AssemblyLinearVelocity = Vector3.zero
 		rootPart.AssemblyAngularVelocity = Vector3.zero
@@ -231,9 +235,9 @@ local function tryExitVehicle()
 	end)
 end
 
-exitVehicleRemote.OnClientEvent:Connect(function()
+exitVehicleRemote.OnClientEvent:Connect(function(exitMarker)
 	if session then
-		performExit(session)
+		performExit(session, exitMarker)
 	end
 end)
 
@@ -377,6 +381,7 @@ local function beginDrive(humanoid, seatPart)
 		Dashboard = VehicleDashboard.new(player),
 		Handbrake = false,
 		DriveThrottle = 0,
+		DriveRpm = config.Transmission.IdleRpm,
 		Burnout = false,
 		Braking = false,
 		Reversing = false,
@@ -384,7 +389,14 @@ local function beginDrive(humanoid, seatPart)
 		-- Last state actually sent over the network - starts at sentinel
 		-- values so the very first frame always sends, even though 0/false
 		-- match Throttle/Handbrake's own initial values above.
-		NetSent = { Braking = false, Reversing = false, Burnout = false, Handbrake = false, Throttle = -math.huge },
+		NetSent = {
+			Braking = false,
+			Reversing = false,
+			Burnout = false,
+			Handbrake = false,
+			Throttle = -math.huge,
+			Rpm = -math.huge,
+		},
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
 		SelectorSound = createSound(chassis, "GearSelectorSound", config.SelectorSoundId, config.SelectorSoundVolume),
@@ -445,6 +457,7 @@ local function beginDrive(humanoid, seatPart)
 		-- Handed to the wheel-visual render step, which runs on its own clock
 		-- and has no other way to know what the gearbox decided this frame.
 		mySession.DriveThrottle = drive.Throttle
+		mySession.DriveRpm = drive.Rpm
 
 		-- Handbrake plus gas, while barely moving: the wheels are turning and
 		-- the car isn't. Nothing in the physics tracks wheel rotation apart
@@ -489,7 +502,10 @@ local function onCharacterAdded(character)
 			endDrive()
 			return
 		end
-		if not (seatPart:FindFirstAncestor("Vehicles") and seatPart:IsA("VehicleSeat")) then
+		-- Name-checked, not just class-checked: a PassengerSeat is a
+		-- VehicleSeat too, but only the DriverSeat should ever start the
+		-- driving controls/HUD.
+		if not (seatPart:FindFirstAncestor("Vehicles") and seatPart.Name == "DriverSeat") then
 			return
 		end
 
@@ -553,6 +569,7 @@ end
 -- the model.
 workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	VehicleEffects.Clear(vehicle)
+	ExhaustEffects.Clear(vehicle)
 	VehicleLights.Clear(vehicle)
 	wheelAttachmentsCache[vehicle] = nil
 	wheelRotationState[vehicle] = nil
@@ -577,6 +594,14 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 		-- Parked cars are Anchored and don't need their wheels touched at
 		-- all - skip them outright rather than relying on velocity happening
 		-- to read exactly zero every frame, which is a guarantee, not a hope.
+		if attachments and chassis.Anchored then
+			-- Parked (nobody driving): the block below never runs for this
+			-- vehicle, so nothing else ever calls ExhaustEffects.Update again
+			-- to shut it off - without this, smoke (and the last-set engine
+			-- pitch) would freeze at whatever it was the instant the driver
+			-- got out, instead of stopping.
+			ExhaustEffects.Update(vehicle, 0)
+		end
 		if attachments and not chassis.Anchored then
 			local config = VehiclePhysics.GetConfig(chassis)
 
@@ -598,6 +623,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			local burnout = false
 			local isBraking = false
 			local isReversing = false
+			local rpm = 0
 			if session and session.CarModel == vehicle then
 				-- The GEAR's drive demand, not the raw seat axis. S is the
 				-- brake now, so feeding ThrottleFloat straight in here would
@@ -607,17 +633,23 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				burnout = session.Burnout
 				isBraking = session.Braking
 				isReversing = session.Reversing
+				rpm = session.DriveRpm or 0
 			else
-				-- Someone else's car (or nobody's driving it): there's no
-				-- local session to read, so fall back to whatever the driving
-				-- client last reported over VehicleNetworkState. Defaults
-				-- match a car nobody is driving - see the Occupant reset in
+				-- Someone else's car (or nobody's driving it) - including a
+				-- car another player is driving while THIS client is also
+				-- driving one of its own, since this loop runs over every
+				-- vehicle in workspace.Vehicles regardless of the local
+				-- player's own session. There's no local session to read for
+				-- it, so fall back to whatever its driving client last
+				-- reported over VehicleNetworkState. Defaults match a car
+				-- nobody is driving - see the Occupant reset in
 				-- Raycast.server.luau.
 				throttle = vehicle:GetAttribute("NetThrottle") or 0
 				handbrake = vehicle:GetAttribute("NetHandbrake") or false
 				burnout = vehicle:GetAttribute("NetBurnout") or false
 				isBraking = vehicle:GetAttribute("NetBraking") or false
 				isReversing = vehicle:GetAttribute("NetReversing") or false
+				rpm = vehicle:GetAttribute("NetRpm") or 0
 			end
 
 			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, wheelRotationState[vehicle], {
@@ -628,6 +660,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				SlipOut = wheelSlipState[vehicle],
 			})
 			VehicleEffects.Update(vehicle, config, wheelSlipState[vehicle])
+			ExhaustEffects.Update(vehicle, rpm)
 			VehicleLights.Update(vehicle, isBraking, isReversing)
 			updateSteeringWheel(vehicle, config, smoothSteer)
 		end
