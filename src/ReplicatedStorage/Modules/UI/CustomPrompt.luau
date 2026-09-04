@@ -5,9 +5,17 @@
 -- happen every time the camera swings past one.
 --
 -- Deliberately generic - not vehicle-specific - so any "walk up, press a key"
--- interaction can reuse it. See VehicleDoorPrompts.client.luau for the first
--- user. API mirrors ProximityPrompt's own shape on purpose (Triggered,
+-- interaction can reuse it. See VehicleDoorPrompts.client.luau for a plain
+-- press-to-trigger user, and PlotTerminal.client.luau for a press-and-hold
+-- one. API mirrors ProximityPrompt's own shape on purpose (Triggered,
 -- Enabled, MaxActivationDistance) so it's a familiar drop-in.
+--
+-- Instant vs. hold-to-trigger is one config field: `HoldDuration` (seconds).
+-- Omit it (or pass 0) for the original instant-on-press behaviour; pass a
+-- number and the key has to be held down that long, with a progress bar
+-- filling in along the bottom of the prompt, before Triggered fires. Letting
+-- go early cancels it with no penalty - it just resets to empty and can be
+-- started again.
 --
 -- Client-only (reads Players.LocalPlayer and the local character) - do not
 -- require this from a server script.
@@ -16,6 +24,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ContextActionService = game:GetService("ContextActionService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
@@ -87,6 +96,8 @@ end
 --                         measured to, nearest one wins. Defaults to `part`.
 --                         A prompt that floats over a car's centre but should
 --                         only appear near a DOOR is exactly why this exists.
+--   HoldDuration          (seconds) default 0 (instant on press). > 0 means
+--                         the key must be held this long - see the header.
 --   ShouldShow            (function() -> boolean) re-asked EVERY frame while
 --                         in range. Anything that can change without warning -
 --                         occupancy, ownership, whether the local player is
@@ -102,6 +113,7 @@ function CustomPrompt.new(part, config)
 	self.KeyCode = config.KeyCode or Enum.KeyCode.F
 	self.MaxActivationDistance = config.MaxActivationDistance or 8
 	self.DistanceFrom = config.DistanceFrom or { part }
+	self.HoldDuration = config.HoldDuration or 0
 	self.ShouldShow = config.ShouldShow
 	self.Enabled = true
 	self.Visible = false
@@ -110,6 +122,9 @@ function CustomPrompt.new(part, config)
 	nextId += 1
 	self._actionName = "CustomPrompt" .. nextId
 	self._bound = false
+	self._holding = false
+	self._holdElapsed = 0
+	self._holdThread = nil
 
 	self:_buildGui(config.Text or "Interact", config.KeyText or self.KeyCode.Name)
 
@@ -132,14 +147,76 @@ function CustomPrompt:_setBound(bound)
 	self._bound = bound
 	if bound then
 		ContextActionService:BindAction(self._actionName, function(_, inputState)
-			if inputState == Enum.UserInputState.Begin then
+			if self.HoldDuration > 0 then
+				if inputState == Enum.UserInputState.Begin then
+					self:_startHold()
+				elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+					self:_cancelHold()
+				end
+			elseif inputState == Enum.UserInputState.Begin then
 				self.Triggered:Fire(player)
 			end
 			return Enum.ContextActionResult.Sink
 		end, false, self.KeyCode)
 	else
 		ContextActionService:UnbindAction(self._actionName)
+		-- The prompt can go out of range, get disabled, or lose ShouldShow
+		-- mid-hold (see the winner-by-key pass in the Heartbeat loop below) -
+		-- none of those are an End/Cancel input, so the hold has to be
+		-- cancelled here too or it would sit at whatever progress it had
+		-- reached, unreachable, forever.
+		self:_cancelHold()
 	end
+end
+
+-- Fraction is 0..1. No-ops if this prompt was built with HoldDuration == 0 -
+-- ProgressFill only exists when the GUI was built expecting a hold.
+function CustomPrompt:_setHoldProgress(fraction)
+	if self.ProgressFill then
+		self.ProgressFill.Size = UDim2.fromScale(fraction, 1)
+	end
+end
+
+function CustomPrompt:_startHold()
+	if self._holding or self.HoldDuration <= 0 then
+		return
+	end
+	self._holding = true
+	self._holdElapsed = 0
+	self:_setHoldProgress(0)
+
+	self._holdThread = task.spawn(function()
+		while self._holding do
+			local delta = RunService.Heartbeat:Wait()
+			-- Safety net for input states BindAction doesn't reliably deliver
+			-- (e.g. the window losing focus mid-hold, an End that never
+			-- arrives) - if the key genuinely isn't down any more, treat it
+			-- the same as a normal release rather than leaving the hold stuck.
+			if not self._holding or not UserInputService:IsKeyDown(self.KeyCode) then
+				self:_cancelHold()
+				return
+			end
+
+			self._holdElapsed += delta
+			local fraction = math.clamp(self._holdElapsed / self.HoldDuration, 0, 1)
+			self:_setHoldProgress(fraction)
+
+			if fraction >= 1 then
+				self._holding = false
+				self:_setHoldProgress(0)
+				self.Triggered:Fire(player)
+				return
+			end
+		end
+	end)
+end
+
+function CustomPrompt:_cancelHold()
+	if not self._holding then
+		return
+	end
+	self._holding = false
+	self:_setHoldProgress(0)
 end
 
 function CustomPrompt:_buildGui(text, keyText)
@@ -213,6 +290,30 @@ function CustomPrompt:_buildGui(text, keyText)
 	textLabel.TextXAlignment = Enum.TextXAlignment.Left
 	textLabel.TextWrapped = true
 	textLabel.Parent = canvas
+
+	if self.HoldDuration > 0 then
+		local progressTrack = Instance.new("Frame")
+		progressTrack.Name = "ProgressTrack"
+		progressTrack.Size = UDim2.new(1, 0, 0, 4)
+		progressTrack.Position = UDim2.new(0, 0, 1, -4)
+		progressTrack.BackgroundColor3 = KEY_BADGE
+		progressTrack.BorderSizePixel = 0
+		progressTrack.ZIndex = 2
+		progressTrack.Parent = canvas
+
+		-- Fills left-to-right as the key is held - see _setHoldProgress. Starts
+		-- at 0 width, not full, so an untouched hold prompt doesn't look like
+		-- it's already partway done.
+		local progressFill = Instance.new("Frame")
+		progressFill.Name = "ProgressFill"
+		progressFill.Size = UDim2.fromScale(0, 1)
+		progressFill.BackgroundColor3 = ACCENT
+		progressFill.BorderSizePixel = 0
+		progressFill.ZIndex = 3
+		progressFill.Parent = progressTrack
+
+		self.ProgressFill = progressFill
+	end
 
 	self.Gui = billboard
 	self.Canvas = canvas
