@@ -51,16 +51,27 @@ VehiclePlotsFolder.ChildRemoved:Connect(function(plotModel)
 	boxes[plotModel] = nil
 end)
 
--- Nearest point OUTSIDE `box`, exiting through whichever face `worldPosition`
--- is currently closest to - keeps offenders moving the shortest distance
--- rather than always ejecting them out one fixed side. Works for a rotated
--- box because the whole thing is done in the box's own local space.
+-- Nearest point OUTSIDE `box`, exiting through whichever SIDE face
+-- `worldPosition` is currently closest to - keeps offenders moving the
+-- shortest distance rather than always ejecting them out one fixed side.
+-- Works for a rotated box because the whole thing is done in the box's own
+-- local space.
+--
+-- Y is deliberately excluded. A plot box is much wider than it is tall, so
+-- for anything sitting near the middle of one the *nearest* face is nearly
+-- always the top or the bottom - and picking those means launching a car
+-- into the air, or far worse, straight down through the floor and out of the
+-- world. There is also no such thing as a useful vertical eject here: a plot
+-- is entered and left horizontally, so the only exits that put an offender
+-- somewhere they could actually have driven from are the four sides.
+local EJECT_AXES = { "X", "Z" }
+
 local function nearestOutsidePoint(box, worldPosition)
 	local localPos = box.CFrame:PointToObjectSpace(worldPosition)
 	local half = box.Size / 2
 
 	local bestAxis, bestDistance, bestSign = "X", math.huge, 1
-	for _, axis in { "X", "Y", "Z" } do
+	for _, axis in EJECT_AXES do
 		local toPositiveFace = half[axis] - localPos[axis]
 		local toNegativeFace = half[axis] + localPos[axis]
 		if toPositiveFace < bestDistance then
@@ -72,19 +83,82 @@ local function nearestOutsidePoint(box, worldPosition)
 	end
 
 	local outside = bestSign * (half[bestAxis] + PUSH_MARGIN)
+	-- Y is carried through untouched, so the offender leaves at whatever
+	-- height it was already at rather than being dropped or lifted.
 	local pushedLocal = Vector3.new(
 		if bestAxis == "X" then outside else localPos.X,
-		if bestAxis == "Y" then outside else localPos.Y,
+		localPos.Y,
 		if bestAxis == "Z" then outside else localPos.Z
 	)
 	return box.CFrame:PointToWorldSpace(pushedLocal)
+end
+
+-- How long the server keeps physics authority over a vehicle it just shoved,
+-- before handing ownership back to whoever is driving. Long enough to cover a
+-- client->server->client round trip on a bad connection; short enough that a
+-- driver who gets ejected never notices their car went briefly unresponsive.
+local OWNERSHIP_HOLD = 0.5
+
+-- [Model] = os.clock() at which physics authority goes back to automatic.
+local heldVehicles = {}
+
+-- Takes physics authority away from the driving client for a moment.
+--
+-- A driven car's assembly is network-owned by that client - it is their
+-- RayCastSuspension loop applying every impulse, and their CFrame that wins.
+-- So a bare server-side PivotTo on an occupied car is a suggestion, not a
+-- move: the owning client's next replicated frame overwrites it, the car is
+-- still inside the box, the guard fires again, and the two sides fight at the
+-- boundary every Heartbeat - the car buzzes in place instead of leaving.
+--
+-- Pulling ownership to the server makes the teleport authoritative. The
+-- client keeps running its drive loop meanwhile, but its impulses no longer
+-- carry, and it snaps to the position the server hands it. Holding for a beat
+-- afterwards (rather than releasing immediately) is what stops a CFrame that
+-- was already in flight from putting the car back where it was.
+local function holdAuthority(model, referencePart)
+	if referencePart.Anchored then
+		return -- an anchored part has no network owner to take
+	end
+	-- SetNetworkOwner throws on a part that isn't in a simulated assembly, and
+	-- there is nothing useful to do about it if it does - the teleport below
+	-- still runs, it just isn't protected from the client for this one frame.
+	pcall(function()
+		referencePart:SetNetworkOwner(nil)
+	end)
+	heldVehicles[model] = os.clock() + OWNERSHIP_HOLD
+end
+
+local function releaseExpiredAuthority()
+	local now = os.clock()
+	for model, releaseAt in heldVehicles do
+		local referencePart = model.Parent and model.PrimaryPart
+		if not referencePart then
+			heldVehicles[model] = nil -- car was despawned while held
+		elseif now >= releaseAt then
+			heldVehicles[model] = nil
+			if not referencePart.Anchored then
+				pcall(function()
+					referencePart:SetNetworkOwnershipAuto()
+				end)
+			end
+		end
+	end
 end
 
 -- Moves `model` so `referencePart` lands on `newPosition`, keeping the
 -- model's current rotation, and kills whatever velocity it had - otherwise a
 -- car driven at speed would get ejected only to immediately drive right back
 -- in.
-local function shoveOutside(model, referencePart, box)
+--
+-- `takeAuthority` is for vehicles only. A player's own character is always
+-- network-owned by that player and the server cannot take it, so there is
+-- nothing to hold; characters rely on Roblox snapping them to a server-set
+-- CFrame, which it does reliably enough for a walking-pace offender.
+local function shoveOutside(model, referencePart, box, takeAuthority)
+	if takeAuthority then
+		holdAuthority(model, referencePart)
+	end
 	local newPosition = nearestOutsidePoint(box, referencePart.Position)
 	local pivot = model:GetPivot()
 	model:PivotTo(pivot - pivot.Position + newPosition)
@@ -121,7 +195,7 @@ local function enforcePlot(plotModel, box)
 			if not handledModels[carModel] then
 				handledModels[carModel] = true
 				if VehicleOwnership.GetOwnerUserId(carModel) ~= ownerUserId and carModel.PrimaryPart then
-					shoveOutside(carModel, carModel.PrimaryPart, box)
+					shoveOutside(carModel, carModel.PrimaryPart, box, true)
 				end
 			end
 			continue
@@ -133,13 +207,14 @@ local function enforcePlot(plotModel, box)
 			local player = Players:GetPlayerFromCharacter(character)
 			local rootPart = character:FindFirstChild("HumanoidRootPart")
 			if player and player.UserId ~= ownerUserId and rootPart then
-				shoveOutside(character, rootPart, box)
+				shoveOutside(character, rootPart, box, false)
 			end
 		end
 	end
 end
 
 RunService.Heartbeat:Connect(function()
+	releaseExpiredAuthority()
 	for plotModel, box in boxes do
 		local ok, err = pcall(enforcePlot, plotModel, box)
 		if not ok then

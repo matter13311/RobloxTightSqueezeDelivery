@@ -462,19 +462,14 @@ function VehiclePhysics.GetWheelAttachments(chassis)
 	return attachments
 end
 
--- One of these per drive session (created when a player sits down). Holds
--- the previous frame's suspension length per wheel, which the damper needs,
--- plus the smoothed steer value. A parked car has no State at all - it's
+-- One of these per drive session (created when a player sits down). Just the
+-- smoothed steer value now: the damper used to need last frame's suspension
+-- length per wheel and no longer does (see the damper comment in Step - it
+-- reads chassis velocity instead, which is exactly what removed the need to
+-- carry any per-wheel history). A parked car has no State at all - it's
 -- fully Anchored and not simulated, see Raycast.server.luau.
 function VehiclePhysics.NewState()
-	local state = { SpringLengthMemory = {}, WasGrounded = {}, SmoothSteer = 0 }
-	for _, name in WHEEL_NAMES do
-		state.SpringLengthMemory[name] = 0.5
-		-- Starts false so the very first grounded frame skips the damper too -
-		-- there's no real previous compression to differentiate against yet.
-		state.WasGrounded[name] = false
-	end
-	return state
+	return { SmoothSteer = 0 }
 end
 
 -- Runs one physics step for one car. Only ever called for the car a player
@@ -530,6 +525,17 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = { carModel }
+	-- RaycastParams defaults this to FALSE, which means a plain workspace
+	-- raycast happily hits parts that nothing can physically touch. For a
+	-- suspension ray that is flatly wrong: a wheel cannot rest on something
+	-- the chassis drives straight through. Left off, every invisible trigger
+	-- volume in the map reads as road - most visibly each vehicle plot's
+	-- CollisionBox (deliberately CanCollide = false, see
+	-- PlotCollisionGuard.server.luau), whose top face sits above the real
+	-- ground. Clipping the edge of one shortens the ray, the spring reads a
+	-- near-fully-compressed strut, and the wheel is fired upward off a
+	-- surface that isn't there.
+	rayParams.RespectCanCollide = true
 
 	for _, wheelName in WHEEL_NAMES do
 		local attachment = attachments[wheelName]
@@ -542,22 +548,44 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			local raycastDistance = (rayOrigin - raycast.Position).Magnitude
 			local springLength = math.clamp(raycastDistance - config.WheelRadius, 0, config.SuspensionMaxLength)
 			local stiffnessForce = config.Stiffness * (config.SuspensionMaxLength - springLength)
-			-- The damper is a finite-difference derivative of compression, so it
-			-- needs a previous compression the wheel actually passed through.
-			-- A wheel that was airborne last frame has none: its memory was
-			-- parked at SuspensionMaxLength, and differentiating across that
-			-- discontinuity invents a huge phantom compression rate on the
-			-- landing frame (for this truck, several times the impulse that
-			-- supports its weight). That kick bounces the wheel back off the
-			-- ground, which re-parks the memory at full extension, which kicks
-			-- again on the next landing - a self-sustaining limit cycle that
-			-- reads as the car jittering and crawling sideways until something
-			-- knocks it out of phase. Skipping the damper for one frame on
-			-- re-contact costs nothing: real landing damping comes from the
-			-- frames after it, where the compression rate is genuine.
-			local damperForce = if state.WasGrounded[wheelName]
-				then config.Damper * ((state.SpringLengthMemory[wheelName] - springLength) / delta)
-				else 0
+			-- The damper measures how fast the strut is being compressed, and
+			-- it reads that off the chassis' OWN velocity at the strut mount -
+			-- not off how much springLength changed since last frame.
+			--
+			-- That distinction is the whole fix. springLength is a property of
+			-- the GROUND under the wheel, so it jumps discontinuously whenever
+			-- the surface under a wheel changes height, even by a sliver: roll
+			-- a wheel off the edge of a 0.21-stud floor part and springLength
+			-- steps by 0.21 in a single frame with the chassis barely moving.
+			-- Differentiating that step invents a compression rate of
+			-- 0.21/0.016 = 13 studs/s out of nothing, which here is a damper
+			-- impulse many times the one holding the truck up - and it points
+			-- DOWN, slamming the wheel into the road. Next frame the ray is
+			-- long again, the sign flips, the wheel is flung up, and the two
+			-- alternate: the screeching, smoking, self-damaging jitter that
+			-- only a handbrake could break out of. The airborne case fixed
+			-- earlier (WasGrounded) was the same bug through a bigger step;
+			-- this is that bug's grounded twin, and no Damper value avoids it
+			-- because the phantom rate scales with Damper too.
+			--
+			-- Chassis velocity has no such discontinuity - it is continuous by
+			-- definition - so an edge produces exactly the damping the truck's
+			-- real vertical motion deserves, which over a 0.21-stud lip is
+			-- almost none. Magnitudes are unchanged for genuine suspension
+			-- movement (both forms are Damper x studs/s), so nothing needs
+			-- retuning; only the phantom spikes are gone.
+			local mountVelocity = carPrim:GetVelocityAtPosition(rayOrigin)
+			local compressionRate = -mountVelocity:Dot(carCFrame.UpVector)
+			-- Belt and braces: a suspension spring can push the body up, but it
+			-- must never yank it down harder than it is currently holding it
+			-- up. Clamping the damper against the spring's own force keeps the
+			-- total suspension impulse non-negative, so no future edge case can
+			-- reintroduce a strut that pulls the truck into the ground.
+			local damperForce = math.clamp(
+				config.Damper * compressionRate,
+				-stiffnessForce,
+				config.Stiffness * config.SuspensionMaxLength
+			)
 			local suspensionForce = carCFrame.UpVector * (stiffnessForce + damperForce)
 
 			local isFrontWheel = wheelName:sub(1, 1) == "F"
@@ -726,9 +754,6 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				end
 			end
 
-			state.SpringLengthMemory[wheelName] = springLength
-			state.WasGrounded[wheelName] = true
-
 			-- The spring genuinely does push on the body at the strut mount,
 			-- so suspensionForce stays at rayOrigin. The TIRE forces (grip and
 			-- drive/brake) act at the contact patch on the ground instead -
@@ -745,14 +770,10 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				longitudinalForce,
 				if longitudinalIsStabilizer then rayOrigin else tireForcePosition
 			)
-		else
-			-- Airborne: this value is now only a resting placeholder, never
-			-- differentiated against - the WasGrounded flag makes the landing
-			-- frame ignore it rather than treat it as a real compression the
-			-- wheel travelled through.
-			state.SpringLengthMemory[wheelName] = config.SuspensionMaxLength
-			state.WasGrounded[wheelName] = false
 		end
+		-- Airborne needs no bookkeeping at all now: with the damper reading
+		-- chassis velocity there is no per-wheel history to keep in step, and
+		-- so no stale value for a landing frame to differentiate against.
 	end
 
 	-- Searched recursively (not just directly on the Chassis) since the engine
@@ -835,6 +856,10 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = { vehicle }
+	-- Same reason as the physics ray in Step - and it has to match it, or a
+	-- bystander would see wheels ride up over trigger volumes that the
+	-- driver's own car is ignoring.
+	rayParams.RespectCanCollide = true
 
 	for _, wheelName in WHEEL_NAMES do
 		local attachment = attachments[wheelName]

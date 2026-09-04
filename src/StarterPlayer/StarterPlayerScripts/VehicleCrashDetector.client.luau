@@ -305,9 +305,16 @@ local function beginSession(carModel)
 	local impactParams = RaycastParams.new()
 	impactParams.FilterType = Enum.RaycastFilterType.Exclude
 	impactParams.FilterDescendantsInstances = { carModel, player.Character }
+	-- Defaults to false; see the Touched guard below for why a non-collidable
+	-- part must never be treated as something the truck hit.
+	impactParams.RespectCanCollide = true
 
 	local normalParams = RaycastParams.new()
 	normalParams.FilterType = Enum.RaycastFilterType.Include
+	-- Also covers a part that turns non-collidable AFTER its contact opened -
+	-- a panel becoming debris, say. The cast simply misses, and checkScrape
+	-- skips that contact rather than scraping against a ghost.
+	normalParams.RespectCanCollide = true
 
 	local mySession = {
 		CarModel = carModel,
@@ -334,6 +341,18 @@ local function beginSession(carModel)
 					mySession.Connections,
 					part.Touched:Connect(function(other)
 						if other:IsDescendantOf(carModel) then
+							return
+						end
+						-- Touched fires for non-collidable parts too - it
+						-- reports geometric overlap, not physical contact. So
+						-- every invisible trigger volume the truck drives
+						-- through registers here as something it crashed into;
+						-- the vehicle plots' CollisionBoxes (CanCollide =
+						-- false by design, see PlotCollisionGuard.server.luau)
+						-- are the ones you actually meet while driving. You
+						-- cannot crash into something you pass straight
+						-- through, so don't let it open a contact.
+						if not other.CanCollide then
 							return
 						end
 						-- A panel that has already fallen off this or any other
