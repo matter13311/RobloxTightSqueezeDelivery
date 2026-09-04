@@ -36,6 +36,14 @@ local INITIAL_SETTLE_TIME = 5 -- seconds - how long the server runs real suspens
 -- overwritten by the next replication tick.
 local SEAT_SETTLE_FRAMES = 3
 
+-- The same idea for getting OUT - see the Occupant handler's else branch. This
+-- one needs to be longer than SEAT_SETTLE_FRAMES: entry only has to absorb a
+-- weld settling locally on the server, whereas exit has to outlast a full
+-- client round trip (ownership change out, stale CFrames still inbound). Ten
+-- frames is about a sixth of a second, comfortably past a normal ping, and
+-- costs nothing - it's writing one CFrame onto an anchored part.
+local EXIT_SETTLE_FRAMES = 10
+
 -- Runs real suspension physics briefly so a freshly-placed car (which may be
 -- floating or embedded, wherever it was left in Studio) settles onto the
 -- ground properly, then Anchors it there. Only ever runs once, at setup -
@@ -224,7 +232,54 @@ local function AddCar(carModel)
 				chassis:SetNetworkOwner(player)
 			end
 		else
+			-- Freeze the pose the car was ACTUALLY in at the instant the
+			-- driver left, not the one it flops into just afterwards.
+			--
+			-- Unseating removes the seat weld, which ends the client's drive
+			-- session and with it every suspension force - but the chassis is
+			-- still unanchored on that client, and still network-owned by
+			-- them, for the round trip it takes this Anchored = true to reach
+			-- them. For those few frames the truck is a bare rigid body with
+			-- no springs holding it up: it drops onto its collision hull and
+			-- tips. Then the client's own replicated CFrame - tilted, and
+			-- authoritative because it still owns the assembly - lands on top
+			-- of whatever this line froze, and the car stays stuck at that
+			-- angle for as long as it's parked.
+			--
+			-- It leans the same way every time regardless of which door was
+			-- used because the tilt has nothing to do with the door: it comes
+			-- from the driver's mass leaving the assembly, and the driver's
+			-- seat is always on the same side of the truck.
+			--
+			-- Three things are needed, in this order. Capture the pose while
+			-- it's still the good one (this signal fires the moment Occupant
+			-- clears, before any of the above can happen). Take ownership
+			-- back, so the ex-driver's client can no longer overwrite it -
+			-- which it otherwise keeps doing indefinitely, since nothing gave
+			-- ownership back after SetNetworkOwner(player) on entry. Then
+			-- anchor, and re-assert the pose for a few frames to absorb any
+			-- client CFrame already in flight when ownership changed hands.
+			local pose = chassis.CFrame
+			-- Throws if the assembly isn't simulated (already anchored, say),
+			-- and there's nothing useful to do about that - it means no client
+			-- owns it and there was nothing to take back.
+			pcall(function()
+				chassis:SetNetworkOwner(nil)
+			end)
 			chassis.Anchored = true
+
+			task.spawn(function()
+				for _ = 1, EXIT_SETTLE_FRAMES do
+					RunService.Heartbeat:Wait()
+					-- Somebody got back in - the entry path above owns the
+					-- pose now, and fighting it would undo its own settle.
+					if driverSeat.Occupant then
+						return
+					end
+					chassis.CFrame = pose
+				end
+			end)
+
 			SetEngineSoundPlaying(carModel, false)
 			-- Nobody's left to keep sending updates for these, so clear them
 			-- rather than leaving the last driver's state stuck (e.g. a

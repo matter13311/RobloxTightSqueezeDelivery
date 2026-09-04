@@ -59,6 +59,16 @@ local wheelRotationState = {} -- [vehicle] = { FL = angle, ... }
 local wheelSlipState = {} -- [vehicle] = { FL = slip studs/s, ... }, reused each frame so the render step allocates nothing
 local drivingStates = {} -- [vehicle] = physics State, only set while THIS client is driving it
 
+-- How many frames a newly-parked car keeps having its wheels re-posed before
+-- the render step goes back to leaving parked cars alone entirely. Has to
+-- outlast the server's EXIT_SETTLE_FRAMES re-assert window (Raycast.server.luau)
+-- plus the replication of it, or the last pose written here would be one taken
+-- while the chassis was still being pulled into place.
+local PARKED_POSE_FRAMES = 15
+-- [vehicle] = frames of parked posing still owed. nil means "not posed since
+-- it last parked", 0 means done - see the Anchored branch in MoveWheels.
+local parkedPoseFrames = {}
+
 -- The one car this client is driving right now, or nil. Everything the input
 -- bindings need to touch hangs off here, so a binding never has to care which
 -- car it belongs to - it's always this one, and it's unbound the moment the
@@ -588,6 +598,7 @@ workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	wheelRotationState[vehicle] = nil
 	wheelSlipState[vehicle] = nil
 	drivingStates[vehicle] = nil
+	parkedPoseFrames[vehicle] = nil
 end)
 
 -- Wheel visuals for every car in view, not just the one being driven, so this
@@ -614,6 +625,48 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- pitch) would freeze at whatever it was the instant the driver
 			-- got out, instead of stopping.
 			ExhaustEffects.Update(vehicle, 0)
+
+			-- The wheels have exactly the same problem, and it is far more
+			-- visible: the block below is what writes each wheel's weld C0
+			-- from its suspension raycast, so skipping it outright freezes the
+			-- wheels at whatever the LAST unanchored frame produced. That
+			-- frame is the worst possible one to keep - it lands inside the
+			-- exit handover (see Raycast.server.luau's Occupant handler),
+			-- where the chassis is being snapped to its parked pose as network
+			-- ownership moves back to the server. A ray cast mid-snap can
+			-- easily miss the ground entirely, which clamps springLength to
+			-- SuspensionMaxLength and leaves the struts hanging fully
+			-- extended, driving the wheels down through the floor.
+			--
+			-- So pose them once more against the settled pose. Counted rather
+			-- than done on the single first anchored frame, because that frame
+			-- may itself still be mid-handover; the count outlasts the
+			-- server's own re-assert window, and then stops. A car that has
+			-- been parked for a while costs nothing, which is the whole reason
+			-- this branch skips the work in the first place.
+			local remaining = parkedPoseFrames[vehicle]
+			if remaining == nil then
+				remaining = PARKED_POSE_FRAMES
+			end
+			if remaining > 0 then
+				parkedPoseFrames[vehicle] = remaining - 1
+				wheelRotationState[vehicle] = wheelRotationState[vehicle] or {}
+				VehiclePhysics.UpdateWheelVisuals(
+					vehicle,
+					attachments,
+					VehiclePhysics.GetConfig(chassis),
+					wheelRotationState[vehicle],
+					-- A parked car is straight-wheeled and still. Deliberately
+					-- no SlipOut: a stationary car generates no slip, and
+					-- passing one would only invite the effects layer to read
+					-- stale numbers from the last drive.
+					{ SmoothSteer = 0, Throttle = 0, Handbrake = false, Burnout = false }
+				)
+			end
+		elseif attachments then
+			-- Unanchored again (someone got in): re-arm the pass, so the next
+			-- park gets its own settle rather than reusing a spent count.
+			parkedPoseFrames[vehicle] = nil
 		end
 		if attachments and not chassis.Anchored then
 			local config = VehiclePhysics.GetConfig(chassis)
