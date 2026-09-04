@@ -9,18 +9,18 @@
 -- The gates, client first then server:
 --   1. VehicleDoorPrompts built a prompt for this car at all
 --   2. ShouldShow  - seat unoccupied, and VehicleOwnership.CanEnter
---   3. CustomPrompt range - within MAX_PROMPT_DISTANCE (6) of a DOOR ATTACHMENT,
---      which lives on the INTERIOR frame, not on the outer skin. This is the
---      one that collision hulls can break: if the hulls hold you further off
---      the truck than the body meshes used to, you can no longer physically
---      get close enough for the prompt to appear.
+--   3. CustomPrompt range - within MAX_PROMPT_DISTANCE (6) of an EXIT
+--      ATTACHMENT on the chassis. This is the one that collision hulls can
+--      break: if the hulls hold you further off the truck than the body meshes
+--      used to, you can no longer physically get close enough for the prompt
+--      to appear.
 --   4. server: carsData[carModel] exists (VehicleDoors set the car up)
 --   5. server: within MAX_ENTER_DISTANCE (12) of the nearest door
 --   6. server: not Busy, seat unoccupied, not already seated somewhere
 
 local Players = game:GetService("Players")
 
-local VehicleDoorRig = require(game.ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
+local VehicleExits = require(game.ReplicatedStorage.Modules.Vehicles.VehicleExits)
 local VehicleOwnership = require(game.ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleSeats = require(game.ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
@@ -49,14 +49,14 @@ for _, carModel in workspace.Vehicles:GetChildren() do
 	print(("=== %s ==="):format(carModel.Name))
 
 	local seat = VehicleSeats.GetDriverSeat(carModel)
-	local doors = VehicleDoorRig.GetDoors(carModel)
+	local exits = VehicleExits.GetExits(carModel)
 
 	if not seat then
 		print("  FAIL  no DriverSeat - no prompt is ever built")
 		continue
 	end
-	if not (doors and doors.Left and doors.Right) then
-		print("  FAIL  door rig incomplete (need Frame.InteriorFrame.<Side>DoorAttachment.HingeConstraint on BOTH sides)")
+	if #exits == 0 then
+		print("  FAIL  no Exit# attachments on the Chassis - see VehicleExits")
 		continue
 	end
 
@@ -65,17 +65,17 @@ for _, carModel in workspace.Vehicles:GetChildren() do
 	print(("  seat.Disabled     : %s  (expected true - scripted seating only)"):format(tostring(seat.Disabled)))
 
 	local nearest = math.huge
-	for side, door in doors do
-		local distance = (door.FrameAttachment.WorldPosition - rootPart.Position).Magnitude
+	for _, exit in exits do
+		local distance = (exit.WorldPosition - rootPart.Position).Magnitude
 		nearest = math.min(nearest, distance)
-		print(("  %-5s door        : %.1f studs away"):format(side, distance))
+		print(("  %-12s      : %.1f studs away"):format(exit.Name, distance))
 	end
 
 	if nearest > MAX_PROMPT_DISTANCE then
-		print(("  FAIL  nearest door is %.1f studs, prompt needs <= %d."):format(nearest, MAX_PROMPT_DISTANCE))
+		print(("  FAIL  nearest exit is %.1f studs, prompt needs <= %d."):format(nearest, MAX_PROMPT_DISTANCE))
 		print("        Walk right up to the door and run this again. If you CANNOT get closer,")
 		print("        a collision hull is holding you off the truck - shrink Hull_Left/Hull_Right,")
-		print("        or move the DoorAttachment outward toward the skin.")
+		print("        or move the Exit attachment outward, away from the truck.")
 	elseif nearest > MAX_ENTER_DISTANCE then
 		print(("  FAIL  server would reject: %.1f studs, needs <= %d"):format(nearest, MAX_ENTER_DISTANCE))
 	else

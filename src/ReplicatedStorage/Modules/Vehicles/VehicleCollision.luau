@@ -33,9 +33,12 @@ local VehicleCollision = {}
 -- sinks into another car's door but stops dead against a building wall.
 VehicleCollision.HULL_FOLDER = "Collision"
 
--- Cosmetic panels. The ONLY folder anything is ever allowed to fall off from -
--- Wheels, Lights, Engine, Doors and the Chassis itself are all off limits, so
--- no amount of damage can leave a truck undriveable or stranded.
+-- Cosmetic panels, doors included now that they are welded rather than hinged.
+-- The ONLY folder anything is ever allowed to fall off from - Wheels, Lights,
+-- Engine, Mirror and the Chassis itself are all off limits, so no amount of
+-- damage can leave a truck undriveable or stranded. Losing a door is purely
+-- cosmetic: you get in and out by teleport, and the way in is defined by the
+-- Exit attachments on the chassis, not by the panel.
 VehicleCollision.BODY_FOLDER = "Body"
 
 --=============================================================================
@@ -47,18 +50,20 @@ VehicleCollision.BODY_FOLDER = "Body"
 -- assembly NEVER collide with each other however badly they overlap. Two parts
 -- in DIFFERENT assemblies collide normally.
 --
--- A HingeConstraint does not join parts into one assembly - that is the point
--- of a hinge - so every door is its own assembly, and so is anything welded to
--- a door (the wing mirrors, via VehicleMirrors.AttachToDoors). A door and a
--- flank hull occupying the same space are therefore two separate bodies trying
--- to hold one piece of ground: the solver shoves them apart, the hinge servo
--- drags the door back, and the truck shakes itself to bits.
+-- This is what the doors used to violate. A HingeConstraint does not join parts
+-- into one assembly - that is the point of a hinge - so each door was its own
+-- body, and a door overlapping a flank hull was two separate bodies trying to
+-- hold one piece of ground. The solver shoved them apart, the servo dragged
+-- the door back, and the truck shook itself to bits. Doors are plain welded
+-- panels now (see VehicleDoors.server.luau) so that particular case is gone.
 --
--- The fix is a WHITELIST, not a list of exceptions. Vehicle holds the hulls
--- and the chassis, which together ARE the car's shape. Everything else on the
--- vehicle goes in Attached and simply cannot touch it. Listing exceptions
--- instead means the truck comes apart again the next time a prop is bolted on,
--- with a symptom (violent shaking) that looks nothing like its cause.
+-- The grouping stays, because the RULE is what protects the car, not the fix
+-- to one instance of it. It is a WHITELIST, not a list of exceptions: Vehicle
+-- holds the hulls and the chassis, which together ARE the car's shape, and
+-- everything else on the vehicle goes in Attached and simply cannot touch it.
+-- Listing exceptions instead means the truck comes apart again the next time
+-- an unwelded prop is bolted on, with a symptom (violent shaking) that looks
+-- nothing like its cause.
 VehicleCollision.Groups = {
 	Vehicle = "Vehicle", -- hull boxes + chassis: the car's real shape, and the only things that collide as the car
 	Cosmetic = "VehicleCosmetic", -- body mesh parts once hulls exist: collide with nothing at all

@@ -9,6 +9,12 @@
 -- resolves to is VehicleDoors.server.luau's call, based on which one the
 -- player is actually standing closer to at that moment.
 --
+-- Range is judged from the car's Exit# attachments (see VehicleExits). Doors
+-- no longer swing and are just welded panels in the Body folder, so there is
+-- no door rig to ask - and a panel can be knocked clean off in a crash, which
+-- would take the way in with it. The exit attachments are on the Chassis and
+-- describe the same thing more reliably: ground level, just outside a door.
+--
 -- Nothing here is a security boundary. Whether a player may actually enter is
 -- decided by the server (VehicleDoors.server.luau) using the same
 -- VehicleOwnership rule this script asks - so what's on screen matches what
@@ -18,19 +24,24 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CustomPrompt = require(ReplicatedStorage.Modules.UI.CustomPrompt)
-local VehicleDoorRig = require(ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
+local VehicleExits = require(ReplicatedStorage.Modules.Vehicles.VehicleExits)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local player = Players.LocalPlayer
 local VehicleFolder = workspace.Vehicles
 
--- Measured to the nearer DOOR, not to the seat at the car's centre. Measuring
+-- Measured to the nearest EXIT, not to the seat at the car's centre. Measuring
 -- from the centre meant the radius had to cover half the length of the truck
 -- before it reached a door at all, so the prompt appeared while the player was
 -- still well clear of the car - and appeared just as readily standing at the
 -- back of the tray, nowhere near a way in. Door-relative, this is the real
 -- "close enough to reach the handle" distance, so it can be small.
+--
+-- Exit attachments sit on the ground just outside the door, whereas the old
+-- door attachments were up on the interior frame - so this is now measured to
+-- a point a little lower and further out. If the prompt starts appearing a
+-- touch too eagerly or too late, this is the number to move.
 local MAX_PROMPT_DISTANCE = 6
 
 local enterVehicleEvent = ReplicatedStorage:WaitForChild("EnterVehicle")
@@ -48,9 +59,9 @@ local function setupCarPrompts(carModel)
 		return true
 	end
 
-	local doors = VehicleDoorRig.GetDoors(carModel)
 	local seat = VehicleSeats.GetDriverSeat(carModel)
-	if not (doors and doors.Left and doors.Right and seat) then
+	local exits = VehicleExits.GetExits(carModel)
+	if not seat or #exits == 0 then
 		return false -- not fully set up yet - the retry below will catch it once it is
 	end
 
@@ -60,8 +71,9 @@ local function setupCarPrompts(carModel)
 		MaxActivationDistance = MAX_PROMPT_DISTANCE,
 		-- The billboard still floats over the seat (centred over the cab, so
 		-- it reads the same from either side), but range is judged from the
-		-- door openings.
-		DistanceFrom = { doors.Left.FrameAttachment, doors.Right.FrameAttachment },
+		-- door openings - every exit, so a car with more than two ways in
+		-- offers the prompt at all of them.
+		DistanceFrom = exits,
 		-- Re-asked every frame rather than pushed from event handlers. The
 		-- previous version drove this off Seat.Occupant changing and the local
 		-- Humanoid.Seated firing, and a prompt that outlives EITHER of those -
@@ -111,7 +123,7 @@ local function trySetupCarPrompts(carModel)
 			end
 		end
 		if carModel.Parent == VehicleFolder and not carPrompts[carModel] then
-			warn("VehicleDoorPrompts: gave up waiting for " .. carModel:GetFullName() .. " to have Left/RightDoorAttachment hinges and a DriverSeat")
+			warn("VehicleDoorPrompts: gave up waiting for " .. carModel:GetFullName() .. " to have Exit# attachments on its Chassis and a DriverSeat")
 		end
 	end)
 end

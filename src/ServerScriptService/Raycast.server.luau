@@ -149,17 +149,25 @@ local function AddCar(carModel)
 	-- have been left Playing in Studio, so this can't just assume silence.
 	SetEngineSoundPlaying(carModel, false)
 
-	-- Rigidly weld static decoration (body panels, lights) to the chassis so
-	-- it rides along with suspension movement. Doors and the steering wheel
-	-- are deliberately left out - the steering wheel gets its own animatable
-	-- joint just below, and doors get theirs (a HingeConstraint each) from
-	-- VehicleDoors.server.luau.
+	-- Rigidly weld static decoration (body panels, lights, mirrors) to the
+	-- chassis so it rides along with suspension movement. Only the steering
+	-- wheel is deliberately left out - it gets its own animatable joint just
+	-- below, because it has to turn.
+	--
+	-- Doors used to be left out too, back when they swung on a HingeConstraint.
+	-- They are now ordinary welded panels living in Body, which makes the whole
+	-- car a single physics assembly and lets a door be knocked off in a crash
+	-- like any other cosmetic part. See VehicleDoors.server.luau.
 	--
 	-- "Collision" is the invisible hull boxes that are the car's real shape for
 	-- crash purposes (see VehicleCollision). Welded here rather than by the
 	-- tool that builds them, so a car whose hulls were hand-edited in Studio
 	-- and left unwelded still ends up rigid.
-	for _, folderName in { "Body", "Lights", "Engine", "Collision" } do
+	--
+	-- "Mirror" used to be welded to the doors (so the mirrors swung with them);
+	-- with no doors to hang off, they belong to the chassis like everything
+	-- else. VehicleMirrorViews still finds them in the same folder.
+	for _, folderName in { "Body", "Lights", "Engine", "Collision", "Mirror" } do
 		local folder = carModel:FindFirstChild(folderName)
 		if folder then
 			VehiclePhysics.WeldFolderToChassis(folder, chassis)

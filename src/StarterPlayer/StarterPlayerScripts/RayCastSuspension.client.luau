@@ -24,7 +24,7 @@ local player = Players.LocalPlayer
 local vehicleNetworkState = ReplicatedStorage:WaitForChild("VehicleNetworkState")
 
 -- Pressing F to get out no longer unseats immediately - it asks
--- VehicleDoors.server.luau to open the right door first, which fires this
+-- VehicleDoors.server.luau to pick the exit and play the door cue, which fires this
 -- back once it's open. Only then does the actual unseat + step-out below
 -- run, so you never see the character walk through a closed door.
 local exitVehicleRemote = ReplicatedStorage:WaitForChild("ExitVehicle")

@@ -71,14 +71,14 @@ PhysicsService:CollisionGroupSetCollidable(Groups.Cosmetic, Groups.Vehicle, fals
 PhysicsService:CollisionGroupSetCollidable(Groups.Cosmetic, Groups.Cosmetic, false)
 PhysicsService:CollisionGroupSetCollidable(Groups.Cosmetic, Groups.Debris, false)
 
--- Doors swing on a HingeConstraint, which means each one is its OWN physics
--- assembly rather than part of the chassis assembly. Roblox never collides two
--- parts within one assembly, but it absolutely collides two separate ones - so
--- a door and a flank hull that occupy the same space push each other apart
--- every single frame, and the truck shakes itself to bits. They keep their
--- collision against the world and against players (an open door still hits a
--- lamp post, and still can't be walked through), and lose it only against
--- vehicle geometry.
+-- Everything on the car that is not its shape: seats, the frame, the steering
+-- wheel, wheels, mirrors, and any prop added later. Most of these are welded
+-- into the chassis assembly and so could never have collided with the hulls
+-- anyway - the group exists for the ones that AREN'T, which is the case that
+-- shook the truck apart when doors were still hinged. Keeping the rule general
+-- means the next unwelded prop is handled before anyone notices it needed to
+-- be. They keep their collision against the world and against players, and
+-- lose it only against vehicle geometry.
 PhysicsService:CollisionGroupSetCollidable(Groups.Attached, "Default", true)
 PhysicsService:CollisionGroupSetCollidable(Groups.Attached, Groups.Vehicle, false)
 PhysicsService:CollisionGroupSetCollidable(Groups.Attached, Groups.Cosmetic, false)

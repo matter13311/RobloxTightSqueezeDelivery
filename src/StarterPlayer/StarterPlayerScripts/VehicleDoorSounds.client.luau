@@ -25,8 +25,15 @@ task.spawn(function()
 	ContentProvider:PreloadAsync({ DOOR_OPEN_SOUND_ID, DOOR_CLOSE_SOUND_ID })
 end)
 
-playDoorSound.OnClientEvent:Connect(function(doorPart, action)
-	if typeof(doorPart) ~= "Instance" or not doorPart:IsA("BasePart") then
+-- `at` is whatever the server said the door is: since doors stopped swinging
+-- that is an Exit Attachment on the chassis rather than a door part. A Sound
+-- parented to an Attachment plays at that attachment's world position, so the
+-- cue still comes from the correct side of the truck - and unlike a door
+-- panel, an attachment cannot be knocked off in a crash and take the audio
+-- with it. BasePart is still accepted so nothing else that fires this needs
+-- changing.
+playDoorSound.OnClientEvent:Connect(function(at, action)
+	if typeof(at) ~= "Instance" or not (at:IsA("BasePart") or at:IsA("Attachment")) then
 		return
 	end
 
@@ -34,7 +41,7 @@ playDoorSound.OnClientEvent:Connect(function(doorPart, action)
 	sound.SoundId = if action == "Open" then DOOR_OPEN_SOUND_ID else DOOR_CLOSE_SOUND_ID
 	sound.Volume = DOOR_SOUND_VOLUME
 	sound.RollOffMaxDistance = 50
-	sound.Parent = doorPart
+	sound.Parent = at
 	sound:Play()
 
 	sound.Ended:Once(function()

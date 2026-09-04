@@ -11,9 +11,14 @@
 -- right where you'd land - the next-nearest exit that IS clear is used
 -- instead, so players don't get wedged into geometry on the way out.
 --
--- Server-authoritative: VehicleDoors.server.luau calls this to decide both
--- which exit to send the client to AND (via that exit's position) which
--- physical door to swing open, so the two always agree.
+-- Server-authoritative: VehicleDoors.server.luau calls this to decide which
+-- exit to send the client to, and plays the door cue at that same attachment
+-- so what you hear and where you land always agree.
+--
+-- These attachments are also what "the door is over there" MEANS now that
+-- doors don't swing: the enter prompt's range and the server's enter check are
+-- both measured to them. They live on the Chassis, so unlike a door panel they
+-- cannot be knocked off in a crash and take the way in with them.
 
 local VehicleExits = {}
 

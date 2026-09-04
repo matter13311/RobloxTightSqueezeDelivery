@@ -1,66 +1,68 @@
--- Drives the driver/passenger door hinges around getting in and out of a
--- car: EnterVehicle request -> open door -> sit the player -> close door,
--- and the reverse on the way out. Server-authoritative for the same reason
--- VehicleLightSwitches is - a client can fire the enter/exit remotes, but
--- never move a door or seat anyone by itself, which is also where the
--- ownership check (see playerCanEnter below) has to live once that exists.
+-- Getting in and out of a car. The player is teleported onto the seat (and
+-- back out again) with the door open/close cue played over the top - there is
+-- no physical door swing any more.
 --
--- The "Enter" UI itself is a custom BillboardGui, not a ProximityPrompt (see
--- VehicleDoorPrompts.client.luau) - that client only decides WHEN to show a
--- prompt and fires EnterVehicle when F is pressed, so distance is still
--- re-checked here rather than trusted from the client.
+-- WHY THE HINGES WENT
 --
--- Door discovery (Frame.InteriorFrame.<Side>DoorAttachment.HingeConstraint,
--- Doors.<Side>Door) is shared with the client via VehicleDoorRig - see that
--- module for the exact structure a car needs. Lower/UpperAngle, ActuatorType
--- etc are authored here rather than trusted from Studio, so a car is fully
--- configured by code alone.
+-- A swinging door has to be its own physics assembly, because that is what a
+-- HingeConstraint is for. That made every car three assemblies instead of one,
+-- and any hull box overlapping a door was two separate bodies fighting over
+-- the same space - the truck shook itself apart until the doors were moved
+-- into their own collision group. The enter/exit sequences also had to be
+-- async around the swing (open, wait, seat, wait, close), which is where most
+-- of their state and most of their bugs lived.
+--
+-- Doors are now plain welded panels in the Body folder, which means they are
+-- one assembly with the chassis, and - as a bonus - they are cosmetic damage
+-- parts like any other, so a hard enough crash knocks one clean off.
+--
+-- Server-authoritative for the same reason VehicleLightSwitches is: a client
+-- can fire the enter/exit remotes, but never seat anyone by itself. The "Enter"
+-- UI is a custom BillboardGui (VehicleDoorPrompts.client.luau) which decides
+-- WHEN to offer the prompt; distance is still re-checked here rather than
+-- trusted from the client.
+--
+-- WHERE "THE DOOR" IS, NOW THAT THERE ISN'T ONE
+--
+-- The Exit# attachments on the Chassis (see VehicleExits) - ground level, just
+-- outside each door. They already existed to decide where a player steps out,
+-- they are on the chassis so nothing can knock them off, and they are exactly
+-- the "you are standing at a door" reference the prompt and the range check
+-- need. That is why there is no door rig module any more.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local VehicleDoorRig = require(ReplicatedStorage.Modules.Vehicles.VehicleDoorRig)
 local VehicleExits = require(ReplicatedStorage.Modules.Vehicles.VehicleExits)
-local VehicleMirrors = require(ReplicatedStorage.Modules.Vehicles.VehicleMirrors)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local VehicleFolder = workspace.Vehicles
-local DOOR_SIDES = VehicleDoorRig.Sides
-
--- Hinge tuning. AngularSpeed/AngularResponsiveness control how the Servo
--- actually moves; DOOR_SWING_TIME is how long the enter/exit sequence PAUSES
--- to let that motion finish before continuing (sitting the player, playing
--- the close sound, etc). These aren't derived from each other - if you speed
--- up or slow down the swing, re-tune DOOR_SWING_TIME to match or the
--- sequence will either wait too long or cut the animation off early.
-local DOOR_LOWER_ANGLE = 0
--- Left and Right are mirror images of each other, so "open" is the opposite
--- rotation sign on each side even though "closed" (0) is shared.
-local DOOR_UPPER_ANGLE = { Left = 75, Right = -75 }
-local DOOR_ANGULAR_SPEED = 2.5
-local DOOR_ANGULAR_RESPONSIVENESS = 15
-local DOOR_SWING_TIME = 1
-
--- Extra pause after the exit go-ahead is sent, before the door swings shut -
--- gives the client's own teleport-out (which happens a frame or two after it
--- gets the signal) time to actually clear the doorway first.
-local EXIT_CLEAR_TIME = 0.3
 
 -- Deliberately looser than the client's own prompt-visibility range (see
--- MAX_PROMPT_DISTANCE in VehicleDoorPrompts.client.luau) - this exists to
--- catch a cheated/forged request from way outside the car, not to be the
--- source of truth for exactly how close is "close enough" to see the prompt.
--- Keep it comfortably above that number: measured from the same door
--- attachments, but a player who was legitimately in range when they pressed F
--- can still have walked or been shoved a little way off by the time the
--- request lands here.
+-- MAX_PROMPT_DISTANCE in VehicleDoorPrompts.client.luau) - this exists to catch
+-- a cheated/forged request from way outside the car, not to be the source of
+-- truth for how close is "close enough". Keep it comfortably above that
+-- number: measured from the same exit attachments, but a player who was
+-- legitimately in range when they pressed F can still have walked or been
+-- shoved a little way off by the time the request lands here.
 local MAX_ENTER_DISTANCE = 12
 
+-- The beat between the door-open cue and the door-close cue. With no swing to
+-- wait for, this is purely how long the two sounds are held apart so it reads
+-- as "door opens, you get in, door shuts" rather than as one noise. Short
+-- enough that entering still feels instant.
+local DOOR_SOUND_GAP = 0.35
+
+-- Extra pause on the way out before the close cue, so the client's own
+-- teleport-out (a frame or two after it gets the go-ahead) has visibly
+-- happened before the door is heard shutting.
+local EXIT_CLEAR_TIME = 0.3
+
 -- How far above the seat's own centre the character's pivot (its
--- HumanoidRootPart) is placed just before being welded in - see tryEnter.
--- Only has to be close enough that the seat weld has no meaningful error left
--- to resolve; the weld itself decides the exact final position.
+-- HumanoidRootPart) is placed just before being welded in - see tryEnter. Only
+-- has to be close enough that the seat weld has no meaningful error left to
+-- resolve; the weld itself decides the exact final position.
 local SEAT_PIVOT_HEIGHT = 2
 
 local doorSoundEvent = Instance.new("RemoteEvent")
@@ -75,7 +77,7 @@ local exitVehicleEvent = Instance.new("RemoteEvent")
 exitVehicleEvent.Name = "ExitVehicle"
 exitVehicleEvent.Parent = ReplicatedStorage
 
--- [carModel] = { CarModel, Doors = { Left = {...}, Right = {...} }, Seat, Busy }
+-- [carModel] = { CarModel, Seat, Busy }
 local carsData = {}
 
 -- Authoritative ownership gate. The rule itself lives in VehicleOwnership so
@@ -86,100 +88,37 @@ local function playerCanEnter(player, carModel)
 	return VehicleOwnership.CanEnter(player, carModel)
 end
 
--- GetJoints() returns both classic joints (Weld, Motor6D, ...), which use
--- Part0/Part1, and Constraint-based ones (WeldConstraint, HingeConstraint,
--- ...), which use Attachment0/Attachment1 instead - and never the door's own
--- HingeConstraint, which must survive this untouched.
-local function getJointOtherPart(joint, part)
-	if joint:IsA("HingeConstraint") then
-		return nil
-	end
-	if joint:IsA("Constraint") then
-		local a0, a1 = joint.Attachment0, joint.Attachment1
-		local p0 = a0 and a0.Parent
-		local p1 = a1 and a1.Parent
-		if p0 == part then
-			return p1
-		elseif p1 == part then
-			return p0
-		end
-		return nil
-	end
-	return if joint.Part0 == part then joint.Part1 else joint.Part0
+local function attachmentPosition(exit)
+	return if exit:IsA("Attachment") then exit.WorldPosition else exit.Position
 end
 
--- Studio auto-creates a rigid Weld between two parts that were touching when
--- they got placed/moved - if that happened between a door and the frame, it
--- fights the HingeConstraint for control of the door (this is exactly what a
--- door that slowly creeps open under gravity, and barely responds to
--- TargetAngle changes, looks like). Only joints leading OUTSIDE the door
--- model are removed, so welds holding the door's own parts together (and the
--- HingeConstraint itself) survive.
-local function removeExternalJoints(doorModel)
-	for _, part in doorModel:GetDescendants() do
-		if part:IsA("BasePart") then
-			for _, joint in part:GetJoints() do
-				local other = getJointOtherPart(joint, part)
-				if other and not other:IsDescendantOf(doorModel) then
-					joint:Destroy()
-				end
-			end
+-- Nearest exit attachment to a world position, and how far away it is. Shared
+-- by entering (nearest to where the player is actually standing) and by the
+-- sound cue (so the door you hear is the one you are next to).
+local function nearestExitToPosition(carModel, referencePosition)
+	local best, bestDistance = nil, math.huge
+	for _, exit in VehicleExits.GetExits(carModel) do
+		local distance = (attachmentPosition(exit) - referencePosition).Magnitude
+		if distance < bestDistance then
+			best, bestDistance = exit, distance
 		end
 	end
-end
-
-local function configureHinge(hinge, side)
-	hinge.ActuatorType = Enum.ActuatorType.Servo
-	hinge.LowerAngle = DOOR_LOWER_ANGLE
-	hinge.UpperAngle = DOOR_UPPER_ANGLE[side]
-	hinge.AngularSpeed = DOOR_ANGULAR_SPEED
-	hinge.AngularResponsiveness = DOOR_ANGULAR_RESPONSIVENESS
-	-- Doesn't default to anything usable - a Servo with zero max torque can't
-	-- actually move the door no matter what TargetAngle is set to. Unlimited
-	-- here; lower it later if you want a door that can be shoved open by
-	-- something heavy enough to overpower the servo.
-	hinge.ServoMaxTorque = math.huge
-	hinge.TargetAngle = DOOR_LOWER_ANGLE
-end
-
-local function setDoorOpen(hinge, open)
-	hinge.TargetAngle = open and hinge.UpperAngle or hinge.LowerAngle
-end
-
--- Disabled while a player is stepping out through it, so the door swinging
--- shut behind them can't physically shove them back into the car.
-local function setDoorCollision(doorModel, canCollide)
-	for _, part in doorModel:GetDescendants() do
-		if part:IsA("BasePart") then
-			part.CanCollide = canCollide
-		end
-	end
+	return best, bestDistance
 end
 
 -- Only fires to a player who's still actually connected - a player who left
 -- mid-sequence has a dead Instance that FireClient would otherwise error on.
-local function fireDoorSound(player, doorPart, action)
-	if player.Parent then
-		doorSoundEvent:FireClient(player, doorPart, action)
+--
+-- `at` is an Exit Attachment rather than a door part: a Sound parented to an
+-- Attachment plays at that attachment's world position, so the cue still comes
+-- from the right side of the truck without a door existing to hang it on.
+local function fireDoorSound(player, at, action)
+	if player.Parent and at then
+		doorSoundEvent:FireClient(player, at, action)
 	end
 end
 
--- Picks whichever door is physically closer to a given world position, and
--- how far away it is. Shared by entering (nearest to where the player is
--- actually standing) and exiting (nearest to where they're about to end up).
-local function nearestDoorSideToPosition(carData, referencePosition)
-	local bestSide, bestDistance = nil, math.huge
-	for side, door in carData.Doors do
-		local distance = (door.FrameAttachment.WorldPosition - referencePosition).Magnitude
-		if distance < bestDistance then
-			bestSide = side
-			bestDistance = distance
-		end
-	end
-	return bestSide, bestDistance
-end
-
-local function tryEnter(carData, side, player)
+local function tryEnter(carData, exit, player)
 	if carData.Busy or carData.Seat.Occupant then
 		return
 	end
@@ -195,54 +134,27 @@ local function tryEnter(carData, side, player)
 
 	carData.Busy = true
 
-	-- Busy only has to cover the "is someone committed to entering right
-	-- now" window - it's released the moment that's decided (seated, or
-	-- bailed out) rather than held for the whole visual door-closing tail
-	-- afterwards. Otherwise pressing F to leave again immediately after
-	-- getting in can land while Busy is still true from this same sequence,
-	-- and get silently dropped (see tryExit's own Busy check) while the
-	-- client sits there waiting for a server response that never comes.
-	local door
 	local ok, err = pcall(function()
-		door = carData.Doors[side]
-		-- Off for the whole swing - otherwise a player standing right where
-		-- the door swings open gets physically shoved by it while walking up
-		-- to enter.
-		setDoorCollision(door.Model, false)
-		setDoorOpen(door.Hinge, true)
-		fireDoorSound(player, door.Part, "Open")
-
-		task.wait(DOOR_SWING_TIME)
-
-		-- Bail (and swing the door back shut) if something changed while it
-		-- was opening - the seat got taken another way, or the player left/died.
-		if carData.Seat.Occupant or not player.Parent or humanoid.Parent ~= character or character.Parent == nil then
-			carData.Busy = false
-			setDoorOpen(door.Hinge, false)
-			fireDoorSound(player, door.Part, "Close")
-			task.wait(DOOR_SWING_TIME)
-			setDoorCollision(door.Model, true)
-			return
-		end
+		fireDoorSound(player, exit, "Open")
 
 		-- Put the character ON the seat, facing the way the seat faces, BEFORE
 		-- welding them to it. Seat:Sit() creates a rigid weld and leaves the
 		-- solver to resolve whatever error is left between the two ends - and
-		-- an anchored car cannot resolve anything, because an anchored
-		-- assembly does not simulate at all. So the entire error was still
-		-- sitting there unresolved at the moment the car was unanchored, at
-		-- which point both ends were dynamic and the solver split the
-		-- correction between them by mass: instead of the character being
-		-- pulled into the seat, the CAR swung round to line up with whichever
-		-- way the character happened to be facing when they pressed F. Landing
-		-- them on the seat first leaves the weld with essentially no error to
-		-- resolve, so there is nothing left to swing the car with.
+		-- an anchored car cannot resolve anything, because an anchored assembly
+		-- does not simulate at all. So the entire error was still sitting there
+		-- unresolved at the moment the car was unanchored, at which point both
+		-- ends were dynamic and the solver split the correction between them by
+		-- mass: instead of the character being pulled into the seat, the CAR
+		-- swung round to line up with whichever way the character happened to
+		-- be facing when they pressed F. Landing them on the seat first leaves
+		-- the weld with essentially no error to resolve, so there is nothing
+		-- left to swing the car with.
 		local seatPivot = carData.Seat.CFrame * CFrame.new(0, SEAT_PIVOT_HEIGHT, 0)
 		character:PivotTo(seatPivot)
 		local rootPart = character:FindFirstChild("HumanoidRootPart")
 		if rootPart then
-			-- They were running a moment ago. Once welded that momentum
-			-- becomes the whole car's momentum.
+			-- They were running a moment ago. Once welded that momentum becomes
+			-- the whole car's momentum.
 			rootPart.AssemblyLinearVelocity = Vector3.zero
 			rootPart.AssemblyAngularVelocity = Vector3.zero
 		end
@@ -250,21 +162,15 @@ local function tryEnter(carData, side, player)
 		carData.Seat:Sit(humanoid)
 		carData.Busy = false -- committed - Seat.Occupant now guards re-entry on its own
 
-		setDoorOpen(door.Hinge, false)
-		fireDoorSound(player, door.Part, "Close")
-		task.wait(DOOR_SWING_TIME)
-		setDoorCollision(door.Model, true)
+		task.wait(DOOR_SOUND_GAP)
+		fireDoorSound(player, exit, "Close")
 	end)
 
-	-- Safety net: if the sequence above errored before reaching its own
-	-- release point, don't leave this car permanently unusable.
+	-- Safety net: if the sequence above errored before reaching its own release
+	-- point, don't leave this car permanently unusable.
 	carData.Busy = false
 	if not ok then
 		warn("VehicleDoors: enter sequence errored for " .. carData.CarModel:GetFullName() .. ": " .. tostring(err))
-		-- Whatever step failed, don't leave the door permanently un-collidable.
-		if door then
-			setDoorCollision(door.Model, true)
-		end
 	end
 end
 
@@ -280,95 +186,66 @@ local function tryExit(carData, player)
 
 	carData.Busy = true
 
-	local door
 	local ok, err = pcall(function()
-		-- Picks the seat's preferred exit if it's clear, otherwise the
-		-- nearest other one that is - see VehicleExits.ChooseExit. Whichever
-		-- door is physically closer to that exit is the one that opens, so
-		-- the visible door always matches where the player actually steps out.
+		-- The seat's preferred exit if it's clear, otherwise the nearest other
+		-- one that is - see VehicleExits.ChooseExit. The same attachment is
+		-- used for the sound and sent to the client, so what you hear and where
+		-- you land always agree.
 		local chosenExit = VehicleExits.ChooseExit(carData.CarModel, carData.Seat, occupantCharacter)
-		local exitPosition = chosenExit
-			and (if chosenExit:IsA("Attachment") then chosenExit.WorldPosition else chosenExit.Position)
-			or carData.Seat.Position
-		local side = nearestDoorSideToPosition(carData, exitPosition)
-		door = carData.Doors[side]
-		setDoorOpen(door.Hinge, true)
-		fireDoorSound(player, door.Part, "Open")
+		fireDoorSound(player, chosenExit, "Open")
 
-		-- Off for the whole time the player might be standing in the
-		-- doorway - otherwise the door swinging shut on its way back to
-		-- closed can physically shove them back into the seat.
-		setDoorCollision(door.Model, false)
-
-		task.wait(DOOR_SWING_TIME)
 		-- Go-ahead: the driving client does its own unseat + step-out (see
 		-- tryExitVehicle in RayCastSuspension.client.luau) once it gets this.
-		-- The chosen exit attachment goes with it, so the client steps out at
-		-- the same spot this door choice was based on.
 		if player.Parent then
 			exitVehicleEvent:FireClient(player, chosenExit)
 		end
-		carData.Busy = false -- released as soon as the client's been told to go - the closing tail below doesn't need to block anything else
+		carData.Busy = false -- released as soon as the client's been told to go
 
 		task.wait(EXIT_CLEAR_TIME)
-
-		setDoorOpen(door.Hinge, false)
-		fireDoorSound(player, door.Part, "Close")
-		task.wait(DOOR_SWING_TIME)
-
-		setDoorCollision(door.Model, true)
+		fireDoorSound(player, chosenExit, "Close")
 	end)
 
 	carData.Busy = false
 	if not ok then
 		warn("VehicleDoors: exit sequence errored for " .. carData.CarModel:GetFullName() .. ": " .. tostring(err))
-		-- Whatever step failed, don't leave the door permanently un-collidable.
-		if door then
-			setDoorCollision(door.Model, true)
-		end
 	end
 end
 
-local function setupCarDoors(carModel)
-	local doors = VehicleDoorRig.GetDoors(carModel)
+local function setupCar(carModel)
 	local seat = VehicleSeats.GetDriverSeat(carModel)
-	if not (doors and doors.Left and doors.Right and seat) then
-		warn("VehicleDoors: " .. carModel:GetFullName() .. " is missing a Left/RightDoorAttachment HingeConstraint or a DriverSeat - skipping doors")
+	if not seat then
+		warn("VehicleDoors: " .. carModel:GetFullName() .. " has no DriverSeat - skipping")
+		return
+	end
+	if #VehicleExits.GetExits(carModel) == 0 then
+		warn(
+			"VehicleDoors: "
+				.. carModel:GetFullName()
+				.. " has no Exit# attachments on its Chassis - nobody will be able to get in or out. See VehicleExits."
+		)
 		return
 	end
 
 	-- Walking into the seat would otherwise sit the player instantly, bypassing
-	-- the door entirely - Seat:Sit(humanoid) (used by tryEnter above) still
+	-- the prompt entirely - Seat:Sit(humanoid) (used by tryEnter above) still
 	-- works fine on a Disabled seat, so this only blocks the automatic
 	-- touch-to-sit path, not our own scripted one.
 	seat.Disabled = true
 
-	local carData = { CarModel = carModel, Doors = doors, Seat = seat, Busy = false }
-	carsData[carModel] = carData
-
-	for _, side in DOOR_SIDES do
-		local door = doors[side]
-		removeExternalJoints(door.Model)
-		configureHinge(door.Hinge, side)
-	end
-
-	-- Runs after removeExternalJoints above, since it creates a weld that
-	-- leads outside the door model on purpose (door -> mirror) - the exact
-	-- shape removeExternalJoints exists to strip out. See VehicleMirrors.
-	VehicleMirrors.AttachToDoors(carModel, doors)
+	carsData[carModel] = { CarModel = carModel, Seat = seat, Busy = false }
 end
 
-local function trySetupCarDoors(carModel)
-	local ok, err = pcall(setupCarDoors, carModel)
+local function trySetupCar(carModel)
+	local ok, err = pcall(setupCar, carModel)
 	if not ok then
 		warn("VehicleDoors: failed to set up " .. carModel:GetFullName() .. ": " .. tostring(err))
 	end
 end
 
--- The client-side prompt (see VehicleDoorPrompts.client.luau) only decides
--- WHEN to show its single "Enter" UI (one prompt per car, not one per door)
--- and fires this on F - which door that resolves to is decided here, from
--- the player's actual position, rather than trusted from the client.
+-- The client-side prompt (see VehicleDoorPrompts.client.luau) only decides WHEN
+-- to show its single "Enter" UI and fires this on F - which door that resolves
+-- to is decided here, from the player's actual position, rather than trusted
+-- from the client.
 enterVehicleEvent.OnServerEvent:Connect(function(player, carModel)
 	local carData = typeof(carModel) == "Instance" and carsData[carModel]
 	if not carData then
@@ -381,12 +258,12 @@ enterVehicleEvent.OnServerEvent:Connect(function(player, carModel)
 		return
 	end
 
-	local side, distance = nearestDoorSideToPosition(carData, rootPart.Position)
-	if not side or distance > MAX_ENTER_DISTANCE then
+	local exit, distance = nearestExitToPosition(carModel, rootPart.Position)
+	if not exit or distance > MAX_ENTER_DISTANCE then
 		return
 	end
 
-	tryEnter(carData, side, player)
+	tryEnter(carData, exit, player)
 end)
 
 -- One shared remote for every car, so the handler has to work out which car
@@ -402,9 +279,9 @@ exitVehicleEvent.OnServerEvent:Connect(function(player)
 end)
 
 for _, carModel in VehicleFolder:GetChildren() do
-	trySetupCarDoors(carModel)
+	trySetupCar(carModel)
 end
-VehicleFolder.ChildAdded:Connect(trySetupCarDoors)
+VehicleFolder.ChildAdded:Connect(trySetupCar)
 VehicleFolder.ChildRemoved:Connect(function(carModel)
 	carsData[carModel] = nil
 end)
