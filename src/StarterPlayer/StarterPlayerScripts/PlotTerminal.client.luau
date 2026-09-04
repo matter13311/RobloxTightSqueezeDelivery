@@ -9,6 +9,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local SoundService = game:GetService("SoundService")
 
@@ -876,13 +877,41 @@ refreshTerminalData = function()
 	renderShop(data)
 end
 
+-- THE MOUSE, in first person: Roblox's camera controller locks
+-- MouseBehavior to LockCenter every frame while in first person, and simply
+-- setting it to Default once on open does not stick - the camera controller
+-- puts it right back on its own next update. Without fighting that back,
+-- the cursor sits pinned to the centre of the screen for as long as the
+-- terminal is open, which in this GUI's layout is on top of the upgrades
+-- ScrollingFrame - so the player can't move the mouse off it to reach
+-- anything else, and even a scroll-to-zoom attempt (trying to back out of
+-- first person) just scrolls that frame instead, since the wheel still goes
+-- wherever the stuck cursor is. Re-asserting Default every frame at
+-- RenderPriority.Last (same fix, same reasoning, as SettingsMenu.client.luau's
+-- applyMouseState) means this script's value is the one still standing after
+-- the camera has had its say, so the cursor stays free and movable for as
+-- long as the terminal stays open.
+local MOUSE_STEP = "PlotTerminalMouse"
+
+local function applyMouseState()
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = true
+end
+
 local function openTerminal()
 	refreshTerminalData()
 	screenGui.Enabled = true
+	RunService:BindToRenderStep(MOUSE_STEP, Enum.RenderPriority.Last.Value, applyMouseState)
 end
 
 closeTerminal = function()
 	screenGui.Enabled = false
+	RunService:UnbindFromRenderStep(MOUSE_STEP)
+	-- Hand control back rather than forcing LockCenter ourselves - the camera
+	-- controller decides what the cursor should do based on how zoomed in the
+	-- player currently is, and re-locks on its own next frame if they're back
+	-- in first person.
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 end
 
 closeButton.MouseButton1Click:Connect(function()
