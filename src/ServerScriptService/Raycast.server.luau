@@ -149,10 +149,10 @@ local function AddCar(carModel)
 	-- have been left Playing in Studio, so this can't just assume silence.
 	SetEngineSoundPlaying(carModel, false)
 
-	-- Rigidly weld static decoration (body panels, lights, mirrors) to the
-	-- chassis so it rides along with suspension movement. Only the steering
-	-- wheel is deliberately left out - it gets its own animatable joint just
-	-- below, because it has to turn.
+	-- Rigidly weld static decoration (body panels, lights) to the chassis so it
+	-- rides along with suspension movement. Only the steering wheel is
+	-- deliberately left out - it gets its own animatable joint just below,
+	-- because it has to turn.
 	--
 	-- Doors used to be left out too, back when they swung on a HingeConstraint.
 	-- They are now ordinary welded panels living in Body, which makes the whole
@@ -164,10 +164,15 @@ local function AddCar(carModel)
 	-- tool that builds them, so a car whose hulls were hand-edited in Studio
 	-- and left unwelded still ends up rigid.
 	--
-	-- "Mirror" used to be welded to the doors (so the mirrors swung with them);
-	-- with no doors to hang off, they belong to the chassis like everything
-	-- else. VehicleMirrorViews still finds them in the same folder.
-	for _, folderName in { "Body", "Lights", "Engine", "Collision", "Mirror" } do
+	-- "Mirror" is deliberately NOT in this list. A mirror is welded in Studio to
+	-- the door panel it sits on, and that is what makes it fall off with that
+	-- panel when the panel is knocked off in a crash - welding it to the chassis
+	-- as well would leave it hanging in mid-air once the door had gone.
+	--
+	-- If a mirror ever drops straight to the floor on spawn, check the Enabled
+	-- property of its WeldConstraint before suspecting anything here: a disabled
+	-- one still shows up in the Explorer looking exactly like a working weld.
+	for _, folderName in { "Body", "Lights", "Engine", "Collision" } do
 		local folder = carModel:FindFirstChild(folderName)
 		if folder then
 			VehiclePhysics.WeldFolderToChassis(folder, chassis)

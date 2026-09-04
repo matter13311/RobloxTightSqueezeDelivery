@@ -503,6 +503,9 @@ local function buildRig(mirrorPart, aim)
 	end)
 
 	return {
+		-- The mirror hardware itself, kept so the render loop can notice when
+		-- this mirror has been knocked off the car (see pruneDetachedMirrors).
+		Part = mirrorPart,
 		Glass = glass,
 		Axes = axes,
 		Gui = gui,
@@ -731,9 +734,17 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 	-- up to a wall and a few hundred wall studs outrank your own bodywork and
 	-- evict it. That is the car vanishing near walls. Your own car is the one
 	-- thing in the mirror that must never blink, so it competes for nothing.
+	-- IsDescendantOf, not just a Parent check: a panel knocked off in a crash
+	-- is still parented (to workspace.VehicleDebris) but has stopped being part
+	-- of the car. This list was captured once at Start, and a part still on it
+	-- gets pinned as CAR geometry - drawn at its old body-relative pose and
+	-- exempted from every eviction rule - so a door that has just bounced off
+	-- down the road would otherwise still be hanging in the mirror exactly
+	-- where it used to be. Dropping it here hands it back to the ordinary
+	-- world query, which draws it wherever it has actually ended up.
 	for _, part in state.CarPartList do
 		if
-			part.Parent
+			part:IsDescendantOf(state.CarModel)
 			and isWorthCloning(part)
 			and extentPastPlane(part, surfacePos, normal) > 0
 			and not swallowsPoint(part, camPos, transform)
@@ -743,7 +754,10 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 	end
 
 	for _, part in nearby do
-		if isWorthCloning(part) and not state.CarParts[part] then
+		-- CarParts is the set captured at Start, so a detached panel is still
+		-- in it; the ancestry test is what lets the world query pick it up now
+		-- that it genuinely is world geometry.
+		if isWorthCloning(part) and not (state.CarParts[part] and part:IsDescendantOf(state.CarModel)) then
 			-- Both tests below work on the part's BOX, not its centre point.
 			-- Treating a part as its centre is fine for scenery and badly
 			-- wrong for the two cases that matter most here: the baseplate,
@@ -876,7 +890,12 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			if not mirror.Active[source] then
 				entry.Clone.Parent = mirror.World
 				mirror.Active[source] = entry.Clone
-				if state.FreezeCar and state.CarParts[source] then
+				-- Third and last place the captured CarParts set has to be
+				-- re-checked against reality: a panel knocked off in a crash is
+				-- still in that set, and putting it in the frozen car group
+				-- would peg it to the truck's pose forever. See the pinning
+				-- loop above.
+				if state.FreezeCar and state.CarParts[source] and source:IsDescendantOf(state.CarModel) then
 					mirror.ActiveCar[source] = entry.Clone
 					-- Never placed yet, so the frozen set owes it a position.
 					mirror.CarDirty = true
@@ -1094,6 +1113,45 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 	mirror.CarDirty = false
 end
 
+-- Tears one mirror's rig down. Destroying the SurfaceGui takes the viewport,
+-- its camera and every clone parented under World with it.
+local function destroyMirror(mirror)
+	mirror.Gui:Destroy()
+	for source, entry in mirror.Pool do
+		entry.Clone:Destroy()
+		mirror.Pool[source] = nil
+	end
+	table.clear(mirror.Active)
+	table.clear(mirror.ActiveCar)
+	table.clear(mirror.ActiveWorld)
+end
+
+-- A mirror can now be knocked clean off in a crash (VehicleDamage detaches it
+-- into workspace.VehicleDebris like any other cosmetic part). Its SurfaceGui
+-- rides along on the Glass, so without this the driver would watch a fully
+-- live rear view tumbling down the road on a loose mirror - and keep paying
+-- for it, since a detached mirror still costs a full scene refresh per tick.
+--
+-- Tested by ancestry rather than by the IsDebris attribute: this then also
+-- covers a mirror simply Destroyed (by a repair, a despawn, or a builder
+-- deleting one live in Studio), which the attribute would miss.
+--
+-- Returns false if nothing is left to render, in which case the caller stops
+-- entirely - #state.Mirrors is a divisor in the refresh scheduling below.
+local function pruneDetachedMirrors()
+	for index = #state.Mirrors, 1, -1 do
+		local mirror = state.Mirrors[index]
+		local part = mirror.Part
+		if not part.Parent or not part:IsDescendantOf(state.CarModel) then
+			destroyMirror(mirror)
+			table.remove(state.Mirrors, index)
+			-- The cursor indexes the array we just shortened.
+			state.RefreshCursor = 0
+		end
+	end
+	return #state.Mirrors > 0
+end
+
 local function onRenderStep(dt)
 	if not state then
 		return
@@ -1118,6 +1176,11 @@ local function onRenderStep(dt)
 
 	if not state.CarModel.Parent or not state.Chassis.Parent then
 		VehicleMirrorViews.Stop()
+		return
+	end
+
+	if not pruneDetachedMirrors() then
+		VehicleMirrorViews.Stop() -- every mirror has been knocked off
 		return
 	end
 
@@ -1266,16 +1329,7 @@ function VehicleMirrorViews.Stop()
 	RunService:UnbindFromRenderStep("VehicleMirrorViews")
 
 	for _, mirror in state.Mirrors do
-		-- Destroying the SurfaceGui takes the viewport, its camera and every
-		-- clone parented under World with it.
-		mirror.Gui:Destroy()
-		for source, entry in mirror.Pool do
-			entry.Clone:Destroy()
-			mirror.Pool[source] = nil
-		end
-		table.clear(mirror.Active)
-		table.clear(mirror.ActiveCar)
-		table.clear(mirror.ActiveWorld)
+		destroyMirror(mirror)
 	end
 
 	state = nil

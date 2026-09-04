@@ -34,12 +34,21 @@ local VehicleCollision = {}
 VehicleCollision.HULL_FOLDER = "Collision"
 
 -- Cosmetic panels, doors included now that they are welded rather than hinged.
--- The ONLY folder anything is ever allowed to fall off from - Wheels, Lights,
--- Engine, Mirror and the Chassis itself are all off limits, so no amount of
--- damage can leave a truck undriveable or stranded. Losing a door is purely
--- cosmetic: you get in and out by teleport, and the way in is defined by the
--- Exit attachments on the chassis, not by the panel.
+-- Also the folder every other script uses to recognise a set-up car, which is
+-- why it stays named on its own rather than being folded into the list below.
 VehicleCollision.BODY_FOLDER = "Body"
+
+-- The folders damage is allowed to touch, and the only places a part can ever
+-- fall off from. Wheels, Lights, Engine, the seats, the frame and the Chassis
+-- itself are all absent on purpose: no amount of damage can leave a truck
+-- undriveable or stranded, by construction rather than by tuning.
+--
+-- Losing a door is purely cosmetic now that doors don't open - you get in and
+-- out by teleport, and the way in is defined by the Exit attachments on the
+-- chassis, not by the panel. Losing a mirror costs you that mirror's view,
+-- which is a real gameplay consequence in a game about reversing into tight
+-- spaces, and is meant to be.
+VehicleCollision.DETACHABLE_FOLDERS = { "Body", "Mirror" }
 
 --=============================================================================
 -- Collision groups
@@ -217,6 +226,24 @@ end
 -- never a wheel, never a door, never a light, and never anything a builder has
 -- explicitly pinned down with NoDetach.
 --
+-- Every part damage may touch, across all DETACHABLE_FOLDERS. Used both to
+-- apply damage and to total up a car's Condition, so the two can never
+-- disagree about which parts count.
+function VehicleCollision.GetDetachableParts(carModel)
+	local parts = {}
+	for _, folderName in VehicleCollision.DETACHABLE_FOLDERS do
+		local folder = carModel:FindFirstChild(folderName)
+		if folder then
+			for _, part in folder:GetDescendants() do
+				if part:IsA("BasePart") then
+					table.insert(parts, part)
+				end
+			end
+		end
+	end
+	return parts
+end
+
 -- Returns (false, reason) rather than a bare false so the damage log can say
 -- WHY a part that reached zero health is still bolted on - which is otherwise
 -- indistinguishable from the damage never having been applied at all.
@@ -224,17 +251,16 @@ function VehicleCollision.CanDetach(carModel, part)
 	if part == carModel.PrimaryPart then
 		return false, "it is the car's PrimaryPart (the Chassis)"
 	end
-	local body = VehicleCollision.GetBodyFolder(carModel)
-	if not body then
-		return false, "the car has no Body folder"
-	end
-	if not part:IsDescendantOf(body) then
-		return false, "it is not inside the Body folder"
-	end
 	if part:GetAttribute(VehicleCollision.NO_DETACH_ATTRIBUTE) == true then
 		return false, "it has the NoDetach attribute set"
 	end
-	return true, nil
+	for _, folderName in VehicleCollision.DETACHABLE_FOLDERS do
+		local folder = carModel:FindFirstChild(folderName)
+		if folder and part:IsDescendantOf(folder) then
+			return true, nil
+		end
+	end
+	return false, "it is not inside " .. table.concat(VehicleCollision.DETACHABLE_FOLDERS, " or ")
 end
 
 return VehicleCollision

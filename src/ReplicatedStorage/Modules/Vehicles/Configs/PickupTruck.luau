@@ -56,6 +56,7 @@ return {
 	-- Too sluggish? Raise it. The standstill shove stays put either way as
 	-- long as you move StallTorqueMultiplier the opposite way.
 	Torque = 25,
+	-- Torque = 100,
 
 	-- studs/s in TOP gear, and the number every SpeedFraction below is
 	-- measured against - so this is the one knob that compresses or stretches

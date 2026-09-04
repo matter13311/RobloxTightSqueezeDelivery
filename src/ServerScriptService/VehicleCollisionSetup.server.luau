@@ -148,12 +148,6 @@ local function setUpCar(carModel)
 				part.CollisionGroup = Groups.Vehicle
 			end
 
-			-- Damage bookkeeping. Set here rather than lazily in the damage
-			-- script so a builder can watch these tick down in the Properties
-			-- window while play-testing.
-			if part:GetAttribute(VehicleCollision.HEALTH_ATTRIBUTE) == nil then
-				part:SetAttribute(VehicleCollision.HEALTH_ATTRIBUTE, VehicleCollision.GetMaxHealth(part))
-			end
 		else
 			-- EVERYTHING ELSE on the car - doors, mirrors, seats, the frame,
 			-- the steering wheel, wheels, and whatever gets added next year.
@@ -175,6 +169,16 @@ local function setUpCar(carModel)
 			-- player steps out and would turn anything set there straight back
 			-- on. The group survives that.
 			part.CollisionGroup = Groups.Attached
+		end
+	end
+
+	-- Damage bookkeeping, over every folder damage can touch rather than just
+	-- Body - mirrors are knocked off the same way panels are. Set here rather
+	-- than lazily in the damage script so a builder can watch these tick down
+	-- in the Properties window while play-testing.
+	for _, part in VehicleCollision.GetDetachableParts(carModel) do
+		if part:GetAttribute(VehicleCollision.HEALTH_ATTRIBUTE) == nil then
+			part:SetAttribute(VehicleCollision.HEALTH_ATTRIBUTE, VehicleCollision.GetMaxHealth(part))
 		end
 	end
 

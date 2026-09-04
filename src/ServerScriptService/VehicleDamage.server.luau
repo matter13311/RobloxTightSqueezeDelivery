@@ -129,6 +129,12 @@ end
 -- whole car rather than just the part, so a panel that was ALSO welded to a
 -- neighbouring panel in Studio comes fully free instead of staying dangling
 -- off its sibling.
+--
+-- Joints leading to the part's OWN descendants are deliberately spared. A
+-- mirror carries its Glass as a welded child (VehicleMirrorViews needs a flat
+-- surface to adorn), and body panels often carry trim the same way. Cutting
+-- those too would drop the mirror and its glass as two separate objects
+-- falling apart in mid-air.
 local JOINT_CLASSES = {
 	WeldConstraint = true,
 	Weld = true,
@@ -139,13 +145,61 @@ local JOINT_CLASSES = {
 
 local function breakJoints(carModel, part)
 	for _, joint in carModel:GetDescendants() do
-		if JOINT_CLASSES[joint.ClassName] and (joint.Part0 == part or joint.Part1 == part) then
-			joint:Destroy()
+		if not JOINT_CLASSES[joint.ClassName] then
+			continue
 		end
+
+		local other
+		if joint.Part0 == part then
+			other = joint.Part1
+		elseif joint.Part1 == part then
+			other = joint.Part0
+		else
+			continue
+		end
+
+		if other and other:IsDescendantOf(part) then
+			continue -- holds this part's own hardware on; it travels with it
+		end
+		joint:Destroy()
 	end
 end
 
-local function detach(carModel, part, impactPosition)
+-- Parts that were riding on `part` and are about to have nothing holding them
+-- on: a wing mirror mounted on a door panel, say. Their joint to it is cut by
+-- breakJoints below, which frees them but leaves them sitting in their original
+-- folder - unanchored, untracked, no despawn, and in a mirror's case still
+-- rendering a live ViewportFrame on the way down. So they are collected first
+-- and detached properly in their own right.
+--
+-- Descendants of `part` are deliberately not included: those travel WITH it as
+-- one object and breakJoints leaves their joints alone.
+local function dependentsOf(carModel, part)
+	local dependents = {}
+	for _, joint in carModel:GetDescendants() do
+		if not JOINT_CLASSES[joint.ClassName] then
+			continue
+		end
+		local other
+		if joint.Part0 == part then
+			other = joint.Part1
+		elseif joint.Part1 == part then
+			other = joint.Part0
+		end
+		if other and not other:IsDescendantOf(part) and VehicleCollision.CanDetach(carModel, other) then
+			table.insert(dependents, other)
+		end
+	end
+	return dependents
+end
+
+local function detach(carModel, part, impactPosition, seen)
+	seen = seen or {}
+	if seen[part] then
+		return -- two parts mounted on each other; don't recurse forever
+	end
+	seen[part] = true
+
 	local allowed, reason = VehicleCollision.CanDetach(carModel, part)
 	if not allowed then
 		log("  %s hit 0 health but will NOT detach: %s", part.Name, reason)
@@ -157,6 +211,10 @@ local function detach(carModel, part, impactPosition)
 	end
 
 	log("  DETACHING %s", part.Name)
+
+	-- Collected before the joints are cut, while it is still possible to see
+	-- what was mounted on this part.
+	local dependents = dependentsOf(carModel, part)
 
 	-- Read the velocity BEFORE breaking anything: once the joints are gone the
 	-- part is its own assembly and AssemblyLinearVelocity stops meaning "what
@@ -171,6 +229,18 @@ local function detach(carModel, part, impactPosition)
 	part.Massless = false -- it's its own assembly now, so it needs real mass to fall convincingly
 	part.CollisionGroup = VehicleCollision.Groups.Debris
 	part:SetAttribute(VehicleCollision.DEBRIS_ATTRIBUTE, true)
+
+	-- Anything welded onto it comes along (a mirror's Glass, a panel's trim)
+	-- and has to be regrouped too, or the hardware riding on a loose panel
+	-- would still be colliding as though it were part of a car.
+	for _, child in part:GetDescendants() do
+		if child:IsA("BasePart") then
+			child.Anchored = false
+			child.CollisionGroup = VehicleCollision.Groups.Debris
+			child:SetAttribute(VehicleCollision.DEBRIS_ATTRIBUTE, true)
+		end
+	end
+
 	part.Parent = debrisFolder
 
 	part.AssemblyLinearVelocity = carriedVelocity
@@ -192,6 +262,13 @@ local function detach(carModel, part, impactPosition)
 	task.delay(VehicleCollision.DetachedLifetime, function()
 		liveDebrisCount = math.max(0, liveDebrisCount - 1)
 	end)
+
+	-- Whatever was riding on it goes too, however much health it had left - the
+	-- thing it was bolted to has just bounced off down the road.
+	for _, dependent in dependents do
+		log("  %s was mounted on %s, so it goes too", dependent.Name, part.Name)
+		detach(carModel, dependent, impactPosition, seen)
+	end
 end
 
 --=============================================================================
@@ -203,16 +280,14 @@ end
 -- the tailgate alone. Condition is recomputed across the whole Body folder in
 -- the same pass rather than tracked incrementally, so it can't drift.
 local function applyDamage(carModel, position, amount, radius)
-	local body = VehicleCollision.GetBodyFolder(carModel)
-	if not body then
-		return
-	end
-
 	local totalHealth, totalMaxHealth = 0, 0
 	local damagedCount = 0
 
-	for _, part in body:GetDescendants() do
-		if not part:IsA("BasePart") then
+	for _, part in VehicleCollision.GetDetachableParts(carModel) do
+		-- Already knocked off in an earlier crash and now sitting in the debris
+		-- folder; GetDetachableParts can't see it, but guard anyway so a part
+		-- mid-detach can't be damaged twice in one pass.
+		if part:GetAttribute(VehicleCollision.DEBRIS_ATTRIBUTE) then
 			continue
 		end
 
@@ -248,7 +323,7 @@ local function applyDamage(carModel, position, amount, radius)
 
 	if damagedCount == 0 then
 		log(
-			"  NOTHING DAMAGED - no Body part within %.0f studs of the impact still had health. Widen DamageRadius, or check the impact position is where you think it is.",
+			"  NOTHING DAMAGED - no damageable part within %.0f studs of the impact still had health. Widen DamageRadius, or check the impact position is where you think it is.",
 			radius
 		)
 	end
