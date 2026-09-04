@@ -154,7 +154,12 @@ local function AddCar(carModel)
 	-- are deliberately left out - the steering wheel gets its own animatable
 	-- joint just below, and doors get theirs (a HingeConstraint each) from
 	-- VehicleDoors.server.luau.
-	for _, folderName in { "Body", "Lights", "Engine" } do
+	--
+	-- "Collision" is the invisible hull boxes that are the car's real shape for
+	-- crash purposes (see VehicleCollision). Welded here rather than by the
+	-- tool that builds them, so a car whose hulls were hand-edited in Studio
+	-- and left unwelded still ends up rigid.
+	for _, folderName in { "Body", "Lights", "Engine", "Collision" } do
 		local folder = carModel:FindFirstChild(folderName)
 		if folder then
 			VehiclePhysics.WeldFolderToChassis(folder, chassis)
