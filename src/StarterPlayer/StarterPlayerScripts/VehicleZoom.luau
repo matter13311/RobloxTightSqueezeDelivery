@@ -13,9 +13,18 @@
 --
 -- Started and stopped by RayCastSuspension.client.luau alongside the driving
 -- session, so it is impossible to be zoomed while on foot.
+--
+-- Only available in first person. Right-drag is also how the player orbits the
+-- camera in third person, and stealing that gesture to zoom makes simply
+-- looking around the truck lurch in and out. In first person there is no orbit
+-- to lose - the button is free - and that is also the view the mirrors are
+-- actually read from.
 
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
 
 local VehicleZoom = {}
 
@@ -79,13 +88,36 @@ local function inputMatches(input)
 	return ZOOM_INPUTS[input.UserInputType] or ZOOM_INPUTS[input.KeyCode] or false
 end
 
+-- Roblox exposes no "am I in first person" flag, so this measures it: in first
+-- person the camera sits on the head, in any third person view it is at least
+-- the zoom distance away. The threshold is generous enough to cover the small
+-- offset the camera keeps from the head, and far below the closest third
+-- person zoom the default controller allows.
+local FIRST_PERSON_DISTANCE = 1.5
+
+local function inFirstPerson()
+	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
+		return true
+	end
+	local camera = workspace.CurrentCamera
+	local character = player.Character
+	local head = character and character:FindFirstChild("Head")
+	if not camera or not head then
+		return false
+	end
+	return (camera.CFrame.Position - head.Position).Magnitude <= FIRST_PERSON_DISTANCE
+end
+
 local function onRenderStep(dt)
 	local camera = workspace.CurrentCamera
 	if not camera or not baseFov then
 		return
 	end
 
-	local target = if held then 1 else 0
+	-- Re-checked every frame rather than only on the press, so zooming out to
+	-- third person while holding the button drops the zoom instead of leaving
+	-- it stuck on.
+	local target = if held and inFirstPerson() then 1 else 0
 	if alpha ~= target then
 		-- Rate is per-second so the animation takes the same wall-clock time
 		-- at any framerate, rather than being faster on a better machine.
@@ -137,7 +169,7 @@ function VehicleZoom.Start()
 	table.insert(
 		connections,
 		UserInputService.InputBegan:Connect(function(input, processed)
-			if not processed and inputMatches(input) then
+			if not processed and inputMatches(input) and inFirstPerson() then
 				held = true
 			end
 		end)
