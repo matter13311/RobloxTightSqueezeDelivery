@@ -25,6 +25,10 @@ local ServerStorage = game:GetService("ServerStorage")
 local PlotOwnership = require(ReplicatedStorage.Modules.Plots.PlotOwnership)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
+local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
+local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
+local Admin = require(ReplicatedStorage.Modules.Admin)
+local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -36,11 +40,15 @@ local VehicleFolder = workspace.Vehicles
 local MAX_CLAIM_DISTANCE = 12
 
 -- [userId] = {
+--   -- Session-only, never saved:
 --   ClaimedPlot = Model | nil,
+--   SpawnedVehicle = Model | nil,
+--   -- Persisted via PlayerDataStore.luau (see its header for the full shape):
 --   OwnedVehicleIds = { [vehicleId] = true },
 --   SelectedVehicleId = string,
 --   Money = number,
---   SpawnedVehicle = Model | nil,
+--   UpgradeLevels = { [vehicleId] = { [statName] = number } },
+--   CarConfigs = { [vehicleId] = { [statName] = number } },
 -- }
 local playerData = {}
 
@@ -70,6 +78,22 @@ selectVehicleEvent.Parent = ReplicatedStorage
 local getPlotDataFunction = Instance.new("RemoteFunction")
 getPlotDataFunction.Name = "GetPlotData"
 getPlotDataFunction.Parent = ReplicatedStorage
+
+local buyVehicleEvent = Instance.new("RemoteEvent")
+buyVehicleEvent.Name = "BuyVehicle"
+buyVehicleEvent.Parent = ReplicatedStorage
+
+local buyUpgradeEvent = Instance.new("RemoteEvent")
+buyUpgradeEvent.Name = "BuyUpgrade"
+buyUpgradeEvent.Parent = ReplicatedStorage
+
+local setCarConfigValueEvent = Instance.new("RemoteEvent")
+setCarConfigValueEvent.Name = "SetCarConfigValue"
+setCarConfigValueEvent.Parent = ReplicatedStorage
+
+local adminGrantMoneyEvent = Instance.new("RemoteEvent")
+adminGrantMoneyEvent.Name = "AdminGrantMoney"
+adminGrantMoneyEvent.Parent = ReplicatedStorage
 
 --============================================================================
 -- Plot discovery + the "who owns this" nameplate
@@ -198,11 +222,69 @@ local function getSpawnCFrame(plotModel)
 	return plotModel.CollisionBox.CFrame
 end
 
+-- The leaderstats Folder/IntValue is what puts money on Roblox's built-in
+-- player list AND is what every client's own money HUD reads (see
+-- SettingsMenu.client.luau's corner display) - it's just a plain replicated
+-- value, so neither needs a remote to keep up to date. playerData.Money
+-- stays the actual source of truth (it's what gets saved); this only ever
+-- mirrors it after a change. Every site that touches data.Money goes
+-- through setMoney below specifically so nothing can update one without the
+-- other.
+local function syncLeaderstatMoney(player, data)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local money = leaderstats and leaderstats:FindFirstChild("Money")
+	if money then
+		money.Value = data.Money
+	end
+end
+
+local function setMoney(player, data, newMoney)
+	data.Money = newMoney
+	syncLeaderstatMoney(player, data)
+end
+
 local function despawnVehicle(data)
 	if data.SpawnedVehicle and data.SpawnedVehicle.Parent then
 		data.SpawnedVehicle:Destroy()
 	end
 	data.SpawnedVehicle = nil
+end
+
+-- This vehicle's Upgrades spec table (from its Configs/<Name>.luau file), or
+-- nil if it has none. The one place both the spawn-time attribute writer and
+-- the Buy/SetCarConfigValue remote handlers below get it from, so there's
+-- only one lookup path to keep in sync with VehiclePhysics' own config
+-- loading.
+local function getUpgradeSpecs(vehicleDef)
+	local rawConfig = vehicleDef and VehiclePhysics.GetRawConfig(vehicleDef.TemplateName)
+	return rawConfig and rawConfig.Upgrades
+end
+
+-- Writes ConfigName plus every upgradable stat's current (per-player) value
+-- onto a car's Chassis as Attributes. VehiclePhysics.GetConfig already treats
+-- a Chassis Attribute as the HIGHEST-precedence source for that key (above
+-- the Configs/<name>.luau file, above DEFAULTS) - see its header - so this is
+-- the entire mechanism for a player's purchased/tuned stats actually taking
+-- effect, with no changes needed to the physics step itself.
+--
+-- ConfigName is set explicitly rather than relying on the clone's Name
+-- matching a Configs/ file, because the clone's Name is whatever the
+-- ServerStorage template happens to be named - this way vehicle identity
+-- (VehicleCatalog.Id) and physics config identity can never drift apart.
+local function applyCarConfigAttributes(chassis, vehicleId, vehicleDef, data)
+	chassis:SetAttribute("ConfigName", vehicleDef.TemplateName)
+
+	local specs = getUpgradeSpecs(vehicleDef)
+	local configValues = specs and data.CarConfigs[vehicleId]
+	if not configValues then
+		return
+	end
+	for statName in specs do
+		local value = configValues[statName]
+		if value ~= nil then
+			chassis:SetAttribute(statName, value)
+		end
+	end
 end
 
 local function spawnVehicle(player, data)
@@ -240,6 +322,11 @@ local function spawnVehicle(player, data)
 	local clone = template:Clone()
 	clone:PivotTo(getSpawnCFrame(plotModel))
 	VehicleOwnership.SetOwner(clone, player)
+	if clone.PrimaryPart then
+		applyCarConfigAttributes(clone.PrimaryPart, vehicleId, vehicleDef, data)
+	else
+		warn("PlotManager: " .. clone:GetFullName() .. " has no PrimaryPart - can't apply ConfigName/upgrade attributes")
+	end
 	clone.Parent = VehicleFolder
 
 	data.SpawnedVehicle = clone
@@ -249,16 +336,32 @@ end
 -- Player lifecycle
 --============================================================================
 
+-- Yields on the DataStore call (see PlayerDataStore.Load) - fine here since
+-- PlayerAdded/the startup loop below each run this in their own thread, and
+-- every remote handler already guards on playerData[userId] existing, so a
+-- request that arrives mid-load is just dropped rather than acting on a half
+-- -built table.
 local function initPlayerData(player)
-	playerData[player.UserId] = {
-		ClaimedPlot = nil,
-		OwnedVehicleIds = VehicleCatalog.DefaultOwnedIds(),
-		SelectedVehicleId = "StarterCar",
-		Money = 0,
-		SpawnedVehicle = nil,
-	}
+	local saved = PlayerDataStore.Load(player)
+	saved.ClaimedPlot = nil
+	saved.SpawnedVehicle = nil
+	playerData[player.UserId] = saved
+
+	-- Built fresh every join rather than persisted itself - it's derived
+	-- entirely from saved.Money, which IS persisted (see PlayerDataStore).
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	leaderstats.Parent = player
+
+	local money = Instance.new("IntValue")
+	money.Name = "Money"
+	money.Value = saved.Money
+	money.Parent = leaderstats
 end
 
+-- Saves synchronously (PlayerDataStore.Save also yields) so PlayerRemoving
+-- doesn't return - and Roblox doesn't tear the rest of the way down - before
+-- the write actually lands.
 local function cleanupPlayerData(player)
 	local data = playerData[player.UserId]
 	if not data then
@@ -270,11 +373,25 @@ local function cleanupPlayerData(player)
 		PlotOwnership.ClearOwner(data.ClaimedPlot)
 	end
 
+	PlayerDataStore.Save(player, data)
 	playerData[player.UserId] = nil
 end
 
 Players.PlayerAdded:Connect(initPlayerData)
 Players.PlayerRemoving:Connect(cleanupPlayerData)
+
+-- BindToClose blocks server shutdown until this returns, which is what makes
+-- saving everyone here actually reliable - PlayerRemoving alone is NOT fired
+-- for every player when the whole server is shutting down at once.
+game:BindToClose(function()
+	for _, player in Players:GetPlayers() do
+		local data = playerData[player.UserId]
+		if data then
+			PlayerDataStore.Save(player, data)
+		end
+	end
+end)
+
 for _, player in Players:GetPlayers() do
 	initPlayerData(player)
 end
@@ -328,6 +445,115 @@ selectVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
 	data.SelectedVehicleId = vehicleId
 end)
 
+buyVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" then
+		return
+	end
+	if data.OwnedVehicleIds[vehicleId] then
+		return -- already owned, nothing to buy
+	end
+	local vehicleDef = VehicleCatalog.Get(vehicleId)
+	if not vehicleDef then
+		return
+	end
+	if data.Money < vehicleDef.Price then
+		return
+	end
+
+	setMoney(player, data, data.Money - vehicleDef.Price)
+	data.OwnedVehicleIds[vehicleId] = true
+
+	-- A freshly bought car starts at every stat's free level-0 default -
+	-- CarConfigs isn't populated yet, but PlayerDataStore.reconcile fills it
+	-- in (and clamps it) the NEXT time this player's data round-trips a Load,
+	-- so leaving it empty here is safe; SetCarConfigValue below also treats a
+	-- missing entry as "at the default" for exactly this reason.
+end)
+
+buyUpgradeEvent.OnServerEvent:Connect(function(player, vehicleId, statName)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" or typeof(statName) ~= "string" then
+		return
+	end
+	if not data.OwnedVehicleIds[vehicleId] then
+		return
+	end
+	local vehicleDef = VehicleCatalog.Get(vehicleId)
+	local specs = getUpgradeSpecs(vehicleDef)
+	local spec = specs and specs[statName]
+	if not spec then
+		return
+	end
+
+	local levels = data.UpgradeLevels[vehicleId]
+	if not levels then
+		levels = {}
+		data.UpgradeLevels[vehicleId] = levels
+	end
+	local currentLevel = VehicleUpgrades.ClampLevel(spec, levels[statName] or 0)
+	local nextLevel = currentLevel + 1
+	if nextLevel > VehicleUpgrades.MaxLevel(spec) then
+		return -- already fully upgraded
+	end
+
+	local cost = VehicleUpgrades.CostForLevel(spec, nextLevel)
+	if data.Money < cost then
+		return
+	end
+
+	setMoney(player, data, data.Money - cost)
+	levels[statName] = nextLevel
+end)
+
+setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statName, value)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" or typeof(statName) ~= "string" or typeof(value) ~= "number" then
+		return
+	end
+	if not data.OwnedVehicleIds[vehicleId] then
+		return
+	end
+	local vehicleDef = VehicleCatalog.Get(vehicleId)
+	local specs = getUpgradeSpecs(vehicleDef)
+	local spec = specs and specs[statName]
+	if not spec then
+		return
+	end
+
+	-- Snapping to the nearest notch the player has actually UNLOCKED (not
+	-- just the nearest notch, full stop) is what stops a forged remote call
+	-- from setting a stat past what's been paid for.
+	local unlockedLevel = (data.UpgradeLevels[vehicleId] or {})[statName] or 0
+	local snapped = VehicleUpgrades.NearestUnlockedValue(spec, unlockedLevel, value)
+
+	local configValues = data.CarConfigs[vehicleId]
+	if not configValues then
+		configValues = {}
+		data.CarConfigs[vehicleId] = configValues
+	end
+	configValues[statName] = snapped
+
+	-- Live-update the currently spawned car too, if this is the vehicle it
+	-- is - otherwise the change would only take effect the NEXT time this
+	-- vehicle is spawned, which reads as the slider having silently failed.
+	if data.SpawnedVehicle and data.SelectedVehicleId == vehicleId and data.SpawnedVehicle.PrimaryPart then
+		data.SpawnedVehicle.PrimaryPart:SetAttribute(statName, snapped)
+	end
+end)
+
+adminGrantMoneyEvent.OnServerEvent:Connect(function(player)
+	if not Admin.IsAdmin(player.UserId) then
+		warn("PlotManager: rejected AdminGrantMoney from non-admin " .. player.Name)
+		return
+	end
+	local data = playerData[player.UserId]
+	if not data then
+		return
+	end
+	setMoney(player, data, data.Money + Admin.GrantAmount)
+end)
+
 getPlotDataFunction.OnServerInvoke = function(player)
 	local data = playerData[player.UserId]
 	if not data then
@@ -335,8 +561,12 @@ getPlotDataFunction.OnServerInvoke = function(player)
 	end
 
 	local ownedVehicleIds = {}
+	local upgradeLevels = {}
+	local carConfigs = {}
 	for id in data.OwnedVehicleIds do
 		table.insert(ownedVehicleIds, id)
+		upgradeLevels[id] = data.UpgradeLevels[id] or {}
+		carConfigs[id] = data.CarConfigs[id] or {}
 	end
 
 	return {
@@ -345,5 +575,7 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		SelectedVehicleId = data.SelectedVehicleId,
 		Money = data.Money,
 		HasSpawnedVehicle = data.SpawnedVehicle ~= nil,
+		UpgradeLevels = upgradeLevels,
+		CarConfigs = carConfigs,
 	}
 end

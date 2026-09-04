@@ -3,6 +3,94 @@
 -- proportionally more of both than DEFAULTS just to hold ride height and
 -- accelerate at a normal rate - bumped up from DEFAULTS accordingly.
 return {
+	-- The grindy per-car upgrade ladder (see VehicleUpgrades.luau for the
+	-- math, and PlayerDataStore.luau for how a player's purchased levels and
+	-- chosen slider values are saved). Every key here must also be a plain
+	-- numeric field below - Min MUST equal that field's own value, because
+	-- the field below IS the level-0/no-upgrades-bought default a fresh
+	-- StarterTruck starts with.
+	--
+	-- Buying a level does NOT move the stat by itself - it only unlocks one
+	-- more notch (Min + Step) on the garage terminal's slider for this stat,
+	-- which the player then has to drag to actually use. That's what makes
+	-- "buy Torque" and "turn the Torque slider up" two separate actions.
+	--
+	-- Deliberately left OFF this list (and so never shown to players as
+	-- upgrades): HandbrakeGripMultiplier, HandbrakeLockFriction,
+	-- SteeringWheelInvert, SteerReturnSpeed - none of those are "fun to play
+	-- with" knobs, they're feel/tuning internals.
+	-- Description is shown verbatim in the garage terminal's (i) info modal
+	-- (PlotTerminal.client.luau) - plain-language, no stat jargon, since it's
+	-- aimed at a player deciding whether to spend money, not at whoever's
+	-- tuning these numbers.
+	Upgrades = {
+		Torque = {
+			Min = 25,
+			Max = 50,
+			Step = 5,
+			BaseCost = 150,
+			CostGrowth = 1.5,
+			Description = "How hard the engine pulls when you hit the gas. Higher Torque means quicker acceleration and an easier time powering up over kerbs and ramps.",
+		},
+		MaxSpeed = {
+			Min = 100,
+			Max = 125,
+			Step = 5,
+			BaseCost = 200,
+			CostGrowth = 1.5,
+			Description = "The truck's top speed in a straight line. Higher Max Speed lets you go faster once you're up to full speed, but doesn't change how quickly you get there.",
+		},
+		SteerAngle = {
+			Min = 40,
+			Max = 52,
+			Step = 4,
+			BaseCost = 100,
+			CostGrowth = 1.4,
+			Description = "How sharply the front wheels can turn. Higher Steer Angle gives you a tighter turning circle, which helps a lot for threading tight gaps and parking.",
+		},
+		Stiffness = {
+			Min = 70,
+			Max = 110,
+			Step = 10,
+			BaseCost = 120,
+			CostGrowth = 1.4,
+			Description = "How firm the suspension springs are. Higher Stiffness keeps the truck flatter and steadier through turns; lower feels bouncier and leans more.",
+		},
+		Damper = {
+			Min = 5,
+			Max = 9,
+			Step = 1,
+			BaseCost = 130,
+			CostGrowth = 1.5,
+			Description = "How quickly the suspension settles after a bump. Higher Damper stops the truck bouncing for as long after landing a jump or hitting a pothole.",
+		},
+		SuspensionMaxLength = {
+			Min = 3.5,
+			Max = 4.5,
+			Step = 0.25,
+			BaseCost = 110,
+			CostGrowth = 1.4,
+			Description = "How much travel the suspension has to work with. More Suspension Length soaks up bigger bumps and landings before the truck bottoms out.",
+		},
+		TractionSlipThreshold = {
+			Min = 6.5,
+			Max = 8.5,
+			Step = 0.5,
+			BaseCost = 90,
+			CostGrowth = 1.3,
+			Description = "How much a tire can slide before it's treated as slipping. Higher Wheel Traction lets you push harder into corners before the tires break loose.",
+		},
+		BrakeFriction = {
+			Min = 0.25,
+			Max = 0.45,
+			Step = 0.05,
+			BaseCost = 100,
+			CostGrowth = 1.4,
+			Description = "How hard the brakes bite. Higher Brake Speed stops the truck in a shorter distance when you hit the brake pedal.",
+		},
+	},
+
+
 	-- Where each mirror points, in degrees - see DEFAULT_MIRRORS in
 	-- VehiclePhysics for what the numbers mean and how they merge (per mirror,
 	-- then per field, so you can override just one value and keep the rest).

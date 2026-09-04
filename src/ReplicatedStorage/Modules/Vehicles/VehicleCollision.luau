@@ -152,8 +152,8 @@ VehicleCollision.DamageRadius = 12 -- studs from the impact point; damage falls 
 -- Note the two knobs are redundant with DamagePerImpulse above - halving this
 -- and doubling that produce the identical result. Pick one and leave the other
 -- alone, or you will end up chasing your own tail.
-VehicleCollision.DefaultPartHealth = 5
-VehicleCollision.ScrapeDamageRate = 0.4 -- hit points per second of grinding, before the speed scale. Paint, not panels
+VehicleCollision.DefaultPartHealth = 3
+VehicleCollision.ScrapeDamageRate = 0.5 -- hit points per second of grinding, before the speed scale. Paint, not panels
 
 VehicleCollision.MaxDetachedParts = 30 -- world-wide cap on loose debris, so a demolition derby can't fill the physics budget
 VehicleCollision.DetachedLifetime = 20 -- seconds before a knocked-off panel despawns

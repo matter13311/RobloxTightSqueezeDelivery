@@ -15,17 +15,22 @@
 local VehicleCatalog = {}
 
 VehicleCatalog.Vehicles = {
-	StarterCar = {
-		Id = "StarterCar",
-		DisplayName = "Starter Car",
-		TemplateName = "StarterCar",
+	StarterTruck = {
+		Id = "StarterTruck",
+		DisplayName = "Starter Truck",
+		TemplateName = "StarterTruck",
+		-- Thumbnail rendered from the photo-display build (see
+		-- tools/BuildPhotoDisplayCar_CommandBar.luau) and uploaded as a Decal/
+		-- Image asset - shown large in the garage carousel and as the card
+		-- image in the shop grid (see PlotTerminal.client.luau).
+		ImageId = "rbxassetid://111532050787860",
 		Price = 0,
 		DefaultOwned = true, -- every player starts owning this one, no purchase needed
 	},
 }
 
 -- Stable display order (table iteration order is unspecified in Lua).
-VehicleCatalog.Order = { "StarterCar" }
+VehicleCatalog.Order = { "StarterTruck" }
 
 function VehicleCatalog.Get(vehicleId)
 	return VehicleCatalog.Vehicles[vehicleId]

@@ -260,6 +260,15 @@ local function loadNamedConfig(name)
 	return result
 end
 
+-- Public read access to a Configs/<name>.luau file's raw table (nil if there
+-- isn't one), for anything that needs fields GetConfig doesn't surface itself
+-- - namely Upgrades specs, read by both the garage terminal GUI (to draw
+-- sliders) and the server (to price/validate upgrade purchases). Goes through
+-- the same cache as GetConfig, so this is never a second require of the file.
+function VehiclePhysics.GetRawConfig(name)
+	return loadNamedConfig(name)
+end
+
 -- Optional - no default, since these should normally just fall back to
 -- LateralGripStrength. Set either to give the front and rear axles
 -- different grip - e.g. a drift car wants the front to hold on for

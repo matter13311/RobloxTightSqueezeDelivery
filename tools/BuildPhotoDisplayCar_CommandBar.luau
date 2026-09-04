@@ -26,7 +26,7 @@ local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics
 
 -- Edit this to build a different vehicle - matches VehicleCatalog's
 -- TemplateName, i.e. the model's name under ServerStorage.VehicleTemplates.
-local TEMPLATE_NAME = "StarterCar"
+local TEMPLATE_NAME = "StarterTruck"
 
 local wheelsFolder = ReplicatedStorage:FindFirstChild("Wheels")
 if not wheelsFolder then

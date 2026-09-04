@@ -15,13 +15,21 @@
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local GameSettings = require(script.Parent.GameSettings)
+local Admin = require(ReplicatedStorage.Modules.Admin)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+-- Only used if Admin.IsAdmin(player.UserId) - see the Admin section built at
+-- the end of buildMenu. WaitForChild'd unconditionally anyway (cheap, and
+-- keeps this script from caring about PlotManager.server.luau's own startup
+-- order) rather than only for admins.
+local adminGrantMoneyEvent = ReplicatedStorage:WaitForChild("AdminGrantMoney")
 
 local TOGGLE_ACTION = "ToggleSettingsMenu"
 local MOUSE_STEP = "SettingsMenuMouse"
@@ -374,6 +382,47 @@ local function buildMenu()
 		end
 	end
 
+	-- Admin-only, and TEMPORARY - see Admin.luau's header. Not GameSettings
+	-- -driven like everything above (this isn't a persisted setting, it's a
+	-- one-shot action), so it's built by hand rather than through
+	-- buildToggle/buildSlider.
+	if Admin.IsAdmin(player.UserId) then
+		local grantText = "+$" .. string.format("%d", Admin.GrantAmount)
+
+		local heading = label(scroll, "ADMIN", 12, COLORS.Category, true)
+		heading.Size = UDim2.new(1, 0, 0, 20)
+		order += 1
+		heading.LayoutOrder = order
+
+		order += 1
+		local control = buildRow({
+			Key = "AdminGiveMoney",
+			Label = "Give Money",
+			Description = "Adds " .. grantText .. " to your balance. Testing only.",
+		}, order)
+
+		local button = Instance.new("TextButton")
+		button.AnchorPoint = Vector2.new(1, 0.5)
+		button.Position = UDim2.new(1, 0, 0.5, 0)
+		button.Size = UDim2.new(1, 0, 0, 34)
+		button.BackgroundColor3 = COLORS.Fill
+		button.BorderSizePixel = 0
+		button.Font = Enum.Font.GothamBold
+		button.TextSize = 14
+		button.TextColor3 = COLORS.Text
+		button.Text = grantText
+		button.Parent = control
+		corner(button, 8)
+
+		button.Activated:Connect(function()
+			adminGrantMoneyEvent:FireServer()
+			button.Text = "Granted!"
+			task.delay(1, function()
+				button.Text = grantText
+			end)
+		end)
+	end
+
 	return backdrop, close
 end
 
@@ -416,6 +465,50 @@ local function buildLauncher(onClick)
 	return gui
 end
 
+-- Money HUD, next to the gear button. Its own ScreenGui/never toggled off
+-- (unlike the gear launcher, which hides while the menu itself is open) -
+-- there's no reason to hide your own balance just because a menu is up.
+-- Reads player.leaderstats.Money directly rather than round-tripping
+-- GetPlotData: leaderstats is a plain replicated Value the server already
+-- keeps current (see PlotManager.server.luau's setMoney), so this is just a
+-- Changed listener, no remote needed.
+local function buildMoneyDisplay()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "MoneyDisplay"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 99
+	gui.Parent = playerGui
+
+	local pill = Instance.new("Frame")
+	pill.AnchorPoint = Vector2.new(1, 1)
+	pill.Position = UDim2.new(1, -82, 1, -36)
+	pill.Size = UDim2.new(0, 130, 0, 40)
+	pill.BackgroundColor3 = COLORS.Panel
+	pill.BackgroundTransparency = 0.25
+	pill.BorderSizePixel = 0
+	pill.Parent = gui
+	corner(pill, 10)
+
+	local moneyText = label(pill, "$0", 18, COLORS.Text, true)
+	moneyText.Size = UDim2.fromScale(1, 1)
+	moneyText.TextXAlignment = Enum.TextXAlignment.Center
+	moneyText.TextYAlignment = Enum.TextYAlignment.Center
+
+	-- Yields until PlotManager.server.luau finishes loading this player's
+	-- save and creates leaderstats (see initPlayerData) - fine at
+	-- top-level LocalScript startup, same as every other WaitForChild here.
+	local leaderstats = player:WaitForChild("leaderstats")
+	local money = leaderstats:WaitForChild("Money")
+
+	local function render()
+		moneyText.Text = "$" .. string.format("%d", money.Value)
+	end
+	render()
+	money.Changed:Connect(render)
+
+	return gui
+end
+
 -- =========================================================================
 -- Open / close
 -- =========================================================================
@@ -454,6 +547,7 @@ local backdrop, close = buildMenu()
 launcherGui = buildLauncher(function()
 	setOpen(true)
 end)
+buildMoneyDisplay()
 
 backdrop.Activated:Connect(function()
 	setOpen(false)

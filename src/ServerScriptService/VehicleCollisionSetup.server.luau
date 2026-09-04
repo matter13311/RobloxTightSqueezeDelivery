@@ -10,7 +10,7 @@
 -- The one thing this does NOT do is change any part's mass. This truck's
 -- Stiffness, Torque and BrakeFriction are all tuned against its current
 -- chassis mass and none of them scale with it (see the comments in
--- Configs/PickupTruck.luau), so quietly making body panels Massless here would
+-- Configs/StarterTruck.luau), so quietly making body panels Massless here would
 -- silently drop the ride height and change how the whole car drives. The hull
 -- boxes are created Massless instead, which leaves total mass exactly as it
 -- was.
