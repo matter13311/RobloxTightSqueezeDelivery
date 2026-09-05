@@ -97,7 +97,7 @@ return {
 			Description = "How firm the suspension springs are. Higher Stiffness keeps the car flatter and steadier through turns; lower feels bouncier and leans more.",
 		},
 		Damper = {
-			Max = 9,
+			Max = 100,
 			Step = 1,
 			BaseCost = 130,
 			CostGrowth = 1.5,
@@ -214,7 +214,7 @@ return {
 	WheelRadius = 1.25, -- half of StarterVehicleWheel's 2.5-stud Size.Y/Z - must track that mesh's actual size, not DEFAULTS' 1.5
 	SuspensionMaxLength = 3, -- DEFAULTS is 2 - more travel to compress into, so accel/brake squat and bumps have room to show instead of instantly maxing out the spring
 	Stiffness = 55, -- softened back down now that SuspensionMaxLength gives it more room - still enough to hold the car's weight without bottoming out at rest
-	Damper = 5, -- lowered relative to Stiffness (was matched 1:1-ish) so it's underdamped enough to actually bounce instead of just clamping to ride height
+	Damper = 20, -- lowered relative to Stiffness (was matched 1:1-ish) so it's underdamped enough to actually bounce instead of just clamping to ride height
 	-- Torque is the ROLLING acceleration knob only. It used to be both that
 	-- and the standstill shove, which is why 50 made the car leap off the
 	-- line and blow through the first five gears in a couple of seconds. The

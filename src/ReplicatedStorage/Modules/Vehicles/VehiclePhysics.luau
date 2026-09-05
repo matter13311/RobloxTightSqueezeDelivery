@@ -655,6 +655,136 @@ function VehiclePhysics.SteerAngleAtSpeed(config, speed)
 	return config.SteerAngle + (highSpeedAngle - config.SteerAngle) * t
 end
 
+--=============================================================================
+-- TEMPORARY: suspension instability tracer
+--=============================================================================
+-- Delete this whole block, VehiclePhysics.SuspensionDebug, and the two call
+-- sites in Step once the intermittent bump jitter is diagnosed. It is inert
+-- when SuspensionDebug is false (one boolean test per wheel per frame).
+--
+-- What it is looking for: divergence, which has a specific signature. A strut
+-- that is settling has a compressionRate that decays toward zero. A strut
+-- that is diverging has one that FLIPS SIGN every frame and grows - the
+-- damper over-corrects, throws the body the other way, reads the overshoot
+-- next frame, and over-corrects harder. So the trigger is consecutive sign
+-- flips with growing magnitude, which no real bump produces.
+--
+-- On trigger it dumps the frames LEADING UP TO IT, not just the blow-up:
+-- the interesting part is the frame the divergence started, and by the time
+-- it is visible on screen that frame is long gone.
+VehiclePhysics.SuspensionDebug = true
+
+local DEBUG_FRAMES = 16 -- how much history to keep and dump
+local DEBUG_FLIPS_TO_TRIGGER = 4 -- consecutive growing sign flips = diverging
+local DEBUG_QUIET_SECONDS = 3 -- after a dump, stay silent this long
+
+local debugHistory = {} -- [carModel] = array of frame tables, newest last
+local debugFlips = {} -- [carModel] = { [wheelName] = { Rate = n, Runs = n } }
+local debugQuietUntil = {} -- [carModel] = os.clock()
+
+local debugFrame = nil -- the frame being assembled by the current Step call
+
+local function debugBeginFrame(carModel, carPrim)
+	debugFrame = {
+		Time = os.clock(),
+		Mass = carPrim.AssemblyMass,
+		VerticalSpeed = carPrim.AssemblyLinearVelocity.Y,
+		Spin = carPrim.AssemblyAngularVelocity.Magnitude,
+		Wheels = {},
+	}
+end
+
+-- Called once per grounded wheel, after the damper has been clamped.
+local function debugWheel(wheelName, springLength, compressionRate, stiffnessForce, rawDamper, damperForce, maxDamperImpulse, normalDot)
+	if not debugFrame then
+		return
+	end
+	debugFrame.Wheels[wheelName] = {
+		Spring = springLength,
+		Rate = compressionRate,
+		Stiff = stiffnessForce,
+		Raw = rawDamper,
+		Damper = damperForce,
+		Cap = maxDamperImpulse,
+		Clamped = math.abs(rawDamper) > math.abs(damperForce) + 1e-6,
+		-- 1.0 = the ground normal and the car's up axis agree. The damper
+		-- MEASURES along the car's up but is APPLIED along the normal, so the
+		-- further this is from 1, the more the correction acts on an axis
+		-- other than the one it was sized for.
+		NormalDot = normalDot,
+	}
+end
+
+local function debugDump(carModel, reason)
+	local history = debugHistory[carModel]
+	print(("[susp] ==== %s on %s ===="):format(reason, carModel:GetFullName()))
+	print(("[susp] mass %.1f | showing the %d frames up to it, oldest first")
+		:format(history[#history].Mass, #history))
+	for i, frame in history do
+		print(("[susp] frame -%-2d  t+%5.1fms  vY %+7.2f  spin %5.2f")
+			:format(#history - i, (frame.Time - history[1].Time) * 1000, frame.VerticalSpeed, frame.Spin))
+		for _, wheelName in WHEEL_NAMES do
+			local w = frame.Wheels[wheelName]
+			if w then
+				print(("[susp]    %s spring %5.2f  rate %+8.2f  stiff %7.1f  damper %+9.1f (raw %+10.1f, cap %8.1f)%s  n.up %.3f")
+					:format(wheelName, w.Spring, w.Rate, w.Stiff, w.Damper, w.Raw, w.Cap,
+						(if w.Clamped then " CLAMPED" else "        "), w.NormalDot))
+			else
+				print(("[susp]    %s AIRBORNE"):format(wheelName))
+			end
+		end
+	end
+	print("[susp] ==== end ====")
+end
+
+-- Closes the frame: files it into the ring, looks for divergence, dumps if it
+-- finds any. Called once per Step, after the wheel loop.
+local function debugEndFrame(carModel)
+	if not debugFrame then
+		return
+	end
+	local frame = debugFrame
+	debugFrame = nil
+
+	local history = debugHistory[carModel]
+	if not history then
+		history = {}
+		debugHistory[carModel] = history
+	end
+	table.insert(history, frame)
+	if #history > DEBUG_FRAMES then
+		table.remove(history, 1)
+	end
+
+	local flips = debugFlips[carModel]
+	if not flips then
+		flips = {}
+		debugFlips[carModel] = flips
+	end
+
+	local worst, worstWheel = 0, nil
+	for wheelName, w in frame.Wheels do
+		local previous = flips[wheelName]
+		local run = 0
+		if previous and previous.Rate then
+			local flipped = (w.Rate > 0) ~= (previous.Rate > 0)
+			local growing = math.abs(w.Rate) > math.abs(previous.Rate)
+			if flipped and growing and math.abs(w.Rate) > 0.5 then
+				run = previous.Runs + 1
+			end
+		end
+		flips[wheelName] = { Rate = w.Rate, Runs = run }
+		if run > worst then
+			worst, worstWheel = run, wheelName
+		end
+	end
+
+	if worst >= DEBUG_FLIPS_TO_TRIGGER and os.clock() >= (debugQuietUntil[carModel] or 0) then
+		debugQuietUntil[carModel] = os.clock() + DEBUG_QUIET_SECONDS
+		debugDump(carModel, ("DIVERGING on %s after %d growing sign flips"):format(worstWheel, worst))
+	end
+end
+
 function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local carPrim = carModel.PrimaryPart
 
@@ -698,6 +828,10 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	-- near-fully-compressed strut, and the wheel is fired upward off a
 	-- surface that isn't there.
 	rayParams.RespectCanCollide = true
+
+	if VehiclePhysics.SuspensionDebug then
+		debugBeginFrame(carModel, carPrim)
+	end
 
 	for _, wheelName in WHEEL_NAMES do
 		local attachment = attachments[wheelName]
@@ -785,6 +919,18 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				math.max(-stiffnessForce, -maxDamperImpulse),
 				math.min(config.Stiffness * config.SuspensionMaxLength, maxDamperImpulse)
 			)
+			if VehiclePhysics.SuspensionDebug then
+				debugWheel(
+					wheelName,
+					springLength,
+					compressionRate,
+					stiffnessForce,
+					config.Damper * compressionRate,
+					damperForce,
+					maxDamperImpulse,
+					raycast.Normal:Dot(carCFrame.UpVector)
+				)
+			end
 			-- Applied along the GROUND's normal, not the chassis' own up
 			-- vector. The magnitude above is still measured along the strut
 			-- (springLength and compressionRate both run along carCFrame.
@@ -1068,6 +1214,10 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		-- Airborne needs no bookkeeping at all now: with the damper reading
 		-- chassis velocity there is no per-wheel history to keep in step, and
 		-- so no stale value for a landing frame to differentiate against.
+	end
+
+	if VehiclePhysics.SuspensionDebug then
+		debugEndFrame(carModel)
 	end
 
 	-- Searched recursively (not just directly on the Chassis) since the engine
