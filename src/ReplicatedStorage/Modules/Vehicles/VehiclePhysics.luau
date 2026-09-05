@@ -621,7 +621,42 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				-stiffnessForce,
 				config.Stiffness * config.SuspensionMaxLength
 			)
-			local suspensionForce = carCFrame.UpVector * (stiffnessForce + damperForce)
+			-- Applied along the GROUND's normal, not the chassis' own up
+			-- vector. The magnitude above is still measured along the strut
+			-- (springLength and compressionRate both run along carCFrame.
+			-- UpVector, which is the axis the strut physically compresses on)
+			-- - only the direction it pushes changes.
+			--
+			-- This is the difference between a car that coasts and a car that
+			-- drives itself. The suspension carries the entire weight of the
+			-- vehicle, so pointing it along the chassis' up vector means that
+			-- whenever the body sits at a pitch angle, a component
+			-- `weight * sin(pitch)` points along the car - and unlike a real
+			-- strut, whose horizontal reaction is taken by the tire's contact
+			-- patch, nothing here opposes it. It is free thrust, proportional
+			-- to how the car happens to be sitting.
+			--
+			-- Measured on the StarterVehicle, throttle confirmed shut: a
+			-- constant 4.77 studs/s^2 forward, dead flat from 15 to 35 studs/s
+			-- (a stuck drive force would have faded off as 1 - v/gearTop, and
+			-- did not). 4.77 / gravity is sin(1.39 degrees) - the car rests
+			-- about a degree and a half nose-down, and was converting that
+			-- into acceleration. Nothing above CoastSpeedThreshold could
+			-- absorb it: CoastDrag only sheds 5% of speed per second, so the
+			-- two would not have balanced until about 95 studs/s.
+			--
+			-- Why it looked like a low-speed bug: under CoastSpeedThreshold
+			-- the stabilizer branch cancels ~30% of the car's velocity per
+			-- frame, which swamps this easily, so the car sits still. Getting
+			-- it past 3 studs/s hands it to CoastDrag, and it runs away.
+			--
+			-- A surface normal is straight up on flat ground no matter how the
+			-- body is pitched or rolled, so a resting attitude can no longer
+			-- push the car anywhere. Lean, squat and dive are untouched: they
+			-- come from the four struts compressing by DIFFERENT amounts (and
+			-- from the tire forces at the contact patch), which still produces
+			-- exactly the same moment about the centre of mass.
+			local suspensionForce = raycast.Normal * (stiffnessForce + damperForce)
 
 			local isFrontWheel = wheelName:sub(1, 1) == "F"
 
@@ -757,6 +792,30 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 					* frictionStopImpulse(config.BrakeFriction * cargoHandling.Brake * brakeAmount)
 			elseif input.Throttle and input.Throttle ~= 0 and isDriveWheel then
 				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
+			elseif input.Throttle and input.Throttle ~= 0 then
+				-- An UNDRIVEN wheel while the player is on the gas. It just
+				-- rolls: no drive force (that is the axle above), and
+				-- crucially no drag either.
+				--
+				-- Without this branch these wheels fell through to the two
+				-- below, and the second of those is a velocity-cancelling
+				-- controller - so on a rear-drive car the FRONT axle actively
+				-- braked the car every time it was under CoastSpeedThreshold,
+				-- which is every launch. It removes BrakeStrength/2 of the
+				-- car's speed per frame (0.15 at the default 0.3), against a
+				-- drive force that at that moment has just lost its stall
+				-- boost, because StallSpeed and CoastSpeedThreshold are both
+				-- 3. The car settles wherever those two balance instead of
+				-- pulling away: on the StarterVehicle at Torque 7.5 that was
+				-- a hard ceiling of about 2.6 studs/s (~2 mph), escapable
+				-- only by breaking traction to skip past 3 studs/s.
+				--
+				-- Both branches below are for a car nobody is asking to move
+				-- (see their own comments - CoastDrag is explicitly "lift off
+				-- the gas" drag, and the stabilizer is there so a stopped car
+				-- does not creep). Holding W is the player asking, so neither
+				-- should be running at all.
+				longitudinalForce = Vector3.zero
 			elseif math.abs(localVelocity.Z) > config.CoastSpeedThreshold then
 				-- Still going fast enough to be "coasting" - light drag only, so
 				-- momentum carries through instead of slamming to a stop.
@@ -788,13 +847,34 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				-- still comes from the patch where it belongs.
 				longitudinalIsStabilizer = true
 
+				-- ...and for the same reason it READS the velocity at the strut
+				-- mount too, not at the contact patch like every other branch
+				-- here does. Moving only the application point closed half of
+				-- the loop described above and left the other half open: the
+				-- controller was still measuring v_com + w x r at the patch,
+				-- so a pitching body handed it a longitudinal velocity the
+				-- chassis does not actually have, and it "corrected" that
+				-- phantom with an impulse at the mount - which pitches the
+				-- body further. Reading and acting at the same point makes it
+				-- a plain velocity controller again, with no path from its own
+				-- output back into its own input.
+				--
+				-- Housekeeping, not a bug fix: this was changed while hunting
+				-- the self-accelerating car, and it turned out NOT to be the
+				-- cause (that was the suspension force direction - see the
+				-- note on suspensionForce above). It is kept because a
+				-- controller that reads and acts at different points is a
+				-- latent oscillation source regardless, but nothing observed
+				-- was ever traced to it.
+				local mountLocalZ = wheelDirCFrame:VectorToObjectSpace(mountVelocity).Z
+
 				-- Below a hair of movement, correcting at all is just chasing
 				-- float noise - a deadzone stops the controller from ever
 				-- engaging when the car is already effectively at rest.
-				if math.abs(localVelocity.Z) < REST_VELOCITY_EPSILON then
+				if math.abs(mountLocalZ) < REST_VELOCITY_EPSILON then
 					longitudinalForce = Vector3.zero
 				else
-					local neededLongitudinalImpulse = localVelocity.Z * (carPrim.AssemblyMass / 4)
+					local neededLongitudinalImpulse = mountLocalZ * (carPrim.AssemblyMass / 4)
 					local longitudinalImpulseMagnitude = math.clamp(
 						neededLongitudinalImpulse * config.BrakeStrength,
 						-math.abs(neededLongitudinalImpulse),
