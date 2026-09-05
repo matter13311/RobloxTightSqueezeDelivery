@@ -25,8 +25,7 @@ local REST_VELOCITY_EPSILON = 0.1
 
 -- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
-	-- Matches DriftCar.luau's SuspensionMaxLength, which empirically holds
-	-- ground contact reliably for this chassis - 1.3 was just barely too
+	-- 2 empirically holds ground contact reliably - 1.3 was just barely too
 	-- short, letting the wheel flicker grounded/ungrounded on marginal
 	-- frames (zero suspension force applied on a "miss" frame), which shows
 	-- up as visible jitter, most noticeably lateral.
@@ -253,13 +252,15 @@ local DEFAULT_TRANSMISSION = {
 VehiclePhysics.DefaultTransmission = DEFAULT_TRANSMISSION
 
 -- Per-car-TYPE tuning lives in ModuleScripts under Configs/, one file per car
--- type (e.g. Configs/DriftCar.luau), each returning a table of only the
+-- type (e.g. Configs/PickupTruck.luau), each returning a table of only the
 -- values that differ from DEFAULTS. A car picks up its config automatically
 -- by matching its Model's Name to a file of the same name - so a car named
--- "DriftCar" in workspace.Vehicles automatically uses Configs/DriftCar.luau,
--- no attribute-setting required. Set a "ConfigName" attribute on the Chassis
--- to use a different config file than the model's own name (e.g. several
--- car instances sharing one "MonsterTruckCar" config).
+-- "PickupTruck" in workspace.Vehicles automatically uses
+-- Configs/PickupTruck.luau, no attribute-setting required. Set a "ConfigName"
+-- attribute on the Chassis to use a different config file than the model's
+-- own name - which is what PlotManager does for every terminal-spawned car,
+-- so vehicle identity (VehicleCatalog.Id) and physics config identity can
+-- never drift apart.
 local configsFolder = script.Parent:FindFirstChild("Configs")
 
 local configCache = {} -- [configName] = table or false (false = looked up, none found)
@@ -284,13 +285,113 @@ local function loadNamedConfig(name)
 	return result
 end
 
--- Public read access to a Configs/<name>.luau file's raw table (nil if there
--- isn't one), for anything that needs fields GetConfig doesn't surface itself
--- - namely Upgrades specs, read by both the garage terminal GUI (to draw
--- sliders) and the server (to price/validate upgrade purchases). Goes through
--- the same cache as GetConfig, so this is never a second require of the file.
-function VehiclePhysics.GetRawConfig(name)
-	return loadNamedConfig(name)
+-- The upgrade ladder for a car type, or nil if it has none: the specs the
+-- garage terminal draws sliders from, the server prices purchases with, and
+-- PlayerDataStore clamps saved values against. All three go through here, so
+-- there is one definition of what a level means.
+--
+-- The reason this is a function rather than just handing back the config
+-- file's Upgrades table: **`Min` is not written in the config file at all -
+-- it is filled in here from the stat's own plain field.**
+--
+-- A stat's level-0 value and its plain field are the same number by
+-- definition (level 0 IS "no upgrades bought", i.e. the car as the config
+-- file describes it). Writing it twice made that an invariant a human had to
+-- maintain by hand, and the hand slipped: StarterVehicle's Torque was tuned
+-- down to 15 while its Upgrades entry kept saying Min = 25, so the free
+-- level-0 truck silently drove with 25 instead - the file's own tuning value
+-- never reached the road. Deriving it means that class of bug cannot happen
+-- again, and re-tuning a stat automatically re-bases its whole ladder.
+--
+-- Chassis Attributes are deliberately NOT consulted (unlike GetConfig): a
+-- ladder is a property of the car TYPE, priced and drawn identically for
+-- everyone, and the terminal has to draw it before any car instance exists.
+local upgradeSpecCache = {} -- [configName] = table or false (false = looked up, no Upgrades)
+
+function VehiclePhysics.GetUpgradeSpecs(name)
+	if upgradeSpecCache[name] ~= nil then
+		return upgradeSpecCache[name] or nil
+	end
+
+	local fileConfig = loadNamedConfig(name)
+	local authored = fileConfig and fileConfig.Upgrades
+	if type(authored) ~= "table" then
+		upgradeSpecCache[name] = false
+		return nil
+	end
+
+	local specs = {}
+	for statName, authoredSpec in authored do
+		-- The car's own value if it sets one, otherwise whatever every car
+		-- falls back to - exactly the precedence GetConfig applies, minus the
+		-- per-instance Attribute layer.
+		local base = fileConfig[statName]
+		if base == nil then
+			base = DEFAULTS[statName]
+		end
+
+		if type(base) ~= "number" then
+			warn(
+				"VehiclePhysics: Configs/"
+					.. name
+					.. " lists "
+					.. statName
+					.. " as an upgrade, but there is no plain "
+					.. statName
+					.. " value for it to start from (not in the file, not in DEFAULTS) - skipping it. "
+					.. "Every upgradable stat needs a plain numeric field, which is its free level-0 value."
+			)
+			continue
+		end
+
+		if authoredSpec.Min ~= nil then
+			warn(
+				"VehiclePhysics: Configs/"
+					.. name
+					.. "'s "
+					.. statName
+					.. " upgrade sets Min = "
+					.. tostring(authoredSpec.Min)
+					.. ", which is ignored - Min comes from the plain "
+					.. statName
+					.. " field ("
+					.. tostring(base)
+					.. "). Delete the Min line."
+			)
+		end
+
+		local spec = table.clone(authoredSpec)
+		spec.Min = base
+
+		-- Max has to land exactly on a notch, or it lies about the ceiling:
+		-- VehicleUpgrades.MaxLevel rounds, so Min 55 / Max 110 / Step 10
+		-- rounds 5.5 up to 6 levels and the top notch is really 115, while
+		-- the terminal's slider still scales its track to 110. Snapping Max
+		-- to the top notch keeps the two agreeing.
+		local levels = math.round((spec.Max - spec.Min) / spec.Step)
+		local reachableMax = spec.Min + spec.Step * levels
+		if math.abs(reachableMax - spec.Max) > 1e-6 then
+			warn(
+				"VehiclePhysics: Configs/"
+					.. name
+					.. "'s "
+					.. statName
+					.. " upgrade has Max = "
+					.. tostring(spec.Max)
+					.. ", which isn't a whole number of Steps above Min = "
+					.. tostring(spec.Min)
+					.. " - using "
+					.. tostring(reachableMax)
+					.. " instead. Pick a Max of Min + Step * (whole number of levels)."
+			)
+			spec.Max = reachableMax
+		end
+
+		specs[statName] = spec
+	end
+
+	upgradeSpecCache[name] = specs
+	return specs
 end
 
 -- Optional - no default, since these should normally just fall back to

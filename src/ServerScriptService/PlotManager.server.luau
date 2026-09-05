@@ -297,8 +297,7 @@ end
 -- only one lookup path to keep in sync with VehiclePhysics' own config
 -- loading.
 local function getUpgradeSpecs(vehicleDef)
-	local rawConfig = vehicleDef and VehiclePhysics.GetRawConfig(vehicleDef.TemplateName)
-	return rawConfig and rawConfig.Upgrades
+	return vehicleDef and VehiclePhysics.GetUpgradeSpecs(vehicleDef.TemplateName)
 end
 
 -- Writes ConfigName plus every upgradable stat's current (per-player) value

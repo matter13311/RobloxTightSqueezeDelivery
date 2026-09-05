@@ -708,8 +708,7 @@ local function renderGarageForVehicle(data, vehicleId)
 		end
 	end
 
-	local rawConfig = def and VehiclePhysics.GetRawConfig(def.TemplateName)
-	local specs = rawConfig and rawConfig.Upgrades
+	local specs = def and VehiclePhysics.GetUpgradeSpecs(def.TemplateName)
 	if not specs then
 		return
 	end

@@ -85,8 +85,7 @@ local function reconcile(data)
 
 	for vehicleId in data.OwnedVehicleIds do
 		local def = VehicleCatalog.Get(vehicleId)
-		local rawConfig = def and VehiclePhysics.GetRawConfig(def.TemplateName)
-		local specs = rawConfig and rawConfig.Upgrades
+		local specs = def and VehiclePhysics.GetUpgradeSpecs(def.TemplateName)
 		if specs then
 			local levels = data.UpgradeLevels[vehicleId]
 			if type(levels) ~= "table" then

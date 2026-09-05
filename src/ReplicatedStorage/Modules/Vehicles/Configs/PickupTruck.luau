@@ -5,10 +5,16 @@
 return {
 	-- The grindy per-car upgrade ladder (see VehicleUpgrades.luau for the
 	-- math, and PlayerDataStore.luau for how a player's purchased levels and
-	-- chosen slider values are saved). Every key here must also be a plain
-	-- numeric field below - Min MUST equal that field's own value, because
-	-- the field below IS the level-0/no-upgrades-bought default a fresh
-	-- PickupTruck starts with.
+	-- chosen slider values are saved).
+	--
+	-- There is NO Min here, on purpose. Every key in this table must also be
+	-- a plain numeric field further down the file, and that field IS the
+	-- ladder's Min - it's the level-0/no-upgrades-bought value a fresh
+	-- PickupTruck starts with, so the two are the same number by definition.
+	-- VehiclePhysics.GetUpgradeSpecs fills it in from there, which is why
+	-- re-tuning a stat below automatically re-bases its ladder here. Writing
+	-- it in both places made that a hand-maintained invariant, and it did
+	-- drift once already - see the Torque note in StarterVehicle.luau.
 	--
 	-- Buying a level does NOT move the stat by itself - it only unlocks one
 	-- more notch (Min + Step) on the garage terminal's slider for this stat,
@@ -33,7 +39,6 @@ return {
 			Description = "How hard the engine pulls when you hit the gas. Higher Torque means quicker acceleration and an easier time powering up over kerbs and ramps.",
 		},
 		MaxSpeed = {
-			Min = 100,
 			Max = 125,
 			Step = 5,
 			BaseCost = 200,
@@ -41,7 +46,6 @@ return {
 			Description = "The truck's top speed in a straight line. Higher Max Speed lets you go faster once you're up to full speed, but doesn't change how quickly you get there.",
 		},
 		SteerAngle = {
-			Min = 40,
 			Max = 52,
 			Step = 4,
 			BaseCost = 100,
@@ -49,7 +53,6 @@ return {
 			Description = "How sharply the front wheels can turn. Higher Steer Angle gives you a tighter turning circle, which helps a lot for threading tight gaps and parking.",
 		},
 		Stiffness = {
-			Min = 70,
 			Max = 110,
 			Step = 10,
 			BaseCost = 120,
@@ -57,7 +60,6 @@ return {
 			Description = "How firm the suspension springs are. Higher Stiffness keeps the truck flatter and steadier through turns; lower feels bouncier and leans more.",
 		},
 		Damper = {
-			Min = 5,
 			Max = 9,
 			Step = 1,
 			BaseCost = 130,
@@ -65,7 +67,6 @@ return {
 			Description = "How quickly the suspension settles after a bump. Higher Damper stops the truck bouncing for as long after landing a jump or hitting a pothole.",
 		},
 		SuspensionMaxLength = {
-			Min = 3.5,
 			Max = 4.5,
 			Step = 0.25,
 			BaseCost = 110,
@@ -73,7 +74,6 @@ return {
 			Description = "How much travel the suspension has to work with. More Suspension Length soaks up bigger bumps and landings before the truck bottoms out.",
 		},
 		TractionSlipThreshold = {
-			Min = 6.5,
 			Max = 8.5,
 			Step = 0.5,
 			BaseCost = 90,
@@ -81,7 +81,6 @@ return {
 			Description = "How much a tire can slide before it's treated as slipping. Higher Wheel Traction lets you push harder into corners before the tires break loose.",
 		},
 		BrakeFriction = {
-			Min = 0.25,
 			Max = 0.45,
 			Step = 0.05,
 			BaseCost = 100,
@@ -99,7 +98,6 @@ return {
 		-- deliberately light IS occasionally right - a Glassware run over bad
 		-- ground pays better half-empty and intact than full and smashed.
 		CargoCapacity = {
-			Min = 4,
 			Max = 10,
 			Step = 1,
 			BaseCost = 250,
