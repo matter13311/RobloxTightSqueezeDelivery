@@ -738,15 +738,52 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- retuning; only the phantom spikes are gone.
 			local mountVelocity = carPrim:GetVelocityAtPosition(rayOrigin)
 			local compressionRate = -mountVelocity:Dot(carCFrame.UpVector)
-			-- Belt and braces: a suspension spring can push the body up, but it
-			-- must never yank it down harder than it is currently holding it
-			-- up. Clamping the damper against the spring's own force keeps the
-			-- total suspension impulse non-negative, so no future edge case can
-			-- reintroduce a strut that pulls the truck into the ground.
+			-- The damper is a velocity-proportional term applied as a per-frame
+			-- impulse, which makes it the one config value a player can turn
+			-- up until the car destroys itself - so it gets the same treatment
+			-- every other velocity-cancelling term in this loop already has
+			-- (see frictionStopImpulse and the lateral grip clamp): it may
+			-- never remove more than the velocity that is actually there.
+			--
+			-- Why it matters. Four struts each apply `Damper * compressionRate`
+			-- to a body of AssemblyMass, so one frame of damping changes the
+			-- closing speed by `4 * Damper / mass` of itself:
+			--     4*D/m < 1   settles smoothly
+			--     4*D/m = 1   deadbeat - exactly cancelled, no bounce
+			--     4*D/m < 2   overshoots but still converges
+			--     4*D/m > 2   DIVERGES: each frame's correction is bigger than
+			--                 the last, and the car shakes itself apart
+			-- So the car explodes at Damper = mass/2, with no warning on the
+			-- way in - at mass 40 that is Damper 20, and Damper 15 already
+			-- overshoots hard enough to visibly jitter. Note there is no delta
+			-- anywhere in that, which is the deeper problem: the effective
+			-- damping coefficient is per-FRAME, so the threshold moves with
+			-- framerate too.
+			--
+			-- maxDamperImpulse is that boundary expressed as an impulse: this
+			-- strut's quarter share of the impulse that would exactly cancel
+			-- the closing velocity this frame. Clamped there, 4*D/m can never
+			-- exceed 1, so no Damper value - 20, 200, whatever a slider or a
+			-- typo hands it - can diverge. It saturates into a dead-flat
+			-- suspension instead, which looks boring rather than broken.
+			--
+			-- The old upper bound is kept alongside it (whichever is tighter).
+			-- It is not a stability bound - it is in spring units and says
+			-- nothing about what the impulse does to the car's velocity - but
+			-- it is what currently shapes hard landings, and swapping it out
+			-- would change how the car lands. Both cars' current tuning
+			-- (Damper 5, ladder max 9) sits below the new clamp at every
+			-- compression rate, so nothing about how they drive today changes.
+			--
+			-- Also belt and braces, as before: the damper must never yank the
+			-- body down harder than the spring is holding it up, so the total
+			-- suspension impulse stays non-negative and no edge case can
+			-- reintroduce a strut that pulls the car into the ground.
+			local maxDamperImpulse = math.abs(compressionRate) * (carPrim.AssemblyMass / 4)
 			local damperForce = math.clamp(
 				config.Damper * compressionRate,
-				-stiffnessForce,
-				config.Stiffness * config.SuspensionMaxLength
+				math.max(-stiffnessForce, -maxDamperImpulse),
+				math.min(config.Stiffness * config.SuspensionMaxLength, maxDamperImpulse)
 			)
 			-- Applied along the GROUND's normal, not the chassis' own up
 			-- vector. The magnitude above is still measured along the strut
