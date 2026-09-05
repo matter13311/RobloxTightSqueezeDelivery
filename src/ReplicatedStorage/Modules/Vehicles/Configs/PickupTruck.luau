@@ -8,7 +8,7 @@ return {
 	-- chosen slider values are saved). Every key here must also be a plain
 	-- numeric field below - Min MUST equal that field's own value, because
 	-- the field below IS the level-0/no-upgrades-bought default a fresh
-	-- StarterTruck starts with.
+	-- PickupTruck starts with.
 	--
 	-- Buying a level does NOT move the stat by itself - it only unlocks one
 	-- more notch (Min + Step) on the garage terminal's slider for this stat,

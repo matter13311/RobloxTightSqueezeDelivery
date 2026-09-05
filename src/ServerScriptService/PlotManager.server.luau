@@ -39,18 +39,22 @@ local VehicleFolder = workspace.Vehicles
 -- request.
 local MAX_CLAIM_DISTANCE = 12
 
--- [userId] = {
---   -- Session-only, never saved:
---   ClaimedPlot = Model | nil,
---   SpawnedVehicle = Model | nil,
---   -- Persisted via PlayerDataStore.luau (see its header for the full shape):
---   OwnedVehicleIds = { [vehicleId] = true },
---   SelectedVehicleId = string,
---   Money = number,
---   UpgradeLevels = { [vehicleId] = { [statName] = number } },
---   CarConfigs = { [vehicleId] = { [statName] = number } },
--- }
+-- [userId] = { OwnedVehicleIds, SelectedVehicleId, Money, UpgradeLevels,
+-- CarConfigs } - exactly PlayerDataStore's persisted shape (see its header),
+-- and NOTHING else. Kept separate from sessionState below on purpose: this is
+-- the exact table handed to PlayerDataStore.Save, so nothing that can't
+-- survive a JSON round-trip (an Instance, chief among them) can ever end up
+-- in it - there is no field here a save path has to remember to strip.
 local playerData = {}
+
+-- [userId] = { ClaimedPlot = Model | nil, SpawnedVehicle = Model | nil } -
+-- session-only, never saved and never even reaches PlayerDataStore.Save. Kept
+-- in its own table (rather than nil'd-out fields on playerData) specifically
+-- so an Instance can never accidentally ride along into a save - DataStores
+-- reject any table containing one ("Cannot store Dictionary in data store"),
+-- which is exactly the bug this split replaces the old defensive nil-outs
+-- with.
+local sessionState = {}
 
 --============================================================================
 -- Remotes
@@ -280,11 +284,11 @@ awardMoneyFunction.OnInvoke = function(player, amount)
 	return data.Money
 end
 
-local function despawnVehicle(data)
-	if data.SpawnedVehicle and data.SpawnedVehicle.Parent then
-		data.SpawnedVehicle:Destroy()
+local function despawnVehicle(session)
+	if session.SpawnedVehicle and session.SpawnedVehicle.Parent then
+		session.SpawnedVehicle:Destroy()
 	end
-	data.SpawnedVehicle = nil
+	session.SpawnedVehicle = nil
 end
 
 -- This vehicle's Upgrades spec table (from its Configs/<Name>.luau file), or
@@ -324,8 +328,8 @@ local function applyCarConfigAttributes(chassis, vehicleId, vehicleDef, data)
 	end
 end
 
-local function spawnVehicle(player, data)
-	local plotModel = data.ClaimedPlot
+local function spawnVehicle(player, data, session)
+	local plotModel = session.ClaimedPlot
 	if not plotModel then
 		return
 	end
@@ -354,7 +358,7 @@ local function spawnVehicle(player, data)
 	-- seated (see CustomPrompt.luau), so there's no path to "replace the car
 	-- while sitting in it" from the GUI - this is just cleaning up whatever
 	-- was parked here before, if anything.
-	despawnVehicle(data)
+	despawnVehicle(session)
 
 	local clone = template:Clone()
 	clone:PivotTo(getSpawnCFrame(plotModel))
@@ -366,7 +370,7 @@ local function spawnVehicle(player, data)
 	end
 	clone.Parent = VehicleFolder
 
-	data.SpawnedVehicle = clone
+	session.SpawnedVehicle = clone
 end
 
 --============================================================================
@@ -380,9 +384,8 @@ end
 -- -built table.
 local function initPlayerData(player)
 	local saved = PlayerDataStore.Load(player)
-	saved.ClaimedPlot = nil
-	saved.SpawnedVehicle = nil
 	playerData[player.UserId] = saved
+	sessionState[player.UserId] = { ClaimedPlot = nil, SpawnedVehicle = nil }
 
 	-- Built fresh every join rather than persisted itself - it's derived
 	-- entirely from saved.Money, which IS persisted (see PlayerDataStore).
@@ -401,17 +404,20 @@ end
 -- the write actually lands.
 local function cleanupPlayerData(player)
 	local data = playerData[player.UserId]
-	if not data then
+	local session = sessionState[player.UserId]
+	if not data or not session then
 		return
 	end
 
-	despawnVehicle(data)
-	if data.ClaimedPlot then
-		PlotOwnership.ClearOwner(data.ClaimedPlot)
+	despawnVehicle(session)
+	if session.ClaimedPlot then
+		PlotOwnership.ClearOwner(session.ClaimedPlot)
+		session.ClaimedPlot = nil
 	end
 
 	PlayerDataStore.Save(player, data)
 	playerData[player.UserId] = nil
+	sessionState[player.UserId] = nil
 end
 
 Players.PlayerAdded:Connect(initPlayerData)
@@ -419,11 +425,21 @@ Players.PlayerRemoving:Connect(cleanupPlayerData)
 
 -- BindToClose blocks server shutdown until this returns, which is what makes
 -- saving everyone here actually reliable - PlayerRemoving alone is NOT fired
--- for every player when the whole server is shutting down at once.
+-- for every player when the whole server is shutting down at once. Mirrors
+-- cleanupPlayerData's despawn/unclaim, then saves `data` - which, thanks to
+-- the playerData/sessionState split above, can never hold an Instance
+-- (ClaimedPlot/SpawnedVehicle) in the first place, so there's nothing here to
+-- remember to strip out before the save.
 game:BindToClose(function()
 	for _, player in Players:GetPlayers() do
 		local data = playerData[player.UserId]
-		if data then
+		local session = sessionState[player.UserId]
+		if data and session then
+			despawnVehicle(session)
+			if session.ClaimedPlot then
+				PlotOwnership.ClearOwner(session.ClaimedPlot)
+				session.ClaimedPlot = nil
+			end
 			PlayerDataStore.Save(player, data)
 		end
 	end
@@ -439,7 +455,8 @@ end
 
 claimPlotEvent.OnServerEvent:Connect(function(player, plotModel)
 	local data = playerData[player.UserId]
-	if not data or data.ClaimedPlot then
+	local session = sessionState[player.UserId]
+	if not data or not session or session.ClaimedPlot then
 		return -- already holds a plot this server - can't switch, see the header
 	end
 	if typeof(plotModel) ~= "Instance" or not plots[plotModel] then
@@ -460,15 +477,16 @@ claimPlotEvent.OnServerEvent:Connect(function(player, plotModel)
 	end
 
 	PlotOwnership.SetOwner(plotModel, player)
-	data.ClaimedPlot = plotModel
+	session.ClaimedPlot = plotModel
 end)
 
 spawnVehicleEvent.OnServerEvent:Connect(function(player)
 	local data = playerData[player.UserId]
-	if not data or not data.ClaimedPlot then
+	local session = sessionState[player.UserId]
+	if not data or not session or not session.ClaimedPlot then
 		return
 	end
-	spawnVehicle(player, data)
+	spawnVehicle(player, data, session)
 end)
 
 selectVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
@@ -574,8 +592,9 @@ setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statNam
 	-- Live-update the currently spawned car too, if this is the vehicle it
 	-- is - otherwise the change would only take effect the NEXT time this
 	-- vehicle is spawned, which reads as the slider having silently failed.
-	if data.SpawnedVehicle and data.SelectedVehicleId == vehicleId and data.SpawnedVehicle.PrimaryPart then
-		data.SpawnedVehicle.PrimaryPart:SetAttribute(statName, snapped)
+	local session = sessionState[player.UserId]
+	if session and session.SpawnedVehicle and data.SelectedVehicleId == vehicleId and session.SpawnedVehicle.PrimaryPart then
+		session.SpawnedVehicle.PrimaryPart:SetAttribute(statName, snapped)
 	end
 end)
 
@@ -593,7 +612,8 @@ end)
 
 getPlotDataFunction.OnServerInvoke = function(player)
 	local data = playerData[player.UserId]
-	if not data then
+	local session = sessionState[player.UserId]
+	if not data or not session then
 		return nil
 	end
 
@@ -607,11 +627,11 @@ getPlotDataFunction.OnServerInvoke = function(player)
 	end
 
 	return {
-		ClaimedPlotName = data.ClaimedPlot and data.ClaimedPlot.Name or nil,
+		ClaimedPlotName = session.ClaimedPlot and session.ClaimedPlot.Name or nil,
 		OwnedVehicleIds = ownedVehicleIds,
 		SelectedVehicleId = data.SelectedVehicleId,
 		Money = data.Money,
-		HasSpawnedVehicle = data.SpawnedVehicle ~= nil,
+		HasSpawnedVehicle = session.SpawnedVehicle ~= nil,
 		UpgradeLevels = upgradeLevels,
 		CarConfigs = carConfigs,
 	}

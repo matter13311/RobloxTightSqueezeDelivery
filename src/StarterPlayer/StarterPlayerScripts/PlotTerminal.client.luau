@@ -344,6 +344,19 @@ carImage.ScaleType = Enum.ScaleType.Fit
 carImage.Parent = carousel
 Instance.new("UICorner", carImage).CornerRadius = UDim.new(0, 10)
 
+-- Shown instead of a blank image while a vehicle has no ImageId yet
+-- (VehicleCatalog.luau) - toggled in renderGarageForVehicle/setCarouselIndex.
+local carImagePlaceholder = Instance.new("TextLabel")
+carImagePlaceholder.Size = UDim2.new(1, 0, 1, 0)
+carImagePlaceholder.BackgroundTransparency = 1
+carImagePlaceholder.Font = Enum.Font.GothamBold
+carImagePlaceholder.TextSize = 14
+carImagePlaceholder.TextColor3 = DIM_TEXT
+carImagePlaceholder.TextWrapped = true
+carImagePlaceholder.Text = "Image Coming Soon"
+carImagePlaceholder.Visible = false
+carImagePlaceholder.Parent = carImage
+
 local function makeArrowButton(text)
 	local button = Instance.new("TextButton")
 	button.Size = UDim2.fromOffset(36, 36)
@@ -687,6 +700,7 @@ local function renderGarageForVehicle(data, vehicleId)
 	local def = VehicleCatalog.Get(vehicleId)
 	vehicleNameLabel.Text = def and def.DisplayName or vehicleId
 	carImage.Image = def and def.ImageId or ""
+	carImagePlaceholder.Visible = not (def and def.ImageId and def.ImageId ~= "")
 
 	for _, child in upgradesScroll:GetChildren() do
 		if child:IsA("GuiObject") then
@@ -723,6 +737,7 @@ local function setCarouselIndex(data, index)
 	if #ordered == 0 then
 		vehicleNameLabel.Text = "--"
 		carImage.Image = ""
+		carImagePlaceholder.Visible = false
 		return
 	end
 	carouselIndex = ((index - 1) % #ordered) + 1
@@ -768,6 +783,19 @@ local function makeShopCard(data, vehicleId, ownedSet)
 	image.Image = def.ImageId or ""
 	image.Parent = card
 	Instance.new("UICorner", image).CornerRadius = UDim.new(0, 8)
+
+	if not (def.ImageId and def.ImageId ~= "") then
+		local placeholder = Instance.new("TextLabel")
+		placeholder.Size = UDim2.new(1, 0, 1, 0)
+		placeholder.BackgroundTransparency = 1
+		placeholder.Font = Enum.Font.GothamBold
+		placeholder.TextSize = 12
+		placeholder.TextColor3 = DIM_TEXT
+		placeholder.TextWrapped = true
+		placeholder.Text = "Image Coming Soon"
+		placeholder.ZIndex = 2
+		placeholder.Parent = image
+	end
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Size = UDim2.new(1, -16, 0, 20)

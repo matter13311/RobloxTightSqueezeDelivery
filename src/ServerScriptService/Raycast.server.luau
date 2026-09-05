@@ -6,7 +6,7 @@ local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local wheelsFolder = ReplicatedStorage.Wheels
-local defaultWheelModel = wheelsFolder.UAZWheelDetailed
+local defaultWheelModel = wheelsFolder.StarterVehicleWheel
 local VehicleFolder = workspace.Vehicles
 
 -- Same recursive lookup VehiclePhysics.Step uses to find the engine sound

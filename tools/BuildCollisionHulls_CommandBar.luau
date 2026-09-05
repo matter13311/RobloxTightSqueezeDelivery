@@ -1,5 +1,5 @@
 -- Not synced by Rojo. Paste into the Studio Command Bar with a car Model
--- selected (e.g. Workspace.Vehicles.StarterTruck), run it once, then nudge the
+-- selected (e.g. Workspace.Vehicles.PickupTruck), run it once, then nudge the
 -- boxes by hand until they wrap the truck's silhouette.
 --
 -- WHY THIS EXISTS
@@ -25,7 +25,7 @@
 -- It does not weld (Raycast.server.luau welds the Collision folder at runtime,
 -- alongside Body/Lights/Engine) and it does not change any part's mass. The
 -- hulls are created Massless, so the truck's total mass - which Stiffness,
--- Torque and BrakeFriction in Configs/StarterTruck.luau are all tuned against -
+-- Torque and BrakeFriction in Configs/PickupTruck.luau are all tuned against -
 -- is exactly what it was before.
 
 local Selection = game:GetService("Selection")
