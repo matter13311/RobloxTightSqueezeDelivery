@@ -161,6 +161,32 @@ local DEFAULTS = {
 	SelectorSoundVolume = 0.5,
 	HandbrakeSoundVolume = 0.6,
 
+	-- Crash damage. A multiplier on how much punishment the bodywork takes
+	-- before panels detach, applied in VehicleDamage.server.luau: 1 is the
+	-- baseline every part's health is written against (see
+	-- VehicleCollision.DefaultPartHealth), 2 makes every panel last twice as
+	-- long. It is here rather than in VehicleCollision because it is per-car
+	-- tuning and an upgradable stat, where that module's DefaultPartHealth /
+	-- DamagePerImpulse are the game-wide knobs behind it.
+	--
+	-- Purely cosmetic, like all damage in this game - it cannot make a car
+	-- more driveable, and it does NOT shield the cargo, which carries its own
+	-- separate condition and is what actually decides a delivery's payout.
+	BodyStrength = 1,
+
+	-- The horn (H). Unlike every other sound listed above, this one is NOT
+	-- created or played by the driving client - it is a Sound the SERVER puts
+	-- on the Chassis and plays, so every player in the game hears it, coming
+	-- from the car that honked. See VehicleHorn.server.luau.
+	--
+	-- Looped while the key is held, so a short "beep" recording sustains into
+	-- a lean-on-the-horn if you keep H down. Volume/rolloff are deliberately
+	-- higher than the in-cab sounds: a horn is meant to carry to other
+	-- players, not just to the person pressing it.
+	HonkSoundId = "rbxassetid://127513531122725",
+	HonkSoundVolume = 1,
+	HonkSoundRollOffMaxDistance = 250,
+
 	-- Cargo. How many crates the bed holds, how heavy each one is, and how
 	-- much worse the truck handles for carrying them. See
 	-- docs/CargoDesign.md, and CargoLoad.luau's header for why a handling

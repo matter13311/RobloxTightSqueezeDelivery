@@ -18,6 +18,7 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
+local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 -- Cargo rides on the back of this script's validation rather than listening to
 -- the impact remote itself: validate() below is the only place a crash report
@@ -280,6 +281,26 @@ end
 -- Damage
 --=============================================================================
 
+-- This car's BodyStrength, the per-car upgradable toughness multiplier (see
+-- VehiclePhysics.Defaults and the Upgrades ladders in Configs/). Resolved
+-- through GetConfig, so it picks up the Chassis Attribute PlotManager stamps
+-- on from the player's purchased level, falls back to the car type's config
+-- file for a hand-placed car, and finally to DEFAULTS' 1.
+--
+-- Anything non-positive would divide damage into nonsense (or by zero), so
+-- it is floored - a bad config makes a car ordinary, never invincible.
+local function bodyStrengthOf(carModel)
+	local chassis = carModel.PrimaryPart
+	if not chassis then
+		return 1
+	end
+	local strength = VehiclePhysics.GetConfig(chassis).BodyStrength
+	if type(strength) ~= "number" or strength ~= strength or strength <= 0 then
+		return 1
+	end
+	return strength
+end
+
 -- Damage falls off linearly to zero at the edge of `radius`, so a hit to the
 -- front bumper takes the grille and the headlight surround with it and leaves
 -- the tailgate alone. Condition is recomputed across the whole Body folder in
@@ -287,6 +308,19 @@ end
 local function applyDamage(carModel, position, amount, radius)
 	local totalHealth, totalMaxHealth = 0, 0
 	local damagedCount = 0
+
+	-- Applied by dividing the incoming damage rather than by scaling every
+	-- part's MaxHealth. The two are equivalent in what survives a hit, but
+	-- this way the Health/MaxHealth attributes stay on the scale the builder
+	-- wrote them on, and Condition (totalHealth / totalMaxHealth, and what
+	-- the HUD shows) keeps meaning "how intact is this car" rather than
+	-- silently rescaling itself when a player buys an upgrade. It also means
+	-- an upgrade bought mid-crash-sequence applies from that moment on
+	-- instead of retroactively healing panels.
+	--
+	-- Read once per pass, not per part: every panel on one car shares it, and
+	-- this is on the crash path.
+	local strength = bodyStrengthOf(carModel)
 
 	for _, part in VehicleCollision.GetDetachableParts(carModel) do
 		-- Already knocked off in an earlier crash and now sitting in the debris
@@ -302,16 +336,17 @@ local function applyDamage(carModel, position, amount, radius)
 		local distance = (part.Position - position).Magnitude
 		if health > 0 and distance <= radius then
 			local falloff = 1 - (distance / radius)
-			local dealt = amount * falloff
+			local dealt = amount * falloff / strength
 			local before = health
 			health = math.max(0, health - dealt)
 			part:SetAttribute(VehicleCollision.HEALTH_ATTRIBUTE, health)
 			damagedCount += 1
 			log(
-				"  %-28s %.1f studs away, falloff %.2f, -%.1f dmg, health %.1f -> %.1f (max %.0f)",
+				"  %-28s %.1f studs away, falloff %.2f, /%.2f strength, -%.1f dmg, health %.1f -> %.1f (max %.0f)",
 				part.Name,
 				distance,
 				falloff,
+				strength,
 				dealt,
 				before,
 				health,

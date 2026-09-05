@@ -30,8 +30,29 @@ return {
 	-- aimed at a player deciding whether to spend money, not at whoever's
 	-- tuning these numbers.
 	Upgrades = {
+		-- Max must be a whole number of Steps above the plain field's value
+		-- (Min + Step * levels), or GetUpgradeSpecs snaps it down and warns.
+
+		-- How many hits the bodywork survives before panels start coming off.
+		-- Unlike every other stat here this one changes nothing about how the
+		-- car drives - damage in this game is purely cosmetic by construction
+		-- (see VehicleCollision.CanDetach; nothing can ever stop a car being
+		-- driveable). It is bought to keep the car LOOKING intact through a
+		-- clumsy run, not to survive one.
+		--
+		-- A plain multiplier on incoming damage, so 2 means every panel takes
+		-- twice the punishment before it detaches. Note it does NOT protect
+		-- the CARGO - crates have their own condition, and that is the one
+		-- that decides what a delivery pays (see CargoManager.ApplyImpact).
+		-- Driving carefully is still the only thing that protects the payout.
+		BodyStrength = {
+			Max = 2.5,
+			Step = 0.25,
+			BaseCost = 180,
+			CostGrowth = 1.4,
+			Description = "How much punishment the bodywork takes before panels start falling off. Higher Body Strength means more scrapes and knocks before your car starts looking wrecked. It won't protect what's in the back, though - only careful driving does that.",
+		},
 		Torque = {
-			Min = 25,
 			Max = 50,
 			Step = 5,
 			BaseCost = 150,
@@ -135,6 +156,21 @@ return {
 	-- it down toward the road. Tuned by eye from the driver's seat: enough yaw
 	-- to get the truck's own flank out of the way, enough pitch to see kerbs
 	-- rather than sky.
+	-- Multiplier on incoming crash/scrape damage to the bodywork: 1 is the
+	-- baseline every part's health is written against (see
+	-- VehicleCollision.DefaultPartHealth), 2 means panels take twice the
+	-- beating before they come off. Purely cosmetic - see the BodyStrength
+	-- entry in Upgrades above, and VehicleDamage.server.luau for where it is
+	-- applied. This plain value is the ladder's level-0, so retuning it
+	-- re-bases the upgrade.
+	BodyStrength = 1,
+
+	-- Horn (H). Server-played and audible to every player in the game, from
+	-- this car's position - see VehicleHorn.server.luau. Swap this id to give
+	-- this car its own horn; VehiclePhysics.Defaults has the shared fallback,
+	-- so a new car that says nothing here still honks.
+	HonkSoundId = "rbxassetid://127513531122725",
+
 	Mirrors = {
 		LeftMirror = { Yaw = -15, Pitch = 15 },
 		RightMirror = { Yaw = 15, Pitch = 15 },

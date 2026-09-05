@@ -41,6 +41,7 @@ local STEER_ACTION = "VehicleSteer"
 local HEADLIGHT_ACTION = "VehicleHeadlights"
 local TURN_SIGNAL_LEFT_ACTION = "VehicleTurnSignalLeft"
 local TURN_SIGNAL_RIGHT_ACTION = "VehicleTurnSignalRight"
+local HORN_ACTION = "VehicleHorn"
 
 -- Which way A/D are being held right now, read straight off the keys instead
 -- of off VehicleSeat.SteerFloat. The seat derives its axes from
@@ -51,6 +52,11 @@ local TURN_SIGNAL_RIGHT_ACTION = "VehicleTurnSignalRight"
 -- analog and still comes from the seat (see steerInput).
 local steerLeftHeld = false
 local steerRightHeld = false
+
+-- Whether H is currently down. Tracked (rather than just fired and
+-- forgotten) so unbindDrivingControls below can send the matching release for
+-- a horn that's still held when the drive ends - see the comment there.
+local hornHeld = false
 
 -- Per-vehicle state for the wheel VISUALS only (every client tracks this for
 -- every car it can see, not just the one it's driving - see UpdateWheelVisuals).
@@ -326,10 +332,40 @@ local function bindDrivingControls()
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.E)
+
+	-- The one control here that's held rather than toggled, so it sends on
+	-- both Begin and End. Cancel is folded in with End on purpose: the action
+	-- being cancelled (the window losing focus, another binding taking the
+	-- key) is precisely the case where no key-up is ever coming, and letting
+	-- that leave the horn on would strand it until the server's timeout.
+	ContextActionService:BindAction(HORN_ACTION, function(_, inputState)
+		if not session then
+			return Enum.ContextActionResult.Sink
+		end
+		if inputState == Enum.UserInputState.Begin then
+			hornHeld = true
+			VehicleControls.SetHorn(session.CarModel, true)
+		elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+			hornHeld = false
+			VehicleControls.SetHorn(session.CarModel, false)
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.KeyCode.H)
 end
 
 local function unbindDrivingControls()
-	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION, STEER_ACTION, HEADLIGHT_ACTION, TURN_SIGNAL_LEFT_ACTION, TURN_SIGNAL_RIGHT_ACTION } do
+	-- Released BEFORE the bindings go away, because getting out (or dying) is
+	-- exactly the path where the horn is still held down and no key-up will
+	-- ever be delivered. The server would cut it at MAX_HORN_SECONDS anyway,
+	-- but that's ten seconds of a driverless car blaring at everyone.
+	if hornHeld then
+		hornHeld = false
+		if session then
+			VehicleControls.SetHorn(session.CarModel, false)
+		end
+	end
+
+	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION, STEER_ACTION, HEADLIGHT_ACTION, TURN_SIGNAL_LEFT_ACTION, TURN_SIGNAL_RIGHT_ACTION, HORN_ACTION } do
 		ContextActionService:UnbindAction(action)
 	end
 	steerLeftHeld = false
