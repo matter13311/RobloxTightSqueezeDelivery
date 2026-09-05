@@ -5,10 +5,34 @@
 -- its own way - which is what broke when VehicleSeat got renamed to
 -- DriverSeat: several scripts were indexing carModel.VehicleSeat directly.
 
+local Players = game:GetService("Players")
+
 local VehicleSeats = {}
 
 function VehicleSeats.GetDriverSeat(carModel)
 	return carModel:FindFirstChild("DriverSeat")
+end
+
+-- The Player currently DRIVING this car, or nil. A passenger is not a driver
+-- and neither is somebody standing beside it - several systems (crash reports,
+-- cargo loading, delivery payouts) all need exactly this question answered the
+-- same way, so it is answered once here.
+function VehicleSeats.GetDriverPlayer(carModel)
+	local seat = VehicleSeats.GetDriverSeat(carModel)
+	local occupant = seat and seat.Occupant
+	return occupant and Players:GetPlayerFromCharacter(occupant.Parent) or nil
+end
+
+-- The inverse: which car in `vehicleFolder` this player is driving, if any.
+-- A linear scan, which is fine at the handful of vehicles a server holds and
+-- avoids keeping a lookup table that could drift from the actual seats.
+function VehicleSeats.FindCarDrivenBy(player, vehicleFolder)
+	for _, carModel in vehicleFolder:GetChildren() do
+		if carModel:IsA("Model") and VehicleSeats.GetDriverPlayer(carModel) == player then
+			return carModel
+		end
+	end
+	return nil
 end
 
 function VehicleSeats.GetPassengerSeats(carModel)

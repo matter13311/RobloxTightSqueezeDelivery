@@ -6,6 +6,13 @@
 -- each had their own hand-copied version of this loop, which is exactly the
 -- kind of thing that quietly drifts out of sync (see WheelSuspensionLengthMemory).
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- One-way dependency: CargoLoad knows nothing about this module, so there is
+-- no cycle. It is required here only for the handling penalty a load applies -
+-- see the two call sites in Step.
+local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
+
 local VehiclePhysics = {}
 
 local WHEEL_NAMES = { "FL", "FR", "RL", "RR" }
@@ -154,6 +161,23 @@ local DEFAULTS = {
 	ShiftSoundVolume = 0.25,
 	SelectorSoundVolume = 0.5,
 	HandbrakeSoundVolume = 0.6,
+
+	-- Cargo. How many crates the bed holds, how heavy each one is, and how
+	-- much worse the truck handles for carrying them. See
+	-- docs/CargoDesign.md, and CargoLoad.luau's header for why a handling
+	-- penalty is applied at all when we are already adding real mass (short
+	-- version: mass cancels out of both the brake and grip math below, so a
+	-- fully loaded truck would otherwise stop and corner exactly like an
+	-- empty one).
+	--
+	-- Defaults are deliberately a no-op: capacity 0 means a car that has said
+	-- nothing about cargo simply cannot carry any, and every multiplier here
+	-- is 1 so an unloaded or non-cargo vehicle drives byte-for-byte the way it
+	-- did before cargo existed.
+	CargoCapacity = 0,
+	CargoMassFractionPerUnit = 0, -- mass per crate, as a fraction of the vehicle's own EMPTY mass - see CargoLoad.AddedMass for why it isn't an absolute figure
+	CargoLoadedBrakeMultiplier = 1, -- BrakeFriction multiplier at 100% load. Deceleration is BrakeFriction * gravity, so 0.7 here is a 43% longer stopping distance
+	CargoLoadedGripMultiplier = 1, -- lateral grip multiplier at 100% load. Below 1 the tires break away sooner in a corner
 }
 VehiclePhysics.Defaults = DEFAULTS
 
@@ -301,7 +325,7 @@ local OPTIONAL_KEYS = {
 -- not physics tuning). Same precedence as everything else: Attribute on the
 -- Chassis > Configs/<name>.luau > nil (falls back to Raycast.server.luau's
 -- own default wheel model).
-local OPTIONAL_STRING_KEYS = { "WheelModelName" }
+local OPTIONAL_STRING_KEYS = { "WheelModelName", "CargoBedAttachmentName" }
 
 -- Where each mirror POINTS, in degrees, consumed by VehicleMirrorViews on the
 -- client. Per car type, because it depends entirely on the cab: how wide the
@@ -522,6 +546,17 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 
 	local steerAngle = VehiclePhysics.SteerAngleAtSpeed(config, carPrim.AssemblyLinearVelocity.Magnitude)
 
+	-- What the cargo aboard does to braking and grip. Read once per step
+	-- rather than per wheel (all four get the same penalty), and read from an
+	-- ATTRIBUTE each step rather than baked into `config` at GetConfig time,
+	-- because GetConfig runs once when the player sits down, and the load can
+	-- change while they are already sitting in the truck at the loading dock.
+	--
+	-- Both multipliers are 1 for an empty or non-cargo vehicle, so this costs
+	-- one attribute read and changes nothing at all for a car that never
+	-- carries anything.
+	local cargoHandling = CargoLoad.HandlingForModel(config, carModel)
+
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = { carModel }
@@ -629,6 +664,13 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			if isLocked then
 				axleGrip *= config.HandbrakeGripMultiplier
 			end
+			-- A loaded truck's tires let go sooner. This has to be applied by
+			-- hand because grip is the one place mass genuinely cancels out:
+			-- maxLateralImpulse below is `axleGrip * (mass/4) * g * delta` and
+			-- the impulse it is clamping is `-v.X * (mass/4)`, so the mass the
+			-- cargo adds appears identically on both sides and a full load
+			-- would otherwise corner exactly like an empty bed.
+			axleGrip *= cargoHandling.Grip
 			local wheelWeight = (carPrim.AssemblyMass / 4) * workspace.Gravity
 			local maxLateralImpulse = axleGrip * wheelWeight * delta
 			local neededLateralImpulse = -localVelocity.X * (carPrim.AssemblyMass / 4)
@@ -704,7 +746,15 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				-- A real tire force at the contact patch, so stopping hard
 				-- pitches the nose down through the same moment arm that gives
 				-- the car squat and roll.
-				longitudinalForce = wheelDirCFrame.LookVector * frictionStopImpulse(config.BrakeFriction * brakeAmount)
+				-- cargoHandling.Brake is the load penalty, and like the grip
+				-- one above it has to be explicit: frictionStopImpulse caps at
+				-- `coefficient * wheelWeight` against a needed impulse of
+				-- `v.Z * mass/4`, so deceleration works out to
+				-- `coefficient * gravity` regardless of what the truck weighs.
+				-- Without this line a fully laden truck would stop in exactly
+				-- the same distance as an empty one.
+				longitudinalForce = wheelDirCFrame.LookVector
+					* frictionStopImpulse(config.BrakeFriction * cargoHandling.Brake * brakeAmount)
 			elseif input.Throttle and input.Throttle ~= 0 and isDriveWheel then
 				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
 			elseif math.abs(localVelocity.Z) > config.CoastSpeedThreshold then

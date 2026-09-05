@@ -243,6 +243,43 @@ local function setMoney(player, data, newMoney)
 	syncLeaderstatMoney(player, data)
 end
 
+-- The one door into a player's money for any OTHER server script (today:
+-- DeliveryManager paying out a completed delivery). A BindableFunction rather
+-- than exporting `playerData`, because this script owning that table outright
+-- is what makes "every site that touches data.Money goes through setMoney" a
+-- statement anyone can verify by reading one file.
+--
+-- Parented to ServerScriptService, not ReplicatedStorage: a client cannot see
+-- it at all, so unlike a RemoteEvent there is no handler here that has to
+-- treat its caller as hostile.
+--
+-- Returns the player's new balance, or nil if they have no loaded data (they
+-- left mid-delivery). Callers must handle nil rather than assume payment
+-- happened.
+local awardMoneyFunction = Instance.new("BindableFunction")
+awardMoneyFunction.Name = "AwardMoney"
+awardMoneyFunction.Parent = script.Parent
+
+awardMoneyFunction.OnInvoke = function(player, amount)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return nil
+	end
+	-- amount ~= amount catches NaN, which would otherwise poison a balance
+	-- that then gets SAVED - the same guard VehicleDamage's validate makes.
+	if type(amount) ~= "number" or amount ~= amount or amount < 0 then
+		warn("PlotManager: AwardMoney called with a bad amount: " .. tostring(amount))
+		return nil
+	end
+
+	local data = playerData[player.UserId]
+	if not data then
+		return nil
+	end
+
+	setMoney(player, data, data.Money + math.floor(amount))
+	return data.Money
+end
+
 local function despawnVehicle(data)
 	if data.SpawnedVehicle and data.SpawnedVehicle.Parent then
 		data.SpawnedVehicle:Destroy()

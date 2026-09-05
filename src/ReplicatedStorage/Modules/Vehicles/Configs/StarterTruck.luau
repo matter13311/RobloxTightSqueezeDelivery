@@ -88,7 +88,43 @@ return {
 			CostGrowth = 1.4,
 			Description = "How hard the brakes bite. Higher Brake Speed stops the truck in a shorter distance when you hit the brake pedal.",
 		},
+		-- The one upgrade that directly raises earnings rather than making the
+		-- truck nicer to drive, and deliberately the most expensive ladder
+		-- here - every other stat only helps you SURVIVE a heavy load, so this
+		-- is what those upgrades are ultimately bought in service of.
+		--
+		-- Unlike every other stat on this list, the slider is not really a
+		-- choice: nobody wants to carry less than they can. It stays a slider
+		-- for consistency with the rest of the terminal, and because carrying
+		-- deliberately light IS occasionally right - a Glassware run over bad
+		-- ground pays better half-empty and intact than full and smashed.
+		CargoCapacity = {
+			Min = 4,
+			Max = 10,
+			Step = 1,
+			BaseCost = 250,
+			CostGrowth = 1.45,
+			Description = "How many crates fit in the bed. Every crate you carry is more money on delivery, but also more weight - a full load leans harder in turns and takes noticeably longer to stop.",
+		},
 	},
+
+	-- Cargo. See docs/CargoDesign.md; CargoLoad.luau explains why the two
+	-- multipliers below have to exist at all when we are also adding real mass.
+	CargoCapacity = 4, -- MUST equal the Upgrades entry's Min above
+	-- At capacity 10 and this fraction, a full load of ordinary Parcels very
+	-- nearly doubles the truck's mass. That is the number to move if loaded
+	-- driving feels too tame or too punishing overall - the two multipliers
+	-- below only shape braking and cornering, while this one drives the sag,
+	-- the sluggishness off the line and how hard it shoves in a collision.
+	CargoMassFractionPerUnit = 0.10,
+	-- Deceleration is BrakeFriction * gravity, so 0.7 turns this truck's
+	-- 102-stud stop from 100 studs/s into a 146-stud one when fully laden.
+	-- That is the single biggest reason to slow down before a tight turn.
+	CargoLoadedBrakeMultiplier = 0.7,
+	-- Mild on purpose. The load's raised centre of mass (the ballast sits at
+	-- bed height) already makes a full truck lean and feel unwilling to turn,
+	-- so a big grip cut on top of that reads as ice rather than as weight.
+	CargoLoadedGripMultiplier = 0.88,
 
 
 	-- Where each mirror points, in degrees - see DEFAULT_MIRRORS in

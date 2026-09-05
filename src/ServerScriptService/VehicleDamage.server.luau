@@ -19,6 +19,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+-- Cargo rides on the back of this script's validation rather than listening to
+-- the impact remote itself: validate() below is the only place a crash report
+-- is checked, and a second listener would mean a second copy of those rules to
+-- keep in step. See CargoManager's header.
+local CargoManager = require(script.Parent.Modules.CargoManager)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -371,6 +376,12 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 	)
 	applyDamage(carModel, position, amount, VehicleCollision.DamageRadius)
 
+	-- ...and the same crash, applied to whatever is in the bed. Severity is
+	-- the impulse as a fraction of the largest one validate() will accept, so
+	-- CargoTypes' Fragility numbers are calibrated against a known 0-1 scale
+	-- rather than against raw impulses whose range depends on vehicle mass.
+	CargoManager.ApplyImpact(carModel, impulse / VehicleCollision.MaxImpulse)
+
 	-- Hitting another player's truck damages theirs too. Halved because only
 	-- one of the two clients is going to report this crash (whichever one was
 	-- doing the hitting), and both cars taking the full amount from a single
@@ -380,6 +391,11 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 		local otherCar = carModelFromPart(hitPart)
 		if otherCar and otherCar ~= carModel then
 			applyDamage(otherCar, position, amount * 0.5, VehicleCollision.DamageRadius)
+			-- Halved for the same reason the panel damage is: only one of the
+			-- two clients reports this crash, and the driver who got hit
+			-- should not lose a full load's worth of condition to a collision
+			-- they may not have caused.
+			CargoManager.ApplyImpact(otherCar, (impulse * 0.5) / VehicleCollision.MaxImpulse)
 		end
 	end
 end)
