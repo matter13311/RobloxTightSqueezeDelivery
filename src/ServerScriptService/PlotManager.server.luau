@@ -398,15 +398,32 @@ local function initPlayerData(player)
 	money.Parent = leaderstats
 end
 
--- Saves synchronously (PlayerDataStore.Save also yields) so PlayerRemoving
--- doesn't return - and Roblox doesn't tear the rest of the way down - before
--- the write actually lands.
-local function cleanupPlayerData(player)
+-- Tears a player's session down and writes their save, and is the ONLY place
+-- that writes one - both PlayerRemoving and BindToClose come through here.
+--
+-- The first thing it does is take `data` and `session` OUT of the two tables,
+-- before touching anything that yields. That ordering is the whole point, not
+-- tidiness: PlayerRemoving and BindToClose both fire when a server shuts down,
+-- and PlayerDataStore.Save yields for as long as the DataStore round-trip
+-- takes. Clearing after the save (as this used to) leaves both entries sitting
+-- there for the entire write, so the other caller finds them, decides the
+-- player still needs saving, and fires a SECOND SetAsync at the same key -
+-- which, being inside the per-key write cooldown, is what produces
+-- "DataStore request was added to queue ... Key = Player_<id>". Claiming
+-- first makes the second caller a no-op instead. It is a race, which is why
+-- the warning only showed up on some playtests and not others.
+--
+-- Does not return until the write has actually landed, so PlayerRemoving
+-- can't return - and BindToClose can't finish - with the save still in
+-- flight and Roblox tearing the server down underneath it.
+local function flushPlayerData(player)
 	local data = playerData[player.UserId]
 	local session = sessionState[player.UserId]
 	if not data or not session then
-		return
+		return -- already flushed by the other caller
 	end
+	playerData[player.UserId] = nil
+	sessionState[player.UserId] = nil
 
 	despawnVehicle(session)
 	if session.ClaimedPlot then
@@ -415,33 +432,44 @@ local function cleanupPlayerData(player)
 	end
 
 	PlayerDataStore.Save(player, data)
-	playerData[player.UserId] = nil
-	sessionState[player.UserId] = nil
+	PlayerDataStore.Release(player)
 end
 
 Players.PlayerAdded:Connect(initPlayerData)
-Players.PlayerRemoving:Connect(cleanupPlayerData)
+Players.PlayerRemoving:Connect(flushPlayerData)
 
 -- BindToClose blocks server shutdown until this returns, which is what makes
 -- saving everyone here actually reliable - PlayerRemoving alone is NOT fired
--- for every player when the whole server is shutting down at once. Mirrors
--- cleanupPlayerData's despawn/unclaim, then saves `data` - which, thanks to
--- the playerData/sessionState split above, can never hold an Instance
--- (ClaimedPlot/SpawnedVehicle) in the first place, so there's nothing here to
--- remember to strip out before the save.
+-- for every player when the whole server is shutting down at once. Anyone
+-- PlayerRemoving did already reach is a no-op above, so nobody is written
+-- twice.
+--
+-- Each player is flushed in their own thread, then waited on: the saves are
+-- independent, they're to different keys, and doing them one after another
+-- would mean a full DataStore round-trip PER PLAYER of shutdown time - on a
+-- busy server that risks Roblox's 30-second shutdown budget expiring with
+-- players still unsaved.
 game:BindToClose(function()
+	local pending = 0
+	local done = Instance.new("BindableEvent")
+
 	for _, player in Players:GetPlayers() do
-		local data = playerData[player.UserId]
-		local session = sessionState[player.UserId]
-		if data and session then
-			despawnVehicle(session)
-			if session.ClaimedPlot then
-				PlotOwnership.ClearOwner(session.ClaimedPlot)
-				session.ClaimedPlot = nil
+		pending += 1
+		task.spawn(function()
+			-- pcall so one player's save erroring can't leave `pending`
+			-- stuck above zero and hang shutdown until Roblox kills it.
+			pcall(flushPlayerData, player)
+			pending -= 1
+			if pending == 0 then
+				done:Fire()
 			end
-			PlayerDataStore.Save(player, data)
-		end
+		end)
 	end
+
+	if pending > 0 then
+		done.Event:Wait()
+	end
+	done:Destroy()
 end)
 
 for _, player in Players:GetPlayers() do
