@@ -23,6 +23,12 @@ VehiclePhysics.WheelNames = WHEEL_NAMES
 -- keeps chasing float noise forever, which reads as a permanent fine jitter.
 local REST_VELOCITY_EPSILON = 0.1
 
+-- The frame rate every Stiffness and Damper value in this game was tuned at.
+-- The suspension impulses are scaled by delta * this, so 60fps reproduces the
+-- old per-frame behaviour exactly and every other frame rate now matches it
+-- instead of drifting - see the note in Step where frameScale is built.
+local SUSPENSION_REFERENCE_FPS = 60
+
 -- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
 	-- 2 empirically holds ground contact reliably - 1.3 was just barely too
@@ -32,6 +38,20 @@ local DEFAULTS = {
 	SuspensionMaxLength = 2,
 	WheelRadius = 1.5,
 	Stiffness = 100,
+	-- KEEP THIS WELL UNDER THE STABILITY CEILING - see the long note in Step
+	-- where damperForce is clamped. Briefly: the damper is a velocity
+	-- correction applied per frame, so past a certain value it over-corrects,
+	-- and the ROLL mode (left pair against right pair) goes unstable first. On
+	-- the StarterVehicle that ceiling is somewhere around 15; the upgrade
+	-- ladder tops out at 9 to stay clear of it.
+	--
+	-- The ceiling depends on the car's roll inertia, which is NOT derivable
+	-- from its mass and bounding box - measured on the StarterVehicle, the
+	-- real roll inertia is about a third of what a uniform box of the same
+	-- extents would have, because a chassis carries its mass near the
+	-- centreline. So a new vehicle's ceiling has to be found by testing:
+	-- raise Damper until the car starts shivering left-to-right at rest or
+	-- after a landing, then keep the ladder's Max at roughly half of that.
 	Damper = 5,
 	LateralGripStrength = 1.5, -- friction coefficient (like a real tire, roughly 0.7-1.5 is a normal grippy range) - the max sideways g-force this wheel's grip can generate. Applies to whichever axle doesn't have its own Front/RearLateralGripStrength override. Raised from 1 for more margin before an ordinary turn trips the binary grip/no-grip model
 	DriveWheels = "All", -- "All", "Front", or "Rear" - which axle receives drive/brake force from the throttle
@@ -655,136 +675,6 @@ function VehiclePhysics.SteerAngleAtSpeed(config, speed)
 	return config.SteerAngle + (highSpeedAngle - config.SteerAngle) * t
 end
 
---=============================================================================
--- TEMPORARY: suspension instability tracer
---=============================================================================
--- Delete this whole block, VehiclePhysics.SuspensionDebug, and the two call
--- sites in Step once the intermittent bump jitter is diagnosed. It is inert
--- when SuspensionDebug is false (one boolean test per wheel per frame).
---
--- What it is looking for: divergence, which has a specific signature. A strut
--- that is settling has a compressionRate that decays toward zero. A strut
--- that is diverging has one that FLIPS SIGN every frame and grows - the
--- damper over-corrects, throws the body the other way, reads the overshoot
--- next frame, and over-corrects harder. So the trigger is consecutive sign
--- flips with growing magnitude, which no real bump produces.
---
--- On trigger it dumps the frames LEADING UP TO IT, not just the blow-up:
--- the interesting part is the frame the divergence started, and by the time
--- it is visible on screen that frame is long gone.
-VehiclePhysics.SuspensionDebug = true
-
-local DEBUG_FRAMES = 16 -- how much history to keep and dump
-local DEBUG_FLIPS_TO_TRIGGER = 4 -- consecutive growing sign flips = diverging
-local DEBUG_QUIET_SECONDS = 3 -- after a dump, stay silent this long
-
-local debugHistory = {} -- [carModel] = array of frame tables, newest last
-local debugFlips = {} -- [carModel] = { [wheelName] = { Rate = n, Runs = n } }
-local debugQuietUntil = {} -- [carModel] = os.clock()
-
-local debugFrame = nil -- the frame being assembled by the current Step call
-
-local function debugBeginFrame(carModel, carPrim)
-	debugFrame = {
-		Time = os.clock(),
-		Mass = carPrim.AssemblyMass,
-		VerticalSpeed = carPrim.AssemblyLinearVelocity.Y,
-		Spin = carPrim.AssemblyAngularVelocity.Magnitude,
-		Wheels = {},
-	}
-end
-
--- Called once per grounded wheel, after the damper has been clamped.
-local function debugWheel(wheelName, springLength, compressionRate, stiffnessForce, rawDamper, damperForce, maxDamperImpulse, normalDot)
-	if not debugFrame then
-		return
-	end
-	debugFrame.Wheels[wheelName] = {
-		Spring = springLength,
-		Rate = compressionRate,
-		Stiff = stiffnessForce,
-		Raw = rawDamper,
-		Damper = damperForce,
-		Cap = maxDamperImpulse,
-		Clamped = math.abs(rawDamper) > math.abs(damperForce) + 1e-6,
-		-- 1.0 = the ground normal and the car's up axis agree. The damper
-		-- MEASURES along the car's up but is APPLIED along the normal, so the
-		-- further this is from 1, the more the correction acts on an axis
-		-- other than the one it was sized for.
-		NormalDot = normalDot,
-	}
-end
-
-local function debugDump(carModel, reason)
-	local history = debugHistory[carModel]
-	print(("[susp] ==== %s on %s ===="):format(reason, carModel:GetFullName()))
-	print(("[susp] mass %.1f | showing the %d frames up to it, oldest first")
-		:format(history[#history].Mass, #history))
-	for i, frame in history do
-		print(("[susp] frame -%-2d  t+%5.1fms  vY %+7.2f  spin %5.2f")
-			:format(#history - i, (frame.Time - history[1].Time) * 1000, frame.VerticalSpeed, frame.Spin))
-		for _, wheelName in WHEEL_NAMES do
-			local w = frame.Wheels[wheelName]
-			if w then
-				print(("[susp]    %s spring %5.2f  rate %+8.2f  stiff %7.1f  damper %+9.1f (raw %+10.1f, cap %8.1f)%s  n.up %.3f")
-					:format(wheelName, w.Spring, w.Rate, w.Stiff, w.Damper, w.Raw, w.Cap,
-						(if w.Clamped then " CLAMPED" else "        "), w.NormalDot))
-			else
-				print(("[susp]    %s AIRBORNE"):format(wheelName))
-			end
-		end
-	end
-	print("[susp] ==== end ====")
-end
-
--- Closes the frame: files it into the ring, looks for divergence, dumps if it
--- finds any. Called once per Step, after the wheel loop.
-local function debugEndFrame(carModel)
-	if not debugFrame then
-		return
-	end
-	local frame = debugFrame
-	debugFrame = nil
-
-	local history = debugHistory[carModel]
-	if not history then
-		history = {}
-		debugHistory[carModel] = history
-	end
-	table.insert(history, frame)
-	if #history > DEBUG_FRAMES then
-		table.remove(history, 1)
-	end
-
-	local flips = debugFlips[carModel]
-	if not flips then
-		flips = {}
-		debugFlips[carModel] = flips
-	end
-
-	local worst, worstWheel = 0, nil
-	for wheelName, w in frame.Wheels do
-		local previous = flips[wheelName]
-		local run = 0
-		if previous and previous.Rate then
-			local flipped = (w.Rate > 0) ~= (previous.Rate > 0)
-			local growing = math.abs(w.Rate) > math.abs(previous.Rate)
-			if flipped and growing and math.abs(w.Rate) > 0.5 then
-				run = previous.Runs + 1
-			end
-		end
-		flips[wheelName] = { Rate = w.Rate, Runs = run }
-		if run > worst then
-			worst, worstWheel = run, wheelName
-		end
-	end
-
-	if worst >= DEBUG_FLIPS_TO_TRIGGER and os.clock() >= (debugQuietUntil[carModel] or 0) then
-		debugQuietUntil[carModel] = os.clock() + DEBUG_QUIET_SECONDS
-		debugDump(carModel, ("DIVERGING on %s after %d growing sign flips"):format(worstWheel, worst))
-	end
-end
-
 function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	local carPrim = carModel.PrimaryPart
 
@@ -829,10 +719,6 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	-- surface that isn't there.
 	rayParams.RespectCanCollide = true
 
-	if VehiclePhysics.SuspensionDebug then
-		debugBeginFrame(carModel, carPrim)
-	end
-
 	for _, wheelName in WHEEL_NAMES do
 		local attachment = attachments[wheelName]
 		local carCFrame = carPrim.CFrame
@@ -843,7 +729,21 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		if raycast then
 			local raycastDistance = (rayOrigin - raycast.Position).Magnitude
 			local springLength = math.clamp(raycastDistance - config.WheelRadius, 0, config.SuspensionMaxLength)
-			local stiffnessForce = config.Stiffness * (config.SuspensionMaxLength - springLength)
+			-- Both suspension terms are scaled to the length of the frame,
+			-- against a 60fps reference so every existing Stiffness/Damper
+			-- number keeps exactly the meaning it was tuned with: at 60fps
+			-- this is 1.0 and nothing changes at all.
+			--
+			-- Without it these were per-FRAME impulses while Roblox applies
+			-- gravity continuously, so the suspension got weaker the worse the
+			-- frame rate got: a 100ms hitch delivered six frames' worth of
+			-- gravity and one frame's worth of spring. The car sinks, the
+			-- springs bottom out, and the body reaches the ground - which is
+			-- the "resize the Studio window and the car collides with the
+			-- ground and breaks parts" bug, and a plausible trigger for jitter
+			-- that starts on a frame drop.
+			local frameScale = delta * SUSPENSION_REFERENCE_FPS
+			local stiffnessForce = config.Stiffness * (config.SuspensionMaxLength - springLength) * frameScale
 			-- The damper measures how fast the strut is being compressed, and
 			-- it reads that off the chassis' OWN velocity at the strut mount -
 			-- not off how much springLength changed since last frame.
@@ -879,29 +779,22 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- (see frictionStopImpulse and the lateral grip clamp): it may
 			-- never remove more than the velocity that is actually there.
 			--
-			-- Why it matters. Four struts each apply `Damper * compressionRate`
-			-- to a body of AssemblyMass, so one frame of damping changes the
-			-- closing speed by `4 * Damper / mass` of itself:
-			--     4*D/m < 1   settles smoothly
-			--     4*D/m = 1   deadbeat - exactly cancelled, no bounce
-			--     4*D/m < 2   overshoots but still converges
-			--     4*D/m > 2   DIVERGES: each frame's correction is bigger than
-			--                 the last, and the car shakes itself apart
-			-- So the car explodes at Damper = mass/2, with no warning on the
-			-- way in - at mass 40 that is Damper 20, and Damper 15 already
-			-- overshoots hard enough to visibly jitter. Note there is no delta
-			-- anywhere in that, which is the deeper problem: the effective
-			-- damping coefficient is per-FRAME, so the threshold moves with
-			-- framerate too.
+			-- Why it matters. A damping impulse of `Damper * compressionRate`
+			-- against an effective mass m_eff changes the closing speed by
+			-- `Damper / m_eff` of itself in one frame:
+			--     < 1   settles smoothly
+			--     = 1   deadbeat - exactly cancelled, no bounce
+			--     < 2   overshoots but still converges
+			--     > 2   DIVERGES: each frame's correction is bigger than the
+			--           last, and the car shakes itself apart
+			-- There is no warning approaching that boundary, and no delta
+			-- anywhere in it - the coefficient is effectively per-FRAME, which
+			-- is why the whole thing is now scaled by frameScale above.
 			--
 			-- maxDamperImpulse is that boundary expressed as an impulse: this
 			-- strut's quarter share of the impulse that would exactly cancel
-			-- the closing velocity this frame. Clamped there, 4*D/m can never
-			-- exceed 1, so no Damper value - 20, 200, whatever a slider or a
-			-- typo hands it - can diverge. It saturates into a dead-flat
-			-- suspension instead, which looks boring rather than broken.
-			--
-			-- The old upper bound is kept alongside it (whichever is tighter).
+			-- the closing velocity. The old upper bound is kept alongside it
+			-- (whichever is tighter).
 			-- It is not a stability bound - it is in spring units and says
 			-- nothing about what the impulse does to the car's velocity - but
 			-- it is what currently shapes hard landings, and swapping it out
@@ -913,24 +806,56 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- body down harder than the spring is holding it up, so the total
 			-- suspension impulse stays non-negative and no edge case can
 			-- reintroduce a strut that pulls the car into the ground.
+			-- NOTE: maxDamperImpulse is deliberately NOT frame-scaled. It is
+			-- the impulse that cancels this much velocity outright, which is a
+			-- per-frame quantity by definition - so at a low frame rate the
+			-- damper scales up with everything else but still cannot
+			-- over-correct past a dead stop.
+			--
+			-- What this cap does and does NOT cover, because it is easy to
+			-- read it as a guarantee and it is not one.
+			--
+			-- m/4 is the effective mass for the HEAVE mode - all four struts
+			-- moving together, where the car really does respond with its full
+			-- mass. Against heave this bound is exact and no Damper value can
+			-- diverge.
+			--
+			-- It does NOT cover the ROLL mode, which is what actually goes
+			-- unstable first. An impulse at a strut mount is off-centre, so
+			-- the body answers mostly by rotating, and the effective mass for
+			-- roll is several times smaller than for heave - measured on the
+			-- StarterVehicle, about 7.5 against this cap's 30.6. So a Damper
+			-- high enough to destabilise roll sails straight under this cap
+			-- (at Damper 20 it sat at 470 against a raw damper of 307 and never
+			-- engaged) and the car shivers left-to-right at frame rate until
+			-- two wheels leave the ground.
+			--
+			-- That ceiling is around Damper 15 here, and the ladder Max is 9,
+			-- so no slider position a player can reach is unstable. That is
+			-- the current guarantee: a bounded ladder, not a safe formulation.
+			--
+			-- TODO: express damping as a RATIO rather than a raw coefficient.
+			-- Critical damping for a corner is c = 2 * sqrt(k * m), so a config
+			-- value of zeta in [0, 1] scaled to that makes "critically damped"
+			-- the top of the range and removes the possibility of choosing an
+			-- oscillating value at all - and it reads better as a player-facing
+			-- stat ("bouncy" to "firm") than a bare number does. Two things to
+			-- get right when doing it: k and m here are per-corner sprung
+			-- values, not config.Stiffness and AssemblyMass directly; and zeta
+			-- alone is not sufficient, because the instability comes from
+			-- explicit integration rather than from the continuous system, so
+			-- the per-frame gain still needs bounding against the ROLL
+			-- effective mass. Getting that mass needs the assembly's inertia
+			-- tensor (it cannot be estimated from the bounding box - see the
+			-- note on Damper in DEFAULTS), so it likely wants measuring once
+			-- per car during the server's existing spawn settle and caching as
+			-- an attribute. Retuning both cars' Damper values is part of it.
 			local maxDamperImpulse = math.abs(compressionRate) * (carPrim.AssemblyMass / 4)
 			local damperForce = math.clamp(
-				config.Damper * compressionRate,
+				config.Damper * compressionRate * frameScale,
 				math.max(-stiffnessForce, -maxDamperImpulse),
-				math.min(config.Stiffness * config.SuspensionMaxLength, maxDamperImpulse)
+				math.min(config.Stiffness * config.SuspensionMaxLength * frameScale, maxDamperImpulse)
 			)
-			if VehiclePhysics.SuspensionDebug then
-				debugWheel(
-					wheelName,
-					springLength,
-					compressionRate,
-					stiffnessForce,
-					config.Damper * compressionRate,
-					damperForce,
-					maxDamperImpulse,
-					raycast.Normal:Dot(carCFrame.UpVector)
-				)
-			end
 			-- Applied along the GROUND's normal, not the chassis' own up
 			-- vector. The magnitude above is still measured along the strut
 			-- (springLength and compressionRate both run along carCFrame.
@@ -1214,10 +1139,6 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		-- Airborne needs no bookkeeping at all now: with the damper reading
 		-- chassis velocity there is no per-wheel history to keep in step, and
 		-- so no stale value for a landing frame to differentiate against.
-	end
-
-	if VehiclePhysics.SuspensionDebug then
-		debugEndFrame(carModel)
 	end
 
 	-- Searched recursively (not just directly on the Chassis) since the engine

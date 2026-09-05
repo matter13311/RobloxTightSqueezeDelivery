@@ -80,6 +80,10 @@ return {
 			CostGrowth = 1.4,
 			Description = "How firm the suspension springs are. Higher Stiffness keeps the truck flatter and steadier through turns; lower feels bouncier and leans more.",
 		},
+		-- Max is held well under the point where the suspension goes
+		-- unstable (around 15 on this chassis - see the Damper note in
+		-- VehiclePhysics.Defaults). Do not raise it without re-testing for
+		-- the car shivering left-to-right at rest or after a landing.
 		Damper = {
 			Max = 9,
 			Step = 1,
