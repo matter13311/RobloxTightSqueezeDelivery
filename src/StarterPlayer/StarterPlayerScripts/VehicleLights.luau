@@ -16,8 +16,29 @@
 --     on/off/tick sounds only ever play once per real toggle, everywhere.
 
 local Debris = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 
 local VehicleLights = {}
+
+-- Per-car brightness multiplier (see VehiclePhysics.Defaults.LightBrightness
+-- for what it defaults to and why). Same defensive pattern as
+-- VehicleDamage.server.luau's bodyStrengthOf: a missing chassis, a bad config
+-- value, or anything non-positive just falls back to "unscaled", so a
+-- misconfigured car gets an ordinary-brightness light rather than a dark or
+-- blown-out one.
+local function lightBrightnessOf(vehicle)
+	local chassis = vehicle.PrimaryPart
+	if not chassis then
+		return 1
+	end
+	local brightness = VehiclePhysics.GetConfig(chassis).LightBrightness
+	if type(brightness) ~= "number" or brightness ~= brightness or brightness <= 0 then
+		return 1
+	end
+	return brightness
+end
 
 -- ===== Brake / reverse =====
 
@@ -28,11 +49,11 @@ local BRAKE_PART_NAMES = { "BrakeLeft", "BrakeRight", "ReverseLeft", "ReverseRig
 
 local rigs = {} -- [vehicle] = { [partName] = { Part, Light, OffMaterial } }
 
-local function buildPointLight(part, color, name)
+local function buildPointLight(part, color, name, brightnessMultiplier)
 	local light = Instance.new("PointLight")
 	light.Name = name
 	light.Color = color
-	light.Brightness = 2
+	light.Brightness = 2 * (brightnessMultiplier or 1)
 	light.Range = 12
 	light.Enabled = false
 	light.Parent = part
@@ -51,6 +72,8 @@ local function getRig(vehicle)
 		return nil -- car isn't fully set up yet; try again next frame
 	end
 
+	local brightness = lightBrightnessOf(vehicle)
+
 	rig = {}
 	for _, name in BRAKE_PART_NAMES do
 		local part = brakeRear:FindFirstChild(name)
@@ -60,7 +83,7 @@ local function getRig(vehicle)
 		local isReverse = name:find("Reverse") ~= nil
 		rig[name] = {
 			Part = part,
-			Light = buildPointLight(part, if isReverse then REVERSE_COLOR else BRAKE_COLOR, "TailLight"),
+			Light = buildPointLight(part, if isReverse then REVERSE_COLOR else BRAKE_COLOR, "TailLight", brightness),
 			-- Whatever material the part was built with (Plastic, SmoothPlastic,
 			-- ...) - restored when the light turns back off, so the lit look
 			-- comes purely from switching to Neon plus the PointLight, without
@@ -128,11 +151,11 @@ local headlightRigs = {} -- [vehicle] = { [partName] = { Part, Light, OffMateria
 -- A SpotLight, not a PointLight: a headlight throws a directed beam, not an
 -- even glow in every direction. Face defaults to Front (-Z locally) - if a
 -- headlight part is built facing some other way, change Face here to match.
-local function buildSpotlight(part)
+local function buildSpotlight(part, brightnessMultiplier)
 	local light = Instance.new("SpotLight")
 	light.Name = "Headlight"
 	light.Color = Color3.fromRGB(255, 255, 240)
-	light.Brightness = 3
+	light.Brightness = 3 * (brightnessMultiplier or 1)
 	light.Range = 60
 	light.Angle = 80
 	light.Face = Enum.NormalId.Front
@@ -161,6 +184,8 @@ local function getHeadlightRig(vehicle)
 		return nil
 	end
 
+	local brightness = lightBrightnessOf(vehicle)
+
 	rig = {}
 	for _, name in HEADLIGHT_PART_NAMES do
 		local part = frontLights:FindFirstChild(name)
@@ -169,7 +194,7 @@ local function getHeadlightRig(vehicle)
 		end
 		rig[name] = {
 			Part = part,
-			Light = buildSpotlight(part),
+			Light = buildSpotlight(part, brightness),
 			OffMaterial = part.Material,
 		}
 	end
@@ -287,6 +312,8 @@ local function getTurnSignalRig(vehicle)
 		return nil
 	end
 
+	local brightness = lightBrightnessOf(vehicle)
+
 	rig = { ActiveSide = nil, BlinkGeneration = 0 }
 	for _, side in TURN_SIGNAL_SIDES do
 		local part = folder:FindFirstChild("TurnSignal" .. side)
@@ -295,7 +322,7 @@ local function getTurnSignalRig(vehicle)
 		end
 		rig[side] = {
 			Part = part,
-			Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight"),
+			Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight", brightness),
 			OffMaterial = part.Material,
 		}
 	end

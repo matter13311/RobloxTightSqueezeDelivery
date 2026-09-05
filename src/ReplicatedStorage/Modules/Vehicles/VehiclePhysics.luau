@@ -194,6 +194,14 @@ local DEFAULTS = {
 	-- separate condition and is what actually decides a delivery's payout.
 	BodyStrength = 1,
 
+	-- Headlight/taillight/turn-signal brightness multiplier, applied on top of
+	-- the base Brightness each light is built with in VehicleLights.luau. 1 is
+	-- that base look; 0.5 (the default below) halves it, because a stock
+	-- SpotLight headlight at full strength reads as blindingly bright up
+	-- close. Per-car tuning knob, not an upgrade - a beat-up van and a sports
+	-- car have no business sharing one brightness.
+	LightBrightness = 0.5,
+
 	-- The horn (H). Unlike every other sound listed above, this one is NOT
 	-- created or played by the driving client - it is a Sound the SERVER puts
 	-- on the Chassis and plays, so every player in the game hears it, coming
@@ -1141,26 +1149,35 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		-- so no stale value for a landing frame to differentiate against.
 	end
 
-	-- Searched recursively (not just directly on the Chassis) since the engine
-	-- sound now lives under Engine/<enginePart>/Sound instead, so it comes
-	-- from the actual engine part rather than the chassis.
+	VehiclePhysics.UpdateEngineSound(carModel, config, input.Rpm)
+end
+
+-- Sets the engine sound's pitch from RPM (0-1, following ENGINE revs so it
+-- climbs through each gear and drops back on every shift) or, when `rpm` is
+-- nil, from road speed instead (the old fallback for a car being simulated
+-- without a gearbox driving it, e.g. the server's parked-car settle loop).
+--
+-- Pulled out of Step so it can also be called from every client's per-frame
+-- wheel-visuals loop for every OTHER car currently in view, using that car's
+-- replicated NetRpm - without this, only the driving client ever touched
+-- PlaybackSpeed, so a bystander heard a fixed-pitch engine drone that never
+-- responded to the other car accelerating or slowing down.
+--
+-- Searched recursively (not just directly on the Chassis) since the engine
+-- sound lives under Engine/<enginePart>/Sound instead, so it comes from the
+-- actual engine part rather than the chassis.
+function VehiclePhysics.UpdateEngineSound(carModel, config, rpm)
 	local sound = carModel:FindFirstChild("Sound", true)
-	if sound then
-		if input.Rpm then
-			-- Driven by a gearbox: pitch follows ENGINE revs, so it climbs
-			-- through each gear and drops back on every shift, instead of
-			-- rising once monotonically from a standstill to top speed. The
-			-- gearbox is what decides the revs (including the mid-shift dip) -
-			-- all that happens here is mapping 0-1 onto the pitch range.
-			local transmission = config.Transmission
-			sound.PlaybackSpeed = transmission.IdlePitch
-				+ math.clamp(input.Rpm, 0, 1) * (transmission.MaxPitch - transmission.IdlePitch)
-		else
-			-- No gearbox driving this step (e.g. the server's settle loop) -
-			-- fall back to the old road-speed pitch so a car being simulated
-			-- without a driver still sounds like something.
-			sound.PlaybackSpeed = 0.8 + carPrim.AssemblyLinearVelocity.Magnitude / config.MaxSpeed
-		end
+	if not sound then
+		return
+	end
+	if rpm then
+		local transmission = config.Transmission
+		sound.PlaybackSpeed = transmission.IdlePitch + math.clamp(rpm, 0, 1) * (transmission.MaxPitch - transmission.IdlePitch)
+	else
+		local chassis = carModel.PrimaryPart
+		local speed = chassis and chassis.AssemblyLinearVelocity.Magnitude or 0
+		sound.PlaybackSpeed = 0.8 + speed / config.MaxSpeed
 	end
 end
 

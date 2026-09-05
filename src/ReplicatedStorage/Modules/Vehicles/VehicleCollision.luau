@@ -39,16 +39,21 @@ VehicleCollision.HULL_FOLDER = "Collision"
 VehicleCollision.BODY_FOLDER = "Body"
 
 -- The folders damage is allowed to touch, and the only places a part can ever
--- fall off from. Wheels, Lights, Engine, the seats, the frame and the Chassis
--- itself are all absent on purpose: no amount of damage can leave a truck
+-- fall off from. Wheels, Engine, the seats, the frame and the Chassis itself
+-- are all absent on purpose: no amount of damage can leave a truck
 -- undriveable or stranded, by construction rather than by tuning.
 --
 -- Losing a door is purely cosmetic now that doors don't open - you get in and
 -- out by teleport, and the way in is defined by the Exit attachments on the
 -- chassis, not by the panel. Losing a mirror costs you that mirror's view,
 -- which is a real gameplay consequence in a game about reversing into tight
--- spaces, and is meant to be.
-VehicleCollision.DETACHABLE_FOLDERS = { "Body", "Mirror" }
+-- spaces, and is meant to be. Losing a light is the same idea: a taillight or
+-- headlight knocked off in a hard enough crash just goes dark, the same way a
+-- real one would - VehicleLights.luau caches a direct reference to each
+-- light's Part when it first builds a car's rig, so a part that later
+-- detaches (and eventually despawns, like any other debris) simply stops
+-- being where the light is, without needing any extra bookkeeping there.
+VehicleCollision.DETACHABLE_FOLDERS = { "Body", "Mirror", "Lights" }
 
 --=============================================================================
 -- Collision groups
@@ -126,6 +131,101 @@ VehicleCollision.ScrapeDrag = 14 -- studs/s^2 bled off while grinding. Dragging 
 VehicleCollision.ScrapeReportInterval = 0.25 -- seconds between reports to the server; the effects themselves are per-frame and local
 
 --=============================================================================
+-- Pedestrian impacts
+--=============================================================================
+
+-- Read by VehiclePedestrianDetector.client.luau (which spots the hit) and by
+-- VehiclePlayerImpact.server.luau (which performs it and re-checks the
+-- numbers), so the two can never disagree about what counts as running
+-- somebody over.
+--
+-- The shape of the whole feature, and why it is not just a Touched handler:
+-- a standing Humanoid is a wall, because Roblox's Humanoid controller
+-- re-asserts an upright pose every frame no matter what physics did to it. So
+-- the ragdoll has to already have happened by the time the metalwork arrives,
+-- and a ragdolled body has to be something the truck can drive through - see
+-- the PlayerRagdoll group rules in RagdollUtility. Detect on contact and you
+-- get the opposite order: the truck stops dead against the wall, the report
+-- crosses the network, and the player folds up half a second later against a
+-- truck that is already parked on them.
+
+-- How far ahead of itself the car looks for pedestrians, in SECONDS of travel
+-- at its current speed. Everything about this feature is timing, and timing is
+-- what this number buys: the knockdown has to be underway BEFORE the hulls
+-- reach the character, or the solver gets a frame against a still-standing
+-- Humanoid and the truck lurches.
+--
+-- Expressed as time rather than studs on purpose - a truck at 80 studs/s
+-- covers more ground between frames than one at 15, and a fixed stud distance
+-- would be far too short at speed and absurdly early at a crawl.
+--
+-- TUNING: too low and fast hits still feel like they snag. Too high and
+-- pedestrians dive out of the way of a truck that was never going to touch
+-- them (they get knocked down, the driver swerves, nothing ever connects).
+VehicleCollision.KnockdownLookahead = 0.15
+
+-- Below this speed a contact is a nudge, not a hit - rolling up to a stopped
+-- pedestrian, inching out of a tight plot - and NOTHING happens: no ragdoll,
+-- and the character keeps its ordinary collision, so the truck is blocked by
+-- them exactly as it would be by a bollard. That is the intended behaviour and
+-- not a leftover of the old one. A truck creeping forward at walking pace does
+-- not bowl people over, and a driver who wants past somebody standing still
+-- can either ask them to move or give it some throttle.
+VehicleCollision.KnockdownMinSpeed = 10
+
+-- The character is thrown along the vehicle's own velocity, scaled down from
+-- its full magnitude - a full 1:1 transfer at truck speeds sends a player
+-- flying across the map, which reads as slapstick rather than "hit by a car".
+-- Uncapped above KnockdownMinSpeed on purpose: a glancing tap sends them
+-- sprawling a few studs, a truck at full speed genuinely sends them flying.
+VehicleCollision.KnockdownSpeedFraction = 0.6
+VehicleCollision.KnockdownUpSpeed = 14 -- a bit of lift so the fall reads as a hit, not a shuffle-and-stumble
+-- Angular speed (rad/s) applied about a horizontal axis perpendicular to the
+-- hit, i.e. a forward tumble along the direction the car was travelling -
+-- without this the ragdoll's limbs go loose but the body itself doesn't
+-- rotate, which reads as "collapsed in place" rather than "sent tumbling".
+VehicleCollision.KnockdownTumbleSpeed = 6
+
+-- Fraction of the car's speed lost to hitting somebody, applied by the driving
+-- client as a one-line scale on AssemblyLinearVelocity.
+--
+-- It is scripted rather than physical because there is no longer a collision
+-- to produce it: a ragdolled body is in a group the car drives straight
+-- through. That is not a compromise, it is the more honest number of the two.
+-- Momentum says a ~200 kg character and a multi-tonne truck exchange a few
+-- percent of its speed, which is roughly this; what the solver used to produce
+-- - a dead stop - was pure Humanoid controller, not physics, and was wrong by
+-- an order of magnitude in the direction everyone notices.
+--
+-- TUNING: this is the whole "does hitting someone feel like anything" knob.
+-- 0 makes pedestrians ghosts. Above about 0.2 it starts reading as hitting a
+-- lamp post, which is the bug this feature exists to remove.
+VehicleCollision.KnockdownSpeedLoss = 0.06
+
+-- Seconds spent on the floor. Scaled between the two by how fast the car was
+-- going, so a clip at walking-pace-plus is a stumble and a truck at full speed
+-- puts you down properly - one fixed duration makes every hit feel identical
+-- regardless of how hard it was.
+VehicleCollision.KnockdownMinDuration = 1.2
+VehicleCollision.KnockdownMaxDuration = 2.8
+VehicleCollision.KnockdownFullSpeed = 70 -- speed (studs/s) at which the duration reaches its maximum
+
+-- Before the same Humanoid can be RE-KICKED, so one pass can't re-trigger
+-- every frame the probe box is still overlapping them.
+VehicleCollision.KnockdownCooldown = 1
+
+-- Reports per second per driver, on top of everything else being re-derived
+-- server-side. Deliberately far lower than MaxReportsPerSecond: you cannot run
+-- over four people a second honestly.
+VehicleCollision.MaxKnockdownReportsPerSecond = 4
+
+-- How far from the chassis a reported victim may be before the report is
+-- thrown away. Generous, because the report is fired a lookahead EARLY and the
+-- server's copy of both bodies is a round-trip behind - but nowhere near
+-- enough to reach across a street.
+VehicleCollision.KnockdownMaxReportDistance = 40
+
+--=============================================================================
 -- Damage
 --=============================================================================
 
@@ -153,6 +253,13 @@ VehicleCollision.DamageRadius = 12 -- studs from the impact point; damage falls 
 -- and doubling that produce the identical result. Pick one and leave the other
 -- alone, or you will end up chasing your own tail.
 VehicleCollision.DefaultPartHealth = 3
+
+-- Same idea as DefaultPartHealth, but for anything under a car's Lights
+-- folder: a headlight or taillight housing should take a real hit before it
+-- goes flying, not fall off from the same tap that would barely scuff a body
+-- panel. Only applied when a light part has no hand-set MaxHealth of its own
+-- (see VehicleCollisionSetup.server.luau).
+VehicleCollision.DefaultLightHealth = 20
 VehicleCollision.ScrapeDamageRate = 0.5 -- hit points per second of grinding, before the speed scale. Paint, not panels
 
 VehicleCollision.MaxDetachedParts = 30 -- world-wide cap on loose debris, so a demolition derby can't fill the physics budget

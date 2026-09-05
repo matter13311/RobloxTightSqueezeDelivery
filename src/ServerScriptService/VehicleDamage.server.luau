@@ -42,6 +42,17 @@ local damageRemote = Instance.new("RemoteEvent")
 damageRemote.Name = "VehicleDamageChanged"
 damageRemote.Parent = ReplicatedStorage
 
+-- Server -> everyone. VehicleCrashDetector.client.luau plays a crash sound
+-- the instant the driving client measures an impact, entirely locally, so
+-- that one player never waits on a round trip to hear their own crash. This
+-- is what makes everyone ELSE hear it too - a bystander, or the other car's
+-- driver in a car-vs-car hit, previously heard nothing at all. Carries the
+-- reporting player so every client can skip replaying a crash it already
+-- played for itself.
+local impactSoundRemote = Instance.new("RemoteEvent")
+impactSoundRemote.Name = "VehicleImpactSound"
+impactSoundRemote.Parent = ReplicatedStorage
+
 -- Loose panels live outside workspace.Vehicles deliberately: Raycast.server's
 -- and VehicleDoors' ChildAdded listeners both watch that folder and would try
 -- to set a wing mirror up as a car.
@@ -410,6 +421,14 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 		amount
 	)
 	applyDamage(carModel, position, amount, VehicleCollision.DamageRadius)
+
+	-- Same 0-1 scale CargoManager.ApplyImpact uses just below - impulse as a
+	-- fraction of the largest one validate() will accept - so a bystander's
+	-- copy of the crash sound is scaled the same way the reporting client
+	-- scaled its own local one (see severity in VehicleCrashDetector's
+	-- onImpact), without the server needing to know deltaV at all.
+	local severity = math.clamp(impulse / VehicleCollision.MaxImpulse, 0, 1)
+	impactSoundRemote:FireAllClients(position, severity, player)
 
 	-- ...and the same crash, applied to whatever is in the bed. Severity is
 	-- the impulse as a fraction of the largest one validate() will accept, so

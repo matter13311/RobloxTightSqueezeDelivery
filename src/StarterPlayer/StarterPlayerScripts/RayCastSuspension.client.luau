@@ -763,6 +763,11 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			})
 			VehicleEffects.Update(vehicle, config, wheelSlipState[vehicle])
 			ExhaustEffects.Update(vehicle, rpm)
+			-- Own car's Step() already set this from the live gearbox this
+			-- frame; for every other car, `rpm` came from NetRpm above, so
+			-- this is what makes a bystander hear an accelerating car's
+			-- pitch actually rise instead of droning at a fixed note.
+			VehiclePhysics.UpdateEngineSound(vehicle, config, rpm)
 			VehicleLights.Update(vehicle, isBraking, isReversing)
 			updateSteeringWheel(vehicle, config, smoothSteer)
 		end

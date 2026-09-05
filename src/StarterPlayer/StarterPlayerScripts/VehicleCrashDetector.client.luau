@@ -25,6 +25,7 @@ local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local impactRemote = ReplicatedStorage:WaitForChild("VehicleImpact")
 local scrapeRemote = ReplicatedStorage:WaitForChild("VehicleScrape")
+local impactSoundRemote = ReplicatedStorage:WaitForChild("VehicleImpactSound")
 
 local player = Players.LocalPlayer
 
@@ -409,3 +410,14 @@ if player.Character then
 	bindCharacter(player.Character)
 end
 player.CharacterAdded:Connect(bindCharacter)
+
+-- Not part of a drive session - this fires for EVERY client, driving or not,
+-- so a bystander (or the other car, in a car-vs-car hit) hears the crash too.
+-- The reporting player already played this exact sound locally in onImpact
+-- above, at zero latency, so it's skipped here rather than played twice.
+impactSoundRemote.OnClientEvent:Connect(function(position, severity, reportingPlayer)
+	if reportingPlayer == player then
+		return
+	end
+	playImpactSound(position, severity)
+end)

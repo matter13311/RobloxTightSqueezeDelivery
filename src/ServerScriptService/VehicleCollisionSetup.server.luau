@@ -173,10 +173,19 @@ local function setUpCar(carModel)
 	end
 
 	-- Damage bookkeeping, over every folder damage can touch rather than just
-	-- Body - mirrors are knocked off the same way panels are. Set here rather
-	-- than lazily in the damage script so a builder can watch these tick down
-	-- in the Properties window while play-testing.
+	-- Body - mirrors and lights are knocked off the same way panels are. Set
+	-- here rather than lazily in the damage script so a builder can watch
+	-- these tick down in the Properties window while play-testing.
+	local lightsFolder = carModel:FindFirstChild("Lights")
 	for _, part in VehicleCollision.GetDetachableParts(carModel) do
+		-- A light housing is a small, structural-ish part, not a thin sheet of
+		-- bodywork - VehicleCollision.DefaultPartHealth (a bare 3) would knock
+		-- one off from almost any impact hard enough to register at all. Only
+		-- applied when nobody has set MaxHealth by hand in Studio, same as
+		-- everywhere else this attribute is read.
+		if part:GetAttribute(VehicleCollision.MAX_HEALTH_ATTRIBUTE) == nil and lightsFolder and part:IsDescendantOf(lightsFolder) then
+			part:SetAttribute(VehicleCollision.MAX_HEALTH_ATTRIBUTE, VehicleCollision.DefaultLightHealth)
+		end
 		if part:GetAttribute(VehicleCollision.HEALTH_ATTRIBUTE) == nil then
 			part:SetAttribute(VehicleCollision.HEALTH_ATTRIBUTE, VehicleCollision.GetMaxHealth(part))
 		end
