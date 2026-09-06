@@ -481,7 +481,10 @@ local function buildMoneyDisplay()
 
 	local pill = Instance.new("Frame")
 	pill.AnchorPoint = Vector2.new(1, 1)
-	pill.Position = UDim2.new(1, -82, 1, -36)
+	-- Raised from the corner (was -36) to leave room underneath for the
+	-- vehicle shop button - see VehicleShopButton.client.luau, which sits
+	-- directly below this in the same column.
+	pill.Position = UDim2.new(1, -82, 1, -64)
 	pill.Size = UDim2.new(0, 130, 0, 40)
 	pill.BackgroundColor3 = COLORS.Panel
 	pill.BackgroundTransparency = 0.25

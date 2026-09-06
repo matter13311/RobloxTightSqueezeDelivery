@@ -34,12 +34,29 @@ contractsRefreshedEvent.Parent = ReplicatedStorage
 --=============================================================================
 
 -- [productId] = function(player) -> boolean granted
+local ThirdPersonExpiresAttribute = "ThirdPersonExpiresAt"
+
 local handlers = {
 	[ProgressionConfig.Monetization.RefreshContractsProductId] = function(player)
 		if not refreshContractsFunction:Invoke(player) then
 			return false
 		end
 		contractsRefreshedEvent:FireClient(player)
+		return true
+	end,
+
+	-- Third-person-while-driving, read by VehicleViewMode.luau on the
+	-- client. Stacks on top of whatever time is left rather than resetting
+	-- from now, so buying again while it's still active is never wasted -
+	-- the perk is time, not a light switch. Set as a plain Attribute:
+	-- replicates to the owning client for free and needs no save (it's
+	-- meant to run out), so unlike the contract refresh above there is no
+	-- PlotManager/DataStore involved.
+	[ProgressionConfig.Monetization.ThirdPersonProductId] = function(player)
+		local now = os.time()
+		local current = player:GetAttribute(ThirdPersonExpiresAttribute)
+		local base = if type(current) == "number" and current > now then current else now
+		player:SetAttribute(ThirdPersonExpiresAttribute, base + ProgressionConfig.Monetization.ThirdPersonDurationSeconds)
 		return true
 	end,
 }

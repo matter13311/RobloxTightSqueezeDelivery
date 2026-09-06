@@ -29,6 +29,10 @@ local SELECTOR_COLOR = {
 	D = Color3.fromRGB(86, 200, 128),
 }
 
+-- The third-person perk countdown, in the same green as gear D - this HUD's
+-- existing colour for "the car is doing the thing you asked for".
+local ACTIVE_COLOR = SELECTOR_COLOR.D
+
 local function corner(parent, radius)
 	local c = Instance.new("UICorner")
 	c.CornerRadius = UDim.new(0, radius)
@@ -95,6 +99,7 @@ function Dashboard.new(player)
 	panel.BackgroundTransparency = 0.08
 	corner(panel, 10)
 	stroke(panel, PANEL_EDGE)
+	self.Panel = panel
 
 	-- Small current-gear readout. In D this is the automatic box's gear
 	-- NUMBER, not the letter - the letter is already obvious from the lit
@@ -148,10 +153,30 @@ function Dashboard.new(player)
 	self.HintText = "W  drive      S  brake, hold to reverse      SPACE  handbrake      F  exit"
 	status.Text = self.HintText
 
+	-- The third-person countdown, shown only while the perk is actually
+	-- running - the offer itself now lives on the always-visible shop
+	-- button (see VehicleShopButton.client.luau) rather than here, so this
+	-- badge has nothing to say and stays hidden until there is a countdown
+	-- to show.
+	local perkBadge = newFrame(gui, "PerkBadge", UDim2.new(0.5, 0, 1, -16 - 90 - 8), UDim2.fromOffset(220, 26), Color3.fromRGB(18, 20, 25))
+	perkBadge.AnchorPoint = Vector2.new(0.5, 1)
+	perkBadge.BackgroundTransparency = 0.08
+	perkBadge.Visible = false
+	corner(perkBadge, 8)
+	stroke(perkBadge, ACTIVE_COLOR, 1)
+
+	local perkBadgeLabel = newLabel(perkBadge, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 12, ACTIVE_COLOR, Enum.Font.GothamBold)
+	self.PerkBadgeLabel = perkBadgeLabel
+	self.PerkBadge = perkBadge
+	-- Forces the first Update() call to write real text rather than skip as
+	-- "unchanged", since -1 can never equal a real seconds count (0
+	-- included, for "no perk").
+	self.PerkBadgeSecondsShown = -1
+
 	return self
 end
 
-function Dashboard:Update(gearboxState, speedStuds, handbrakeOn)
+function Dashboard:Update(gearboxState, speedStuds, handbrakeOn, thirdPersonSecondsRemaining)
 	local selector = gearboxState.Selector
 	local color = SELECTOR_COLOR[selector]
 
@@ -179,8 +204,31 @@ function Dashboard:Update(gearboxState, speedStuds, handbrakeOn)
 
 	self.SpeedLabel.Text = tostring(math.floor(speedStuds * MPH_PER_STUD + 0.5))
 
+	-- Rounded to the second, so this only rewrites the label on the second
+	-- it actually needs to tick over rather than every single frame.
+	local secondsShown = math.floor(thirdPersonSecondsRemaining or 0)
+	if secondsShown ~= self.PerkBadgeSecondsShown then
+		self.PerkBadgeSecondsShown = secondsShown
+		self.PerkBadge.Visible = secondsShown > 0
+		if secondsShown > 0 then
+			self.PerkBadgeLabel.Text =
+				string.format("3rd person active - %d:%02d left", math.floor(secondsShown / 60), secondsShown % 60)
+		end
+	end
+
 	self.HandbrakeBadge.Visible = handbrakeOn == true
 	self.StatusLabel.Visible = not self.HandbrakeBadge.Visible
+end
+
+-- Hidden in first person (the player is already looking through the
+-- windshield at the car's own dash) and shown in third person, where the
+-- physical dashboard is too far away to read. Only the gear/speed panel -
+-- the perk countdown is a separate sibling under the same Gui and stays
+-- visible regardless, since a player who bought third person still wants to
+-- know how much of it is left even while briefly looking through the
+-- windshield.
+function Dashboard:SetVisible(visible)
+	self.Panel.Visible = visible
 end
 
 function Dashboard:Destroy()

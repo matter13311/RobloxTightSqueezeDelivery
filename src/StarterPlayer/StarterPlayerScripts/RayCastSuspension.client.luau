@@ -13,6 +13,8 @@ local VehicleDashboardGauges = require(script.Parent.VehicleDashboardGauges)
 local VehicleControls = require(script.Parent.VehicleControls)
 local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
 local VehicleZoom = require(script.Parent.VehicleZoom)
+local VehicleViewMode = require(script.Parent.VehicleViewMode)
+local VehicleThirdPersonShop = require(script.Parent.VehicleThirdPersonShop)
 
 local player = Players.LocalPlayer
 
@@ -50,6 +52,7 @@ local HEADLIGHT_ACTION = "VehicleHeadlights"
 local TURN_SIGNAL_LEFT_ACTION = "VehicleTurnSignalLeft"
 local TURN_SIGNAL_RIGHT_ACTION = "VehicleTurnSignalRight"
 local HORN_ACTION = "VehicleHorn"
+local THIRD_PERSON_SHOP_ACTION = "VehicleThirdPersonShop"
 
 -- Which way A/D are being held right now, read straight off the keys instead
 -- of off VehicleSeat.SteerFloat. The seat derives its axes from
@@ -362,6 +365,15 @@ local function bindDrivingControls()
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.H)
+
+	-- Only worth binding at all for a player who doesn't already have the
+	-- perk - there is nothing here for T to open for one who does.
+	ContextActionService:BindAction(THIRD_PERSON_SHOP_ACTION, function(_, inputState)
+		if inputState == Enum.UserInputState.Begin and not VehicleViewMode.HasThirdPersonAccess() then
+			VehicleThirdPersonShop.Toggle()
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.KeyCode.T)
 end
 
 local function unbindDrivingControls()
@@ -376,7 +388,16 @@ local function unbindDrivingControls()
 		end
 	end
 
-	for _, action in { HANDBRAKE_ACTION, EXIT_ACTION, STEER_ACTION, HEADLIGHT_ACTION, TURN_SIGNAL_LEFT_ACTION, TURN_SIGNAL_RIGHT_ACTION, HORN_ACTION } do
+	for _, action in {
+		HANDBRAKE_ACTION,
+		EXIT_ACTION,
+		STEER_ACTION,
+		HEADLIGHT_ACTION,
+		TURN_SIGNAL_LEFT_ACTION,
+		TURN_SIGNAL_RIGHT_ACTION,
+		HORN_ACTION,
+		THIRD_PERSON_SHOP_ACTION,
+	} do
 		ContextActionService:UnbindAction(action)
 	end
 	steerLeftHeld = false
@@ -397,6 +418,8 @@ local function endDrive(expected)
 	unbindDrivingControls()
 	VehicleMirrorViews.Stop()
 	VehicleZoom.Stop()
+	VehicleThirdPersonShop.Close()
+	VehicleViewMode.ReleaseCameraMode()
 	session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	session.Dashboard:Destroy()
 	if session.ShiftSound then
@@ -563,7 +586,13 @@ local function beginDrive(humanoid, seatPart)
 			Rpm = drive.Rpm,
 		})
 
-		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake)
+		-- Re-checked every frame rather than once on entry: a third-person
+		-- perk can expire mid-drive and a player who has one can freely
+		-- swap views, so neither the lock, the HUD, nor the countdown can
+		-- be decided just once at the start of the session.
+		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake, VehicleViewMode.ThirdPersonSecondsRemaining())
+		VehicleViewMode.EnforceCameraMode()
+		mySession.Dashboard:SetVisible(not VehicleViewMode.IsFirstPerson())
 	end
 
 	endDrive(mySession)

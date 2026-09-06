@@ -138,14 +138,33 @@ DeliveryConfig.Guides = {
 	-- ApproachStuds is "how close am I to being parked in it". Without this
 	-- gate every bay in the map glows red the moment you sit in a vehicle,
 	-- which turns the guide from a hint into wallpaper.
-	ShowWithinStuds = 75,
+	ShowWithinStuds = 45,
 	-- The guide fades in across this last stretch of ShowWithinStuds rather
 	-- than popping on at the boundary.
-	FadeBandStuds = 25,
+	FadeBandStuds = 15,
 
-	-- The floor frame the guide draws, when a space has no outline of its own.
-	FrameThickness = 0.45,
-	FrameHeight = 0.08, -- how far above the space's own base the frame floats, so it does not z-fight a decal
+	-- THE GUIDE IS FOUR CORNER POSTS AND NOTHING ELSE. It used to draw a bar
+	-- along each edge as well, and the two together read as an upside-down
+	-- table rather than as a bay: the floor rectangle is the part the eye
+	-- takes as the object, so the posts looked like legs hanging off it. The
+	-- posts alone read as what they are - four markers you drive between.
+	--
+	-- They are also the half that does the actual work. A floor outline is
+	-- gone from a first-person camera at exactly the distance the colour
+	-- matters most, sliding under the bonnet in the last few studs of a park.
+	--
+	-- On the CORNERS and nowhere else, because the corners are the one place a
+	-- driver aiming into the bay is never looking through. A post anywhere
+	-- along an edge - or a taller wall of light - would sit directly between
+	-- the player and the thing they are parking next to.
+	CornerPostHeight = 4, -- studs; enough to clear a bonnet without walling the bay in
+	CornerPostThickness = 0.35,
+	CornerPostBase = 0.08, -- how far above the space's own base a post starts, so it does not z-fight a decal
+
+	-- Posts never go fully opaque even at full brightness. Their whole reason
+	-- for existing is to be at eye height, which is also the only place a
+	-- solid object could hide the bay wall the player is trying not to hit.
+	CornerPostTransparency = 0.45,
 }
 
 --=============================================================================

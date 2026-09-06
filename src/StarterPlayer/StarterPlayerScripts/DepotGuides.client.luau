@@ -1,9 +1,9 @@
 -- The depot, explaining itself: the big sign over the loading bay, and the
--- floor guide that shades from red to green as you line up with a space.
+-- space guide that shades from red to green as you line up with a space.
 --
 -- WHY ALL OF THIS IS CLIENT-SIDE
 --
--- The floor guide is one player's private feedback. Two drivers manoeuvring
+-- The space guide is one player's private feedback. Two drivers manoeuvring
 -- into adjacent bays need to see their OWN alignment, and a server-driven
 -- colour would give them a single shared answer that is wrong for at least one
 -- of them. It is also derived data - ParkGrade already runs on the client, and
@@ -19,7 +19,7 @@
 -- The guide's green means EXACTLY "the board will open" - it is driven by
 -- ParkGrade.Approach, which returns 1 precisely when ParkGrade.Evaluate would
 -- say Inside. That is the whole point: a player who cannot work out why the
--- job board is not appearing can watch the floor instead of guessing.
+-- job board is not appearing can watch the bay instead of guessing.
 --
 -- ONLY ONE PLACE IS EVER LIT, and only from a vehicle. On foot, nothing: a
 -- player walking past cannot park in anything, so a glowing bay is decoration
@@ -30,6 +30,12 @@
 --
 -- Bays further away than Guides.ShowWithinStuds stay dark whatever the state,
 -- so the map is not a field of red rectangles.
+--
+-- The guide is four corner posts and nothing on the floor - see
+-- DeliveryConfig.Guides for why. Briefly: a floor outline is invisible from a
+-- first-person driving camera at exactly the distance the colour matters
+-- most, and drawn together with the posts the pair read as an upside-down
+-- table rather than as a bay.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -335,53 +341,52 @@ local function refreshDestinationSigns(activeName)
 end
 
 --=============================================================================
--- The floor guide
+-- The space guide
 --=============================================================================
 
--- One client-local frame of thin neon bars per space, sitting just above the
--- space's own base so it never z-fights a floor decal. Created here rather
--- than asked for in Studio so the guide works on a bay that has had nothing
--- done to it - and if the space DOES carry a decal, that gets tinted with the
+-- Four client-local neon posts per space, one on each corner, standing just
+-- clear of the space's own base so they never z-fight a floor decal. Created
+-- here rather than asked for in Studio so the guide works on a bay that has
+-- had nothing done to it - and if the space DOES carry a decal, that gets tinted with the
 -- same colour below, so a hand-drawn floor outline is driven by this too
 -- rather than sitting there in its painted colour contradicting the guide.
 --
 -- `group` is which place the space belongs to: DEPOT_GROUP for the loading
 -- bay, or the destination model's name. Exactly one group is ever lit - see
 -- the header.
-local function buildFrame(space, group)
+local function buildGuide(space, group)
 	local holder = Instance.new("Folder")
 	holder.Name = "DepotGuide_" .. group .. "_" .. space.Name
 	holder.Parent = workspace
 
-	local thickness = guides.FrameThickness
-	local sizeX, sizeZ = space.Size.X, space.Size.Z
-	local y = -space.Size.Y / 2 + guides.FrameHeight
+	-- One post on each corner of the space, standing just clear of the floor.
+	-- See DeliveryConfig.Guides for why the corners are the only place they
+	-- go, and why they stay part-transparent at full brightness.
+	local thickness = guides.CornerPostThickness
+	local height = guides.CornerPostHeight
+	local size = Vector3.new(thickness, height, thickness)
 
-	-- Two bars along the length, two across the width, the short pair inset by
-	-- the thickness so the corners meet rather than overlapping into a
-	-- brighter blob.
-	local layout = {
-		{ Vector3.new(thickness, thickness, sizeZ), Vector3.new(sizeX / 2 - thickness / 2, y, 0) },
-		{ Vector3.new(thickness, thickness, sizeZ), Vector3.new(-sizeX / 2 + thickness / 2, y, 0) },
-		{ Vector3.new(sizeX - thickness * 2, thickness, thickness), Vector3.new(0, y, sizeZ / 2 - thickness / 2) },
-		{ Vector3.new(sizeX - thickness * 2, thickness, thickness), Vector3.new(0, y, -sizeZ / 2 + thickness / 2) },
-	}
+	-- Inset by half a post so the posts sit inside the space's footprint
+	-- rather than straddling its edge.
+	local cornerX = space.Size.X / 2 - thickness / 2
+	local cornerZ = space.Size.Z / 2 - thickness / 2
+	local y = -space.Size.Y / 2 + guides.CornerPostBase + height / 2
 
-	local bars = {}
-	for _, entry in layout do
-		local bar = Instance.new("Part")
-		bar.Size = entry[1]
-		bar.CFrame = space.CFrame * CFrame.new(entry[2])
-		bar.Anchored = true
-		bar.CanCollide = false
-		bar.CanQuery = false -- the suspension raycasts must never see this
-		bar.CanTouch = false
-		bar.CastShadow = false
-		bar.Material = Enum.Material.Neon
-		bar.Color = FAR
-		bar.Transparency = 1 -- everything starts dark; the poll lights only what applies
-		bar.Parent = holder
-		table.insert(bars, bar)
+	local posts = {}
+	for _, corner in { Vector2.new(1, 1), Vector2.new(1, -1), Vector2.new(-1, 1), Vector2.new(-1, -1) } do
+		local post = Instance.new("Part")
+		post.Size = size
+		post.CFrame = space.CFrame * CFrame.new(cornerX * corner.X, y, cornerZ * corner.Y)
+		post.Anchored = true
+		post.CanCollide = false
+		post.CanQuery = false -- the suspension raycasts must never see this
+		post.CanTouch = false
+		post.CastShadow = false
+		post.Material = Enum.Material.Neon
+		post.Color = FAR
+		post.Transparency = 1 -- everything starts dark; the poll lights only what applies
+		post.Parent = holder
+		table.insert(posts, post)
 	end
 
 	-- The decal's own colour is kept so the tint can be faded back OUT again.
@@ -397,7 +402,7 @@ local function buildFrame(space, group)
 	return {
 		Space = space,
 		Group = group,
-		Bars = bars,
+		Posts = posts,
 		Decals = decals,
 		Color = FAR,
 		Visibility = 0,
@@ -416,7 +421,7 @@ local DEPOT_GROUP = "\0Depot"
 --
 -- Read straight off the same RemoteEvent DeliveryHud listens to rather than
 -- asked of the HUD: a RemoteEvent takes as many connections as you like, and
--- routing it through the HUD would make the floor guide depend on a script
+-- routing it through the HUD would make the space guide depend on a script
 -- that is otherwise only about the screen.
 local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
 local activeDestination = nil
@@ -440,7 +445,7 @@ local function build()
 	local built = {}
 	for _, descendant in loadingBay:GetDescendants() do
 		if isSpace(descendant) then
-			table.insert(built, buildFrame(descendant, DEPOT_GROUP))
+			table.insert(built, buildGuide(descendant, DEPOT_GROUP))
 		elseif isSign(descendant) then
 			buildSign(descendant)
 		end
@@ -454,7 +459,7 @@ local function build()
 	for _, model in destinationsFolder and destinationsFolder:GetChildren() or {} do
 		for _, descendant in model:GetDescendants() do
 			if isSpace(descendant) then
-				table.insert(built, buildFrame(descendant, model.Name))
+				table.insert(built, buildGuide(descendant, model.Name))
 			elseif isSign(descendant) then
 				-- The MODEL's name, not the sign part's - see the section
 				-- header. Warehouse1.Sign reads "Warehouse1".
@@ -554,9 +559,12 @@ RunService.RenderStepped:Connect(function(delta)
 			end
 			entry.Color = entry.Color:Lerp(entry.TargetColor or FAR, alpha)
 
-			for _, bar in entry.Bars do
-				bar.Color = entry.Color
-				bar.Transparency = 1 - entry.Visibility
+			-- The posts top out part-transparent, so the brightest they ever
+			-- get is still something the player can see the bay through.
+			local transparency = 1 - entry.Visibility * (1 - guides.CornerPostTransparency)
+			for _, post in entry.Posts do
+				post.Color = entry.Color
+				post.Transparency = transparency
 			end
 			-- The decal fades from its own painted colour TO the guide colour
 			-- rather than fading out, so a floor outline stays readable the

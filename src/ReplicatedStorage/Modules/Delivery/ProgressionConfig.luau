@@ -136,6 +136,16 @@ ProgressionConfig.Monetization = {
 	-- wrong at the moment of purchase - but a button with no number on it is
 	-- one the player has to gamble a click on to price, which is worse.
 	RefreshContractsPrice = 49,
+
+	-- Developer product: grants temporary third-person camera while driving
+	-- (see VehicleViewMode.luau and Monetization.server.luau). A consumable
+	-- rather than a one-time gamepass on purpose - it's a comfort/cosmetic
+	-- perk with no gameplay advantage, so repeat purchases are the point.
+	ThirdPersonProductId = 3711634863,
+	-- How long one purchase grants, in seconds. Buying again while already
+	-- active adds this on top of whatever time is left rather than
+	-- overwriting it - see the grant handler in Monetization.server.luau.
+	ThirdPersonDurationSeconds = 20 * 60,
 }
 
 return ProgressionConfig
