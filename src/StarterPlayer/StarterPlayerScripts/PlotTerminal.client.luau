@@ -15,6 +15,7 @@ local SoundService = game:GetService("SoundService")
 
 local CustomPrompt = require(ReplicatedStorage.Modules.UI.CustomPrompt)
 local PlotOwnership = require(ReplicatedStorage.Modules.Plots.PlotOwnership)
+local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
@@ -173,6 +174,22 @@ moneyLabel.TextXAlignment = Enum.TextXAlignment.Right
 moneyLabel.TextYAlignment = Enum.TextYAlignment.Center
 moneyLabel.Text = "$0"
 moneyLabel.Parent = main
+
+-- Left of the money, same row, deliberately quieter. A shop that greys cards
+-- out with "Requires 20 deliveries" has to say somewhere how many the player
+-- has actually done, or the requirement has nothing to measure against - and
+-- this is the only screen where that matters, so it does not need to be loud.
+local deliveriesLabel = Instance.new("TextLabel")
+deliveriesLabel.Size = UDim2.fromOffset(220, 34)
+deliveriesLabel.Position = UDim2.new(1, -400, 0, 60)
+deliveriesLabel.BackgroundTransparency = 1
+deliveriesLabel.Font = Enum.Font.Gotham
+deliveriesLabel.TextSize = 14
+deliveriesLabel.TextColor3 = DIM_TEXT
+deliveriesLabel.TextXAlignment = Enum.TextXAlignment.Right
+deliveriesLabel.TextYAlignment = Enum.TextYAlignment.Center
+deliveriesLabel.Text = ""
+deliveriesLabel.Parent = main
 
 local contentFrame = Instance.new("Frame")
 contentFrame.Size = UDim2.new(1, -40, 1, -110)
@@ -838,17 +855,67 @@ local function makeShopCard(data, vehicleId, ownedSet)
 		buyButton.Parent = card
 		Instance.new("UICorner", buyButton).CornerRadius = UDim.new(0, 6)
 	else
+		-- A vehicle has TWO prices: money and deliveries (see VehicleCatalog's
+		-- header for why). The deliveries one is checked first because it is
+		-- the one the player cannot fix by driving to the bank - a card they
+		-- can afford but are not yet allowed to buy has to say so, or the
+		-- button just looks broken.
+		local requiredDeliveries = VehicleCatalog.RequiredDeliveries(def)
+		local deliveries = data.Deliveries or 0
+		local locked = deliveries < requiredDeliveries
+
 		local buyButton = Instance.new("TextButton")
 		buyButton.Size = UDim2.new(1, -16, 0, 26)
 		buyButton.Position = UDim2.fromOffset(8, 128)
-		buyButton.BackgroundColor3 = if data.Money >= def.Price then ACCENT else LOCKED
 		buyButton.BorderSizePixel = 0
 		buyButton.Font = Enum.Font.GothamBold
 		buyButton.TextSize = 13
-		buyButton.TextColor3 = if data.Money >= def.Price then PANEL else DIM_TEXT
-		buyButton.Text = "Buy $" .. def.Price
 		buyButton.Parent = card
 		Instance.new("UICorner", buyButton).CornerRadius = UDim.new(0, 6)
+
+		if locked then
+			-- The card stays on the shelf, greyed and captioned, rather than
+			-- being hidden until it is available. A vehicle nobody can see is a
+			-- vehicle nobody is working toward, and this ladder only does
+			-- anything if the player knows what is at the top of it.
+			local veil = Instance.new("Frame")
+			veil.Size = UDim2.fromScale(1, 1)
+			veil.BackgroundColor3 = PANEL
+			veil.BackgroundTransparency = 0.25
+			veil.BorderSizePixel = 0
+			veil.ZIndex = 3
+			veil.Parent = image
+			Instance.new("UICorner", veil).CornerRadius = UDim.new(0, 8)
+
+			local lockLabel = Instance.new("TextLabel")
+			lockLabel.Size = UDim2.fromScale(1, 1)
+			lockLabel.BackgroundTransparency = 1
+			lockLabel.Font = Enum.Font.GothamBold
+			lockLabel.TextSize = 15
+			lockLabel.TextColor3 = BRIGHT_TEXT
+			lockLabel.TextWrapped = true
+			lockLabel.ZIndex = 4
+			lockLabel.Text = "Requires\n" .. ProgressionConfig.DeliveryCountText(requiredDeliveries)
+			lockLabel.Parent = veil
+
+			-- The requirement on the veil, the distance still to go on the
+			-- button. Both in deliveries, which is also the unit the player's
+			-- own count is in up in the header - so there is nothing to convert
+			-- anywhere and no second number to learn.
+			buyButton.BackgroundColor3 = LOCKED
+			buyButton.TextColor3 = DIM_TEXT
+			buyButton.AutoButtonColor = false
+			buyButton.Text = ProgressionConfig.DeliveryCountText(requiredDeliveries - deliveries) .. " to go"
+			-- No click handler at all. The server refuses this purchase anyway
+			-- (see PlotManager's buyVehicle handler), so wiring one up would
+			-- only ever produce a button that silently does nothing.
+			return
+		end
+
+		local affordable = data.Money >= def.Price
+		buyButton.BackgroundColor3 = if affordable then ACCENT else LOCKED
+		buyButton.TextColor3 = if affordable then PANEL else DIM_TEXT
+		buyButton.Text = "Buy $" .. def.Price
 		buyButton.MouseButton1Click:Connect(function()
 			playClickSound()
 			buyVehicleEvent:FireServer(vehicleId)
@@ -880,6 +947,8 @@ refreshTerminalData = function()
 	latestData = data
 
 	moneyLabel.Text = "$" .. tostring(data.Money)
+
+	deliveriesLabel.Text = ProgressionConfig.DeliveryCountText(data.Deliveries or 0) .. " completed"
 
 	local ordered = ownedIdsInCatalogOrder(data)
 	local selectedIndex = 1

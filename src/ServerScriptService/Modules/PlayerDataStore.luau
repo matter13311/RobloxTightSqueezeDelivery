@@ -15,7 +15,16 @@
 --     SelectedVehicleId = string,
 --     UpgradeLevels = { [vehicleId] = { [statName] = number } },
 --     CarConfigs = { [vehicleId] = { [statName] = number } }, -- slider values, always <= UpgradeLevels' unlocked notch
+--     Deliveries = number,            -- lifetime completed deliveries; the ONLY thing the player's level is derived from
+--     Contracts = { { Id, Stop, TypeId, UnitsFraction }, ... }, -- the standing job board, see ContractPool
+--     ContractsRegenAt = number,      -- os.time() the next contract slot is granted, or 0 when the board is full
+--     NextContractId = number,        -- so a rejoin can't reissue an id the player is still holding
 --   }
+--
+-- Deliveries/Contracts are persisted for one reason: contracts are sold. A
+-- board held only in server memory would refresh for free on a server hop,
+-- which is the same hole as backing out of the loading bay and driving in
+-- again - see ContractPool's header.
 
 local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -23,6 +32,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
+
+local ContractPool = require(script.Parent.ContractPool)
 
 local PlayerDataStore = {}
 
@@ -57,7 +68,10 @@ end
 -- that got there some other way (an older build, a bad manual edit) rather
 -- than a duplicate of that check: nothing that can't be written should be
 -- able to sit in the table waiting to fail at save time.
-local function sanitizeMoney(value)
+--
+-- Used for every persisted counter, not just Money - they all have the same
+-- shape (a non-negative whole number) and the same failure mode.
+local function sanitizeCount(value)
 	if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
 		return 0
 	end
@@ -71,6 +85,15 @@ local function newDefaultData()
 		SelectedVehicleId = VehicleCatalog.Order[1],
 		UpgradeLevels = {},
 		CarConfigs = {},
+		Deliveries = 0,
+		-- Left nil deliberately: ContractPool.Reconcile treats a missing pool
+		-- as a brand new player and hands them a FULL board rather than an
+		-- empty one and a ten-minute timer. Filling it here instead would mean
+		-- doing it in two places, and the fallback-defaults path below must
+		-- never be the one that decides what a new player owns.
+		Contracts = nil,
+		ContractsRegenAt = 0,
+		NextContractId = 0,
 	}
 end
 
@@ -82,7 +105,7 @@ end
 -- lowered, Step changed) can never leave them holding an out-of-range value.
 local function reconcile(data)
 	data = data or {}
-	data.Money = sanitizeMoney(data.Money)
+	data.Money = sanitizeCount(data.Money)
 	data.OwnedVehicleIds = type(data.OwnedVehicleIds) == "table" and data.OwnedVehicleIds or {}
 	data.UpgradeLevels = type(data.UpgradeLevels) == "table" and data.UpgradeLevels or {}
 	data.CarConfigs = type(data.CarConfigs) == "table" and data.CarConfigs or {}
@@ -125,6 +148,12 @@ local function reconcile(data)
 			end
 		end
 	end
+
+	-- After the vehicle tables, before the return: the contract pool has its own
+	-- reconcile (dead destinations, a cap that shrank, and the real-time refill
+	-- owed since the player last logged off) and it lives in ContractPool
+	-- because that is where every other rule about the pool lives.
+	ContractPool.Reconcile(data)
 
 	if type(data.SelectedVehicleId) ~= "string" or not data.OwnedVehicleIds[data.SelectedVehicleId] then
 		data.SelectedVehicleId = VehicleCatalog.Order[1]
@@ -188,7 +217,11 @@ function PlayerDataStore.Load(player)
 				.. ") - starting them fresh this session. Their real progress is left untouched: "
 				.. "no save will be written for them for the rest of this session."
 		)
-		return newDefaultData()
+		-- Reconciled like a real save, not handed back raw: reconcile is what
+		-- fills in the contract board (see ContractPool.Reconcile), and a
+		-- player on fallback defaults still has to be able to take a job. They
+		-- keep it for the session and none of it is ever written back.
+		return reconcile(newDefaultData())
 	end
 
 	loadSucceeded[player.UserId] = true
@@ -222,7 +255,12 @@ function PlayerDataStore.Save(player, data)
 	-- field other scripts write to between Load and Save (see PlotManager's
 	-- setMoney / AwardMoney), so it's the only one that can have gone bad
 	-- since reconcile last saw it.
-	data.Money = sanitizeMoney(data.Money)
+	data.Money = sanitizeCount(data.Money)
+	-- Same reasoning as Money, for the same reason: Deliveries is written
+	-- between Load and Save (by ContractPool.RecordDelivery on every payout),
+	-- so it is the other field that can have gone bad since reconcile last saw
+	-- it - and one NaN is enough to fail the whole SetAsync.
+	data.Deliveries = sanitizeCount(data.Deliveries)
 
 	local ok, err = withRetries(function()
 		store:SetAsync("Player_" .. player.UserId, data)

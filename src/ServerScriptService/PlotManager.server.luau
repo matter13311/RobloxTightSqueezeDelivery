@@ -28,7 +28,9 @@ local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
 local Admin = require(ReplicatedStorage.Modules.Admin)
+local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
+local ContractPool = require(script.Parent.Modules.ContractPool)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -247,6 +249,22 @@ local function setMoney(player, data, newMoney)
 	syncLeaderstatMoney(player, data)
 end
 
+-- Deliveries, the game's one progression number and its one other leaderstat.
+-- Same "mirror, never the source of truth" rule as money: data.Deliveries is
+-- what gets saved, this only reflects it after a change.
+--
+-- There is deliberately no Level column beside it. A level would have been this
+-- same count looked up in a table, so the player list would have carried the
+-- same fact twice while every gate in the game is stated in deliveries anyway -
+-- see ProgressionConfig's header.
+local function syncLeaderstatProgress(player, data)
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local deliveries = leaderstats and leaderstats:FindFirstChild("Deliveries")
+	if deliveries then
+		deliveries.Value = data.Deliveries or 0
+	end
+end
+
 -- The one door into a player's money for any OTHER server script (today:
 -- DeliveryManager paying out a completed delivery). A BindableFunction rather
 -- than exporting `playerData`, because this script owning that table outright
@@ -282,6 +300,109 @@ awardMoneyFunction.OnInvoke = function(player, amount)
 
 	setMoney(player, data, data.Money + math.floor(amount))
 	return data.Money
+end
+
+--============================================================================
+-- The contract pool's door, for the two scripts that are not this one
+--============================================================================
+-- Same shape and same reasoning as AwardMoney above: the contract board is
+-- part of a player's SAVE, so it lives in `playerData` and this script stays
+-- the only thing that touches that table. DeliveryManager runs the delivery
+-- loop and Monetization.server.luau handles the receipt, and neither of them
+-- gets a reference to player data - they get these four answers.
+--
+-- BindableFunctions, so a client cannot see them at all. Every one returns nil
+-- for a player with no loaded data (mid-join, or a DataStore read still in
+-- flight), and every caller has to treat that as "not now" rather than as an
+-- error - a request that arrives mid-load is dropped, exactly as the remote
+-- handlers below already do.
+
+-- The board as it stands, refilled for however much real time has passed.
+-- `config`/`capacity` describe the truck the player is sitting in right now:
+-- contracts are stored as capacity FRACTIONS and sized to the vehicle at draw
+-- time (see ContractPool's header), so the caller - which is the one that knows
+-- about vehicles - has to say which truck to quote against.
+local getContractBoardFunction = Instance.new("BindableFunction")
+getContractBoardFunction.Name = "GetContractBoard"
+getContractBoardFunction.Parent = script.Parent
+
+getContractBoardFunction.OnInvoke = function(player, config, capacity)
+	local data = playerData[player.UserId]
+	if not data then
+		return nil
+	end
+	return ContractPool.Board(data, config or {}, capacity or 0)
+end
+
+-- Removes a contract from the board and hands back its seed, or nil if this
+-- player never had it. THE authority on "was this job actually on your board" -
+-- DeliveryManager checks nothing about ids itself, it just fails when this
+-- returns nil.
+local takeContractFunction = Instance.new("BindableFunction")
+takeContractFunction.Name = "TakeContract"
+takeContractFunction.Parent = script.Parent
+
+takeContractFunction.OnInvoke = function(player, contractId)
+	local data = playerData[player.UserId]
+	if not data then
+		return nil
+	end
+	return ContractPool.Take(data, contractId)
+end
+
+-- One completed delivery. Bumps the game's one progression number and re-syncs
+-- the leaderstat that shows it.
+local recordDeliveryFunction = Instance.new("BindableFunction")
+recordDeliveryFunction.Name = "RecordDelivery"
+recordDeliveryFunction.Parent = script.Parent
+
+recordDeliveryFunction.OnInvoke = function(player)
+	local data = playerData[player.UserId]
+	if not data then
+		return nil
+	end
+	local capBefore = ProgressionConfig.ContractCapFor(data.Deliveries or 0)
+	local deliveries = ContractPool.RecordDelivery(data)
+	local capAfter = ProgressionConfig.ContractCapFor(deliveries)
+	syncLeaderstatProgress(player, data)
+
+	return {
+		Deliveries = deliveries,
+		ContractCap = capAfter,
+		-- The client turns this into the "your board now holds 4 jobs" banner on
+		-- the payout summary. Worked out here because here is the only place
+		-- that can see BOTH sides of the increment.
+		CapIncreased = capAfter > capBefore,
+		NextCapMilestone = ProgressionConfig.NextCapMilestone(deliveries),
+	}
+end
+
+-- What the developer product buys. Returns true only if the board was actually
+-- rebuilt: the receipt handler must NOT consume a purchase it could not honour
+-- (a place file with no destinations built, say), because a consumed receipt is
+-- gone and Roblox will never hand it back.
+local refreshContractsFunction = Instance.new("BindableFunction")
+refreshContractsFunction.Name = "RefreshContracts"
+refreshContractsFunction.Parent = script.Parent
+
+refreshContractsFunction.OnInvoke = function(player)
+	local data = playerData[player.UserId]
+	if not data then
+		return false
+	end
+	if not ContractPool.Refresh(data) then
+		return false
+	end
+
+	-- Written through immediately, which nothing else in this script does.
+	-- Every other change here can afford to wait for the player to leave,
+	-- because the worst case is a lost minute of grinding. This one was paid
+	-- for in Robux: if the server dies before PlayerRemoving runs, the receipt
+	-- is already consumed and Roblox will never present it again, so the
+	-- player has paid for a board they will never see. One extra SetAsync per
+	-- purchase is a trivial price for that not being possible.
+	PlayerDataStore.Save(player, data)
+	return true
 end
 
 local function despawnVehicle(session)
@@ -396,6 +517,12 @@ local function initPlayerData(player)
 	money.Name = "Money"
 	money.Value = saved.Money
 	money.Parent = leaderstats
+
+	local deliveries = Instance.new("IntValue")
+	deliveries.Name = "Deliveries"
+	deliveries.Parent = leaderstats
+
+	syncLeaderstatProgress(player, saved)
 end
 
 -- Tears a player's session down and writes their save, and is the ONLY place
@@ -542,6 +669,13 @@ buyVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
 	if data.Money < vehicleDef.Price then
 		return
 	end
+	-- The other half of the price. The shop already greys this card out and
+	-- refuses to fire the remote (see PlotTerminal's makeShopCard), so this only
+	-- ever bites a forged request - the same relationship every other check in
+	-- this file has with the client's own UI.
+	if (data.Deliveries or 0) < VehicleCatalog.RequiredDeliveries(vehicleDef) then
+		return
+	end
 
 	setMoney(player, data, data.Money - vehicleDef.Price)
 	data.OwnedVehicleIds[vehicleId] = true
@@ -658,6 +792,10 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		OwnedVehicleIds = ownedVehicleIds,
 		SelectedVehicleId = data.SelectedVehicleId,
 		Money = data.Money,
+		-- The shop's locked cards are captioned from this and nothing else -
+		-- both the requirement and the player's progress toward it are the same
+		-- unit, so there is nothing to convert on either side.
+		Deliveries = data.Deliveries or 0,
 		HasSpawnedVehicle = session.SpawnedVehicle ~= nil,
 		UpgradeLevels = upgradeLevels,
 		CarConfigs = carConfigs,

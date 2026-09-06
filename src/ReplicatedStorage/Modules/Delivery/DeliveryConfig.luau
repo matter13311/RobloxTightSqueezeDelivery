@@ -153,10 +153,15 @@ DeliveryConfig.Guides = {
 --=============================================================================
 
 DeliveryConfig.Contracts = {
-	-- How many jobs the board offers at once. Three is enough for a real
-	-- choice between a safe short run and a risky long one without turning the
-	-- dock into a menu to study.
-	OfferCount = 3,
+	-- HOW MANY JOBS THE BOARD HOLDS IS NOT HERE ANY MORE. It is not a constant:
+	-- it grows with the player's level, and the board itself is a persisted,
+	-- real-time-refilling pool rather than a set of offers rolled on arrival.
+	-- See ProgressionConfig.ContractCapFor and ContractPool.luau.
+	--
+	-- What is still here is how a single contract is SHAPED, which has not
+	-- changed and is read by both the pool that generates them and the board
+	-- that draws them.
+
 	-- Offers are sized to the truck's own capacity, so buying CargoCapacity
 	-- directly raises what the board is willing to hand you. The range keeps
 	-- some offers deliberately light - a part load of Glassware is a real

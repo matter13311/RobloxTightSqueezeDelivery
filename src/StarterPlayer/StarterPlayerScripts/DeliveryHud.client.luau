@@ -11,7 +11,15 @@
 -- server pays out on, so the board appears exactly when the server would agree
 -- the truck is in the bay - rather than on a proximity radius that could open
 -- the board somewhere the server would refuse to load.
+--
+-- The board is a persistent, per-player POOL now, not three offers rolled fresh
+-- on arrival (see ContractPool.luau). That changes two things here. Asking for
+-- the board is free and idempotent, so nothing in this file has to be careful
+-- about how often it asks. And an EMPTY board is a real state the player has to
+-- be shown - with how long until the next job turns up, and the button that
+-- skips the wait - rather than a reason not to open the panel at all.
 
+local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -21,6 +29,7 @@ local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
+local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local player = Players.LocalPlayer
@@ -28,6 +37,10 @@ local player = Players.LocalPlayer
 local getContractsFunction = ReplicatedStorage:WaitForChild("GetDeliveryContracts")
 local acceptContractEvent = ReplicatedStorage:WaitForChild("AcceptDeliveryContract")
 local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
+-- Fired by Monetization.server.luau once a refresh purchase has actually
+-- rebuilt the board on the server - see its comment for why this exists rather
+-- than redrawing on PromptProductPurchaseFinished.
+local contractsRefreshedEvent = ReplicatedStorage:WaitForChild("ContractsRefreshed")
 
 -- WaitForChild for the same reason PlotTerminal does it: Workspace is not
 -- guaranteed to have replicated by the time PlayerScripts starts, and a direct
@@ -131,8 +144,11 @@ jobValue.Position = UDim2.fromOffset(12, 70)
 jobValue.Size = UDim2.new(1, -24, 0, 16)
 
 -- The contract board, centred, opened by pulling into the bay.
+-- Taller than it was: the pool grows with the player's delivery count rather
+-- than holding a fixed three, and there is now a footer under the list carrying
+-- the pool's state and the refresh button.
 local board = Instance.new("Frame")
-board.Size = UDim2.fromOffset(520, 420)
+board.Size = UDim2.fromOffset(520, 500)
 board.Position = UDim2.fromScale(0.5, 0.5)
 board.AnchorPoint = Vector2.new(0.5, 0.5)
 board.BackgroundColor3 = PANEL
@@ -162,10 +178,19 @@ closeButton.Text = "X"
 closeButton.Parent = board
 corner(closeButton, 6)
 
-local offerList = Instance.new("Frame")
+-- A ScrollingFrame, where the fixed three-offer board could get away with a
+-- plain one. Seven cards at 96px plus padding is well over the height of the
+-- panel, and a list that silently clips the jobs a player levelled up to unlock
+-- is worse than no cap increase at all.
+local offerList = Instance.new("ScrollingFrame")
 offerList.Position = UDim2.fromOffset(20, 76)
-offerList.Size = UDim2.new(1, -40, 1, -96)
+offerList.Size = UDim2.new(1, -40, 1, -140)
 offerList.BackgroundTransparency = 1
+offerList.BorderSizePixel = 0
+offerList.ScrollBarThickness = 6
+offerList.ScrollBarImageColor3 = PANEL_EDGE
+offerList.CanvasSize = UDim2.fromScale(0, 0)
+offerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
 offerList.Parent = board
 
 local offerLayout = Instance.new("UIListLayout")
@@ -173,9 +198,65 @@ offerLayout.Padding = UDim.new(0, 10)
 offerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 offerLayout.Parent = offerList
 
+-- Shown INSTEAD of the cards when the board is empty. An empty panel with a
+-- button in the corner leaves the player to work out for themselves that the
+-- jobs are on a timer and that the timer is the thing the button skips, which
+-- is precisely the moment they are most likely to just close the game.
+local emptyNotice = Instance.new("TextLabel")
+emptyNotice.Position = UDim2.fromOffset(20, 76)
+emptyNotice.Size = UDim2.new(1, -40, 1, -140)
+emptyNotice.BackgroundTransparency = 1
+emptyNotice.Font = Enum.Font.Gotham
+emptyNotice.TextSize = 15
+emptyNotice.TextColor3 = DIM_TEXT
+emptyNotice.TextWrapped = true
+emptyNotice.RichText = true
+emptyNotice.Visible = false
+emptyNotice.Text = ""
+emptyNotice.Parent = board
+
+--=============================================================================
+-- The board footer: what the pool is doing, and the button that skips it
+--=============================================================================
+
+local footer = Instance.new("Frame")
+footer.Position = UDim2.new(0, 20, 1, -56)
+footer.Size = UDim2.new(1, -40, 0, 36)
+footer.BackgroundTransparency = 1
+footer.Parent = board
+
+-- Left half: "3 of 4 jobs - next in 7:12". The pool's whole state in one line,
+-- because it is the line that explains why the board looks the way it does.
+local poolStatus = label(footer, "", 13, DIM_TEXT)
+poolStatus.Position = UDim2.fromOffset(0, 2)
+poolStatus.Size = UDim2.new(1, -180, 0, 16)
+
+local poolProgress = label(footer, "", 12, DIM_TEXT)
+poolProgress.Position = UDim2.fromOffset(0, 19)
+poolProgress.Size = UDim2.new(1, -180, 0, 15)
+
+-- Outlined rather than filled, and no price in the label: this is a
+-- secondary action next to the job cards, not the thing the board wants the
+-- player's eye to land on first.
+local refreshButton = Instance.new("TextButton")
+refreshButton.AnchorPoint = Vector2.new(1, 0)
+refreshButton.Position = UDim2.new(1, 0, 0, 0)
+refreshButton.Size = UDim2.fromOffset(170, 34)
+refreshButton.BackgroundTransparency = 1
+refreshButton.BorderSizePixel = 0
+refreshButton.Font = Enum.Font.GothamBold
+refreshButton.TextSize = 14
+refreshButton.TextColor3 = DIM_TEXT
+refreshButton.Text = ""
+refreshButton.Parent = footer
+corner(refreshButton, 8)
+stroke(refreshButton, PANEL_EDGE)
+
 -- The payout summary, centred low so it does not cover the windscreen.
 local summary = Instance.new("Frame")
-summary.Size = UDim2.fromOffset(360, 132)
+-- Taller than it was by one line, for the progress/level-up line the payout
+-- now carries (see progressLine).
+summary.Size = UDim2.fromOffset(360, 154)
 summary.Position = UDim2.fromScale(0.5, 0.78)
 summary.AnchorPoint = Vector2.new(0.5, 0.5)
 summary.BackgroundColor3 = PANEL
@@ -420,28 +501,209 @@ local function makeOfferCard(offer, index)
 	return card
 end
 
-local function openBoard()
-	if boardRequestInFlight then
+--=============================================================================
+-- The pool footer
+--=============================================================================
+
+-- The last board the server sent, and the os.clock() at which it arrived.
+-- SecondsUntilNext is a DURATION when it leaves the server (see
+-- ContractPool.Board), so the countdown is that duration minus however long
+-- this client has been holding it - no comparison of two machines' clocks
+-- anywhere, which is the only way this can be right for a player whose device
+-- clock is wrong.
+local boardState = nil
+local boardStateAt = 0
+
+-- Filled in from Roblox on startup (see ProgressionConfig.Monetization). The
+-- button itself no longer displays this - the prompt Roblox shows on purchase
+-- carries the price - but PromptProductPurchase still needs the product id.
+local refreshPrice = ProgressionConfig.Monetization.RefreshContractsPrice
+
+local function formatDuration(seconds)
+	seconds = math.max(0, math.floor(seconds))
+	return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- "4th", "5th". Only ever called on a contract cap, which
+-- ProgressionConfig keeps in single digits - so this handles
+-- the range that exists rather than pretending to be a general ordinal
+-- formatter it would then have to get right for 11 through 13.
+local ORDINALS = { "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th" }
+
+local function ordinal(n)
+	return ORDINALS[n] or tostring(n) .. "th"
+end
+
+local function updateFooter()
+	local state = boardState
+	if not state then
+		poolStatus.Text = ""
+		poolProgress.Text = ""
 		return
+	end
+
+	local count = #state.Offers
+	local cap = state.Cap or count
+
+	if state.SecondsUntilNext then
+		local remaining = state.SecondsUntilNext - (os.clock() - boardStateAt)
+		poolStatus.Text = string.format("%d of %d jobs  -  next in %s", count, cap, formatDuration(remaining))
+	else
+		poolStatus.Text = string.format("%d of %d jobs", count, cap)
+	end
+
+	-- Second line: how to make the board bigger. A player looking at a board
+	-- smaller than they would like is the exact audience for that, and this is
+	-- the only place the progression explains itself at all. Both halves are in
+	-- deliveries - the count they have done and the count the next slot wants -
+	-- so there is no second unit to learn and nothing to convert.
+	local deliveries = state.Deliveries or 0
+	local milestone = state.NextCapMilestone
+
+	if milestone then
+		poolProgress.Text = string.format(
+			"%s completed  -  %s more for a %s job",
+			ProgressionConfig.DeliveryCountText(deliveries),
+			ProgressionConfig.DeliveryCountText(math.max(0, milestone.Deliveries - deliveries)),
+			ordinal(milestone.Cap)
+		)
+	else
+		poolProgress.Text = string.format(
+			"%s completed  -  every job slot unlocked",
+			ProgressionConfig.DeliveryCountText(deliveries)
+		)
+	end
+end
+
+local function updateRefreshButton()
+	refreshButton.Text = "Refresh Jobs"
+end
+
+-- Priced from the config immediately rather than waiting on the round trip
+-- below, so the button is never briefly blank on a slow connection.
+updateRefreshButton()
+
+refreshButton.Activated:Connect(function()
+	-- Roblox owns the whole purchase flow from here: the prompt, the payment,
+	-- and telling the server. Nothing about the board changes on this click -
+	-- it changes when the SERVER says the refresh happened (see the
+	-- ContractsRefreshed handler below), so a cancelled or failed purchase
+	-- leaves the board exactly as it was with no client-side undo to get wrong.
+	MarketplaceService:PromptProductPurchase(player, ProgressionConfig.Monetization.RefreshContractsProductId)
+end)
+
+-- The real price, which only Roblox knows. Asked for once, off the main path,
+-- and ignored on failure - the config's placeholder is already on the button
+-- and a network hiccup should not leave the player staring at a blank one.
+task.spawn(function()
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(
+			ProgressionConfig.Monetization.RefreshContractsProductId,
+			Enum.InfoType.Product
+		)
+	end)
+	if ok and type(info) == "table" and type(info.PriceInRobux) == "number" then
+		refreshPrice = info.PriceInRobux
+		updateRefreshButton()
+	end
+end)
+
+--=============================================================================
+-- Drawing and asking for the board
+--=============================================================================
+
+local function renderBoard(state)
+	boardState = state
+	boardStateAt = os.clock()
+
+	clearOffers()
+	for index, offer in state.Offers do
+		makeOfferCard(offer, index)
+	end
+
+	local empty = #state.Offers == 0
+	offerList.Visible = not empty
+	emptyNotice.Visible = empty
+	if empty and state.SecondsUntilNext then
+		emptyNotice.Text = string.format(
+			"Every job is out.\n\nThe depot posts a new one every %d minutes - or take a full board of %d right now.",
+			math.max(1, math.floor(ProgressionConfig.Contracts.RegenSeconds / 60 + 0.5)),
+			state.Cap or ProgressionConfig.BaseContractCap()
+		)
+	elseif empty then
+		-- No timer AND no jobs means the map itself has nothing to deliver to,
+		-- which is a build problem rather than a wait - and telling the player
+		-- to sit tight for a job that is never coming would be a lie.
+		emptyNotice.Text = "The depot has no destinations set up yet, so there is nothing to haul.\n\n"
+			.. "(See docs/CargoDesign.md section 4.2.)"
+	end
+
+	updateRefreshButton()
+	updateFooter()
+end
+
+-- Asks the server for the board and redraws it. Safe to call as often as
+-- anything likes: the pool is persisted, so the answer does not change just
+-- because it was asked for - which is the entire reason backing out of the bay
+-- and driving in again no longer re-rolls the jobs.
+local function requestBoard()
+	if boardRequestInFlight then
+		return nil
 	end
 	boardRequestInFlight = true
 	local ok, state = pcall(function()
 		return getContractsFunction:InvokeServer()
 	end)
 	boardRequestInFlight = false
-	if not ok or type(state) ~= "table" then
-		return
+	if not ok or type(state) ~= "table" or type(state.Offers) ~= "table" then
+		return nil
 	end
-	if state.Active or #state.Offers == 0 then
-		return -- already carrying a job, or the map has no destinations built yet
+	if state.Active then
+		return nil -- already carrying a job; the board has nothing to say
 	end
 
-	clearOffers()
-	for index, offer in state.Offers do
-		makeOfferCard(offer, index)
-	end
-	setBoardVisible(true)
+	renderBoard(state)
+	return state
 end
+
+local function openBoard()
+	if requestBoard() then
+		setBoardVisible(true)
+	end
+end
+
+-- Called while the board is open. Two jobs: run the countdown down, and ask the
+-- server for the board again the moment that countdown reaches zero, so a
+-- player sitting in the bay watching the timer sees the job actually appear
+-- rather than having to drive out and back in to collect it.
+--
+-- The re-request is gated on the countdown having elapsed, not on a timer of
+-- its own, so an open board costs exactly one extra round trip per contract
+-- regenerated - and none at all while the board is full.
+local function tickBoard()
+	if not boardState then
+		return
+	end
+	updateFooter()
+	if not boardState.SecondsUntilNext then
+		return
+	end
+	if boardState.SecondsUntilNext - (os.clock() - boardStateAt) > 0 then
+		return
+	end
+	-- Cleared first so a slow reply cannot re-enter this on every tick.
+	boardState.SecondsUntilNext = nil
+	requestBoard()
+end
+
+-- The server has rebuilt the board because the player paid for it. Redrawn
+-- rather than patched locally: the new jobs were generated on the server and
+-- this client has never seen them.
+contractsRefreshedEvent.OnClientEvent:Connect(function()
+	if board.Visible then
+		requestBoard()
+	end
+end)
 
 -- THE MOUSE, in first person. Same problem and same fix as
 -- PlotTerminal.client.luau's applyMouseState, whose comment explains it in
@@ -557,18 +819,45 @@ end
 
 local summaryToken = 0
 
+-- The line under the payout that says the delivery counted for something beyond
+-- money. Unlocking a job slot is the loudest thing that can happen at a
+-- drop-off, so it takes the whole line; otherwise the line quietly counts down
+-- to the next one, which is what makes the ladder visible without needing a
+-- screen of its own.
+local function progressLine(progress)
+	if type(progress) ~= "table" then
+		return "" -- they left between parking and being paid; there is no count to show
+	end
+	local deliveries = progress.Deliveries or 0
+
+	if progress.CapIncreased and progress.ContractCap then
+		return string.format("\n<b>Job slot unlocked - the board now holds %d</b>", progress.ContractCap)
+	end
+
+	local milestone = progress.NextCapMilestone
+	if not milestone then
+		return string.format("\n%s completed", ProgressionConfig.DeliveryCountText(deliveries))
+	end
+	return string.format(
+		"\n%s to a %s job slot",
+		ProgressionConfig.DeliveryCountText(math.max(0, milestone.Deliveries - deliveries)),
+		ordinal(milestone.Cap)
+	)
+end
+
 local function showSummary(completed)
 	local cargoType = CargoTypes.GetOrDefault(completed.TypeId)
 	summaryTitle.Text = string.format("Delivered  +$%d", completed.Payout)
 	summaryBody.Text = string.format(
-		"%d x %s to %s\nCondition on arrival: %d%%\nPark: %s  (x%.2f total)%s",
+		"%d x %s to %s\nCondition on arrival: %d%%\nPark: %s  (x%.2f total)%s%s",
 		completed.Units,
 		cargoType.DisplayName,
 		completed.Destination,
 		math.floor(completed.Condition * 100 + 0.5),
 		completed.ParkLabel,
 		completed.Multiplier,
-		if completed.Balance then string.format("\nBalance: $%d", completed.Balance) else ""
+		if completed.Balance then string.format("\nBalance: $%d", completed.Balance) else "",
+		progressLine(completed.Progress)
 	)
 	summary.Visible = true
 
@@ -667,11 +956,15 @@ end
 --   Containment. A bounding-box corner parked on the tolerance line crosses
 --   back and forth as the body rocks on its springs.
 --
--- Either one blipping for a single frame used to hide a panel the player was
--- reading, and the reopen fired a fresh RemoteFunction that re-rolled all three
--- offers. A second of grace costs nothing - the truck is stationary, so nothing
--- can have changed - and it makes leaving the bay the only thing that closes
--- the board.
+-- Either one blipping for a single frame hides a panel the player is reading
+-- and then snaps it back a quarter-second later, which looks like a bug even
+-- now that reopening costs nothing. (It used to cost the player their jobs: the
+-- reopen fired a fresh RemoteFunction and re-rolled all three offers. That is
+-- no longer possible at all - the pool is persisted and asking for it has no
+-- side effect - but the flicker was always the visible half of the problem.)
+-- A second of grace costs nothing, since the truck is stationary and nothing
+-- can have changed, and it makes leaving the bay the only thing that closes the
+-- board.
 local LEAVE_GRACE_SECONDS = 1
 local outOfBayFor = 0
 
@@ -690,7 +983,9 @@ RunService.Heartbeat:Connect(function(delta)
 
 	if truckIsInBay() then
 		outOfBayFor = 0
-		if not board.Visible and not boardDismissed and not activeContract then
+		if board.Visible then
+			tickBoard()
+		elseif not boardDismissed and not activeContract then
 			openBoard()
 		end
 		return

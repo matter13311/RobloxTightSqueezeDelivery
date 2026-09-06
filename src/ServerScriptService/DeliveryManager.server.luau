@@ -13,6 +13,14 @@
 -- as many alleys, shortcuts and dead ends as you like without any of them
 -- needing to be scored. See docs/CargoDesign.md section 1.
 --
+-- WHERE CONTRACTS COME FROM: not from here. A player's board is a persisted
+-- pool that refills on a real-time clock and can be refreshed for Robux (see
+-- ContractPool.luau for why it works that way and PlotManager for who owns it).
+-- This script asks for that board, takes jobs out of it, and reports completed
+-- deliveries back - it does not generate, re-roll or store a single contract,
+-- which is what makes "drive out of the bay and back in" no longer a free
+-- re-roll of the offers.
+--
 -- A contract carries a LIST of stops even though every contract generated
 -- today has exactly one. That is not speculative generality: multi-stop routes
 -- are the intended replacement for a fuel system (upgrade the truck, carry
@@ -24,13 +32,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
-local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 local CargoManager = require(script.Parent.Modules.CargoManager)
+local Destinations = require(script.Parent.Modules.Destinations)
 
 local VehicleFolder = workspace:WaitForChild("Vehicles")
 
@@ -46,93 +54,16 @@ local awardMoneyFunction = script.Parent:WaitForChild("AwardMoney")
 
 local world = DeliveryConfig.World
 
--- Everything here is optional at run time. A place file that has not had the
--- delivery geometry built yet should still boot, drive and let you test cargo
--- with the admin commands - it just cannot offer contracts. Failing loudly
--- once beats erroring on every heartbeat.
-local deliveryRoot = workspace:FindFirstChild(world.RootFolderName)
-local destinationsFolder = deliveryRoot and deliveryRoot:FindFirstChild(world.DestinationsFolderName)
-local depotFolder = deliveryRoot and deliveryRoot:FindFirstChild(world.DepotFolderName)
-local loadingBay = depotFolder and depotFolder:FindFirstChild(world.LoadingBayName)
+-- The destination list, its parking spaces and its distance-from-depot pricing
+-- all live in Destinations.luau now, because contract GENERATION moved out of
+-- this script and into ContractPool - and both need the same answers without
+-- either requiring the other. See that module's header.
+--
+-- The loading bay is still looked up here: it is not a destination, and this
+-- is the only script that cares where it is.
+Destinations.Build()
 
-local function spacesIn(container)
-	local spaces = {}
-	if not container then
-		return spaces
-	end
-	for _, descendant in container:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant.Name:sub(1, #world.SpacePrefix) == world.SpacePrefix then
-			table.insert(spaces, descendant)
-		end
-	end
-	return spaces
-end
-
--- Built once at startup: every destination, its spaces, and how far it is from
--- the depot. Distance is measured depot-to-destination in a straight line, NOT
--- along any route - see the header. It is a difficulty proxy for pricing, not
--- a measurement of what the player drove.
-local destinations = {}
-local destinationOrder = {}
-
-local function buildDestinations()
-	if not destinationsFolder then
-		warn(
-			string.format(
-				"DeliveryManager: no workspace.%s.%s folder - contracts are disabled. See docs/CargoDesign.md "
-					.. "section 4.2 for the folder structure to build.",
-				world.RootFolderName,
-				world.DestinationsFolderName
-			)
-		)
-		return
-	end
-
-	local depotSpaces = spacesIn(loadingBay)
-	local depotPosition = depotSpaces[1] and depotSpaces[1].Position or Vector3.zero
-	if #depotSpaces == 0 then
-		warn(
-			string.format(
-				"DeliveryManager: no '%s*' Part inside workspace.%s.%s.%s - distance bonuses will all be zero and "
-					.. "there is nowhere to load. See docs/CargoDesign.md section 4.3.",
-				world.SpacePrefix,
-				world.RootFolderName,
-				world.DepotFolderName,
-				world.LoadingBayName
-			)
-		)
-	end
-
-	for _, model in destinationsFolder:GetChildren() do
-		local spaces = spacesIn(model)
-		if #spaces == 0 then
-			warn(
-				string.format(
-					"DeliveryManager: destination %s has no '%s*' Part in it, so nothing can be delivered there - "
-						.. "skipping it.",
-					model:GetFullName(),
-					world.SpacePrefix
-				)
-			)
-			continue
-		end
-
-		local distance = (spaces[1].Position - depotPosition).Magnitude
-		destinations[model.Name] = {
-			Name = model.Name,
-			Model = model,
-			Spaces = spaces,
-			Distance = distance,
-			DistanceBonus = DeliveryConfig.Payout.DistanceBonusAtMax
-				* math.clamp(distance / DeliveryConfig.Payout.DistanceForMaxBonus, 0, 1),
-		}
-		table.insert(destinationOrder, model.Name)
-	end
-
-	table.sort(destinationOrder) -- stable offers between servers; table order is unspecified in Lua
-end
-
-buildDestinations()
+local loadingBay = Destinations.LoadingBay()
 
 --=============================================================================
 -- Remotes
@@ -161,25 +92,32 @@ deliveryUpdateEvent.Parent = ReplicatedStorage
 
 -- [Player] = contract table. Keyed by Player instance and cleared in
 -- PlayerRemoving, so a leaver takes their contract with them.
+--
+-- Note what is NOT here any more: the board. Offers used to be cached per
+-- player in this script so that accepting quoted the same numbers that were
+-- displayed. They are persisted per player now, which gives that property for
+-- free and gives it across servers as well.
 local activeContracts = {}
--- [Player] = { contract, ... }, the board as last generated for them. Held so
--- accepting quotes the SAME numbers that were displayed, rather than
--- re-rolling and paying out something the player never agreed to.
-local offeredContracts = {}
 -- [Player] = seconds the truck has been continuously stopped in a bay.
 local stoppedFor = {}
 
 Players.PlayerRemoving:Connect(function(player)
 	activeContracts[player] = nil
-	offeredContracts[player] = nil
 	stoppedFor[player] = nil
 end)
 
---=============================================================================
--- Contract generation
---=============================================================================
+-- PlotManager owns the contract pool, because the pool is part of the save and
+-- PlotManager owns saves. Same WaitForChild-on-a-BindableFunction arrangement
+-- as AwardMoney above, and for the same two reasons: execution order between
+-- two ServerScriptService scripts is undefined, and a Bindable is invisible to
+-- clients so there is no hostile caller to guard against.
+local getContractBoardFunction = script.Parent:WaitForChild("GetContractBoard")
+local takeContractFunction = script.Parent:WaitForChild("TakeContract")
+local recordDeliveryFunction = script.Parent:WaitForChild("RecordDelivery")
 
-local nextContractId = 0
+--=============================================================================
+-- The board
+--=============================================================================
 
 -- Offers are sized to the truck the player is actually sitting in, which is
 -- what makes CargoCapacity worth buying: a bigger bed does not merely let you
@@ -197,65 +135,38 @@ local function configOf(carModel)
 	return VehiclePhysics.GetConfig(chassis)
 end
 
-local function makeContract(config, capacity)
-	local destinationName = destinationOrder[math.random(#destinationOrder)]
-	local destination = destinations[destinationName]
-	local typeId = CargoTypes.Order[math.random(#CargoTypes.Order)]
-
-	local contracts = DeliveryConfig.Contracts
-	local minUnits = math.max(1, math.floor(capacity * contracts.MinUnitsFraction))
-	local units = if capacity > 0 then math.random(minUnits, capacity) else contracts.FallbackUnits
-
-	nextContractId += 1
-
-	-- The quoted figure assumes a pristine arrival and a plain nose-in park.
-	-- Deliberately the FLOOR of what the job can pay rather than its ceiling:
-	-- a player who drives well is rewarded with more than the board promised,
-	-- which reads far better than being told a number and then docked for
-	-- every scratch.
-	local baseValue = CargoLoad.Value(units, typeId, 1)
-
-	return {
-		Id = nextContractId,
-		-- One stop today; see the header for why it is a list.
-		Stops = { destinationName },
-		TypeId = typeId,
-		Units = units,
-		QuotedValue = math.floor(baseValue * (1 + destination.DistanceBonus)),
-		Distance = destination.Distance,
-		-- How much this load adds to the truck, as a fraction of its empty
-		-- mass. Computed here rather than on the client because the client has
-		-- no business deciding what a vehicle's config says - and because an
-		-- offer is a fixed quote, so every number on the card should come from
-		-- the same snapshot of the truck.
-		MassFraction = CargoLoad.MassFraction(config, units, typeId),
-	}
-end
-
-getContractsFunction.OnServerInvoke = function(player)
-	if #destinationOrder == 0 then
-		return { Offers = {}, Active = activeContracts[player] }
-	end
-
-	-- An active contract replaces the board entirely: there is no queue, and
-	-- being able to take a second job while carrying the first would mean
-	-- cargo from two contracts in one bed with no way to tell them apart at a
-	-- drop-off.
-	if activeContracts[player] then
-		return { Offers = {}, Active = activeContracts[player] }
-	end
-
+-- The board for whatever truck this player is in right now. One place, because
+-- both the "show me the board" remote and the accept handler need the same
+-- answer built against the same vehicle snapshot.
+local function boardFor(player)
 	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
 	local config = configOf(carModel)
-	local capacity = CargoLoad.Capacity(config)
+	return getContractBoardFunction:Invoke(player, config, CargoLoad.Capacity(config)), carModel
+end
 
-	local offers = {}
-	for _ = 1, DeliveryConfig.Contracts.OfferCount do
-		table.insert(offers, makeContract(config, capacity))
+-- Client asks for the board when it decides the player is at the dock. The
+-- server does not trust that judgement - AcceptContract re-checks the truck is
+-- actually in the bay - so this can be answered freely.
+--
+-- Answering it has NO side effect on what is offered. That is the whole point
+-- of the persisted pool: calling this twenty times in a row returns the same
+-- twenty boards, so reversing out of the bay and driving back in is no longer
+-- a way to re-roll jobs the player did not like.
+getContractsFunction.OnServerInvoke = function(player)
+	-- An active contract replaces the board entirely: there is no queue, and
+	-- being able to take a second job while carrying the first would mean cargo
+	-- from two contracts in one bed with no way to tell them apart at a
+	-- drop-off. The pool is still reported, so the HUD can show what is waiting.
+	local board = boardFor(player)
+	if type(board) ~= "table" then
+		return { Offers = {}, Active = activeContracts[player] }
 	end
-	offeredContracts[player] = offers
 
-	return { Offers = offers, Active = nil }
+	board.Active = activeContracts[player]
+	if board.Active then
+		board.Offers = {}
+	end
+	return board
 end
 
 --=============================================================================
@@ -285,22 +196,27 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 		return -- already carrying one; the board should not have offered anything
 	end
 
-	-- Only from the board we actually handed this player, so a crafted id
-	-- cannot invent a contract with whatever payout it likes.
-	local offers = offeredContracts[player]
+	-- Drawn against the truck the player is in RIGHT NOW rather than against
+	-- whatever they were in when the board was last displayed. A saved contract
+	-- is a capacity fraction, not a crate count (see ContractPool's header), so
+	-- this is the only quote that can honestly be loaded onto this bed.
+	local board, carModel = boardFor(player)
+	if type(board) ~= "table" then
+		return -- their data has not finished loading; nothing to take from
+	end
+
 	local contract = nil
-	for _, offer in offers or {} do
+	for _, offer in board.Offers do
 		if offer.Id == contractId then
 			contract = offer
 			break
 		end
 	end
 	if not contract then
-		warn("DeliveryManager: " .. player.Name .. " tried to accept a contract that was never offered to them")
+		warn("DeliveryManager: " .. player.Name .. " tried to accept a contract that is not on their board")
 		return
 	end
 
-	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
 	if not carModel or not carModel.PrimaryPart then
 		return
 	end
@@ -314,13 +230,25 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- hint about. Being at rest is required for the same reason it is at a
 	-- destination: a moving, client-owned chassis is a lagging echo on the
 	-- server, and a stationary one is not.
-	local space = findParkedSpace(carModel, spacesIn(loadingBay))
+	local space = findParkedSpace(carModel, Destinations.SpacesIn(loadingBay))
 	if not space or not isStopped(carModel.PrimaryPart) then
 		return
 	end
 
 	local loaded = CargoManager.Load(carModel, contract.TypeId, contract.Units)
 	if loaded <= 0 then
+		return
+	end
+
+	-- Loaded first, THEN taken off the board. The other order would consume a
+	-- job the truck turned out to have no room for, and there is no way to put
+	-- one back - a slot is real time (or Robux) and must never be spent on a
+	-- load that did not happen. Neither call yields, so nothing can slip in
+	-- between them; the unload below is for the case where the pool disagreed
+	-- with the board this handler was reading, which should be impossible and
+	-- is cheap to be certain about.
+	if not takeContractFunction:Invoke(player, contractId) then
+		CargoManager.Unload(carModel)
 		return
 	end
 
@@ -331,7 +259,6 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	contract.Units = loaded
 	contract.Vehicle = carModel
 	activeContracts[player] = contract
-	offeredContracts[player] = nil
 
 	deliveryUpdateEvent:FireClient(player, { Active = contract })
 end)
@@ -342,7 +269,7 @@ end)
 
 local function completeDelivery(player, carModel, contract, space, grade)
 	local load = CargoManager.GetLoad(carModel)
-	local destination = destinations[contract.Stops[1]]
+	local destination = Destinations.Get(contract.Stops[1])
 
 	local value = CargoLoad.Value(load.Units, load.TypeId, load.Condition)
 
@@ -366,6 +293,11 @@ local function completeDelivery(player, carModel, contract, space, grade)
 	CargoManager.Unload(carModel)
 
 	local newBalance = awardMoneyFunction:Invoke(player, payout)
+	-- The lifetime counter every level in the game is derived from. Bumped
+	-- here, at the same moment the money lands, so the two can never disagree
+	-- about whether a delivery happened - and nil for a player who left between
+	-- parking and being paid, exactly like the balance above.
+	local progress = recordDeliveryFunction:Invoke(player)
 
 	deliveryUpdateEvent:FireClient(player, {
 		Active = nil,
@@ -380,6 +312,10 @@ local function completeDelivery(player, carModel, contract, space, grade)
 			-- nil if the player left between parking and being paid; the HUD
 			-- shows the payout either way, and the money simply did not land.
 			Balance = newBalance,
+			-- Lifetime deliveries, the level that follows from it, and whether
+			-- this delivery was the one that moved it. The HUD turns the last
+			-- into the level-up banner on the payout card.
+			Progress = progress,
 		},
 	})
 end
@@ -422,7 +358,7 @@ RunService.Heartbeat:Connect(function(delta)
 			continue
 		end
 
-		local destination = destinations[contract.Stops[1]]
+		local destination = Destinations.Get(contract.Stops[1])
 		if not destination then
 			continue
 		end

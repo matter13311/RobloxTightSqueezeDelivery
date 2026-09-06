@@ -228,6 +228,10 @@ Optional attributes on a space Part:
 | `ReplicatedStorage/Modules/Delivery/CargoLoad.luau` | Shared math: load → mass, handling penalty, cargo value |
 | `ReplicatedStorage/Modules/Delivery/DeliveryConfig.luau` | Tuning + the names everything looks for in Workspace |
 | `ReplicatedStorage/Modules/Delivery/ParkGrade.luau` | Shared: is the truck in the bay, and how well parked |
+| `ReplicatedStorage/Modules/Delivery/ProgressionConfig.luau` | Delivery milestones, the contract cap they unlock, refill timing, product ids |
+| `ServerScriptService/Modules/Destinations.luau` | The destination list, its spaces and its distance pricing |
+| `ServerScriptService/Modules/ContractPool.luau` | A player's persisted job board: generation, real-time refill, refresh |
+| `ServerScriptService/Monetization.server.luau` | `ProcessReceipt` — the game's only one. Today: the board refresh product |
 | `ServerScriptService/Modules/CargoManager.luau` | Authoritative load state; builds crates + ballast; turns validated impacts into ruined goods |
 | `ServerScriptService/DeliveryManager.server.luau` | Contracts, arrival detection, payout |
 | `StarterPlayer/StarterPlayerScripts/DeliveryHud.client.luau` | Contract board at the dock, running-job display, payout summary |
@@ -239,8 +243,9 @@ the depot's bay — the same test the server re-runs before it loads anything.
 
 ### The loop as built
 
-1. Drive into `Delivery.Depot.LoadingBay` and stop. The board opens with three
-   offers, each sized to your truck's current `CargoCapacity`.
+1. Drive into `Delivery.Depot.LoadingBay` and stop. The board opens with the
+   jobs currently in your pool, each sized to your truck's current
+   `CargoCapacity`. It is the SAME pool every time — see section 5.1.
 2. Accept one. The server re-checks you are in the bay, in your own truck, at
    rest, then loads the crates and the ballast.
 3. Drive to the named destination and park in one of its spaces.
@@ -251,12 +256,62 @@ Quoted pay is the **floor** — a pristine, nose-in delivery. Reversing in
 cleanly and arriving undamaged pays more. That direction matters: players are
 told a number that can only go up, rather than one they get docked from.
 
+### 5.1 The contract pool, delivery milestones, and the refresh product
+
+The board is not rolled on arrival. Each player carries a **pool** of contracts
+in their save (`ContractPool.luau`), and every visit to the dock shows that
+same pool. Driving out and back in changes nothing; neither does hopping to
+another server.
+
+The pool refills **one job at a time**, on a real-time clock
+(`ProgressionConfig.Contracts.RegenSeconds`, currently 10 minutes), up to a cap.
+Accrual stops at the cap, so a week away banks a full board and no more.
+Accepting a job — not completing it — is what takes it off the board.
+
+How big the board gets is gated on **lifetime deliveries**, and that count is
+the only progression number in the game. There is no EXP and no level: both were
+considered and both were the same fact under a second name, so every gate is
+stated and displayed in deliveries. Board sizes live in
+`ProgressionConfig.Contracts.CapMilestones`; vehicles carry their own figure as
+`VehicleCatalog`'s `RequiredDeliveries`.
+
+| Lifetime deliveries | Board holds |
+|---|---|
+| 0 | 3 jobs |
+| 20 | 4 jobs — also unlocks the Pickup Truck |
+| 75 | 5 jobs |
+| 200 | 6 jobs |
+| 450 | 7 jobs |
+
+Leaderstats are **Money** and **Deliveries**. Deliberately no third column: a
+level would have been the delivery count looked up in a table, so the player
+list would have carried the same fact twice.
+
+A **developer product** refills the board to the cap *and* re-rolls every job in
+it. Both halves matter — a refill alone does nothing for a player whose
+complaint is that the jobs they have are bad ones. The purchase is granted
+through `Monetization.server.luau`, which is and must remain the game's only
+`ProcessReceipt` callback, and the save is written through immediately: a
+consumed receipt Roblox will never re-present must never be able to buy nothing.
+
+What is persisted per contract is a **seed** — id, destination, cargo type, and
+how full a load it is as a *fraction* of capacity — never a finished card. Crate
+counts, quoted pay and weight bands are all derived at draw time against the
+truck the player is sitting in, so upgrading `CargoCapacity` still changes what
+the board offers, and re-tuning payouts re-prices every saved job with no
+migration.
+
 ### Money
 
 `PlotManager` still owns every player's balance. It exposes one
 `BindableFunction` named `AwardMoney` under `ServerScriptService` — server-only,
 so no client can see it — and `DeliveryManager` pays out through that. Nothing
 else may touch `data.Money`.
+
+The contract pool is reached the same way and for the same reason: it is part of
+the save, so `PlotManager` owns it and exposes `GetContractBoard`,
+`TakeContract`, `RecordDelivery` and `RefreshContracts` as server-only
+BindableFunctions. `DeliveryManager` and `Monetization` never see player data.
 
 ### How load reaches the physics
 
