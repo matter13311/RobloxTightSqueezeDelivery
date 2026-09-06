@@ -291,6 +291,7 @@ local function AddCar(carModel)
 			carModel:SetAttribute("NetHandbrake", false)
 			carModel:SetAttribute("NetThrottle", 0)
 			carModel:SetAttribute("NetRpm", 0)
+			carModel:SetAttribute("NetSteer", 0)
 		end
 	end)
 

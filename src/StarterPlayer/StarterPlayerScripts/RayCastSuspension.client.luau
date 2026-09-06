@@ -34,6 +34,13 @@ local exitVehicleRemote = ReplicatedStorage:WaitForChild("ExitVehicle")
 -- every single frame the whole time the pedal is moving.
 local NET_THROTTLE_EPSILON = 0.05
 local NET_RPM_EPSILON = 0.03
+-- Steering ramps continuously too (config.SteerSpeed), so it needs the same
+-- treatment. Sized against what it's actually FOR: a bystander measures tire
+-- slip in the wheel's own steered frame, and an error of e in steer shows up
+-- as a phantom sideways velocity of speed * sin(e * steerAngle) - at 0.05 of
+-- full lock that's around 1 stud/s at speed, well under the several studs/s
+-- TractionSlipThreshold wants to see before it calls a tire slipping.
+local NET_STEER_EPSILON = 0.05
 
 local HANDBRAKE_ACTION = "VehicleHandbrake"
 local EXIT_ACTION = "VehicleExit"
@@ -130,6 +137,7 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		or sent.Handbrake ~= mySession.Handbrake
 		or math.abs(sent.Throttle - mySession.DriveThrottle) >= NET_THROTTLE_EPSILON
 		or math.abs(sent.Rpm - mySession.DriveRpm) >= NET_RPM_EPSILON
+		or math.abs(sent.Steer - mySession.NetSteerValue) >= NET_STEER_EPSILON
 	if not changed then
 		return
 	end
@@ -140,6 +148,7 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 	sent.Handbrake = mySession.Handbrake
 	sent.Throttle = mySession.DriveThrottle
 	sent.Rpm = mySession.DriveRpm
+	sent.Steer = mySession.NetSteerValue
 
 	vehicleNetworkState:FireServer(
 		carModel,
@@ -148,7 +157,8 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		sent.Burnout,
 		sent.Handbrake,
 		sent.Throttle,
-		sent.Rpm
+		sent.Rpm,
+		sent.Steer
 	)
 end
 
@@ -436,6 +446,9 @@ local function beginDrive(humanoid, seatPart)
 		Braking = false,
 		Reversing = false,
 		ExitRequested = false,
+		-- Mirror of the physics state's smoothed steer, refreshed each drive
+		-- frame purely so the network payload can be assembled from one table.
+		NetSteerValue = 0,
 		-- Last state actually sent over the network - starts at sentinel
 		-- values so the very first frame always sends, even though 0/false
 		-- match Throttle/Handbrake's own initial values above.
@@ -446,6 +459,7 @@ local function beginDrive(humanoid, seatPart)
 			Handbrake = false,
 			Throttle = -math.huge,
 			Rpm = -math.huge,
+			Steer = -math.huge,
 		},
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
@@ -531,6 +545,11 @@ local function beginDrive(humanoid, seatPart)
 		-- still with no gas held - the same as a real reverse light.
 		mySession.Braking = drive.Brake > 0
 		mySession.Reversing = mySession.Gearbox.Selector == "R"
+		-- Last frame's smoothed steer (Step below is what advances it). One
+		-- frame stale is nothing next to the network trip it's about to take,
+		-- and reading it here keeps the whole network payload assembled in
+		-- one place.
+		mySession.NetSteerValue = state.SmoothSteer
 		sendNetworkStateIfChanged(mySession, carModel)
 
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
@@ -709,17 +728,20 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 
 			wheelRotationState[vehicle] = wheelRotationState[vehicle] or {}
 
-			-- Only the car THIS client is currently driving has a real smoothed
-			-- steer value (from the physics loop above) - other cars' front
-			-- wheels stay centered visually, since steering isn't replicated at
-			-- all. Throttle/handbrake/burnout/braking/reversing ARE replicated
-			-- for other cars (see VehicleNetworkState), just at lower fidelity
-			-- (see sendNetworkStateIfChanged) since they don't need to be
-			-- frame-perfect the way the driver's own steering feel does.
+			-- Steer, like throttle/handbrake/burnout/braking/reversing, is
+			-- replicated for other cars (see VehicleNetworkState) at lower
+			-- fidelity than the driver's own frame-perfect value (see
+			-- sendNetworkStateIfChanged). It has to be: tire slip is measured
+			-- in the wheel's OWN steered frame (see UpdateWheelVisuals), so a
+			-- bystander that assumed every other car's wheels were centred
+			-- measured a perfectly gripping steered tire as sliding sideways
+			-- at speed * sin(steer) and made an ordinary turn screech and
+			-- smoke - for everyone except the driver, who alone had the real
+			-- steer value and so alone saw the car behaving.
 			wheelSlipState[vehicle] = wheelSlipState[vehicle] or {}
 
 			local drivingState = drivingStates[vehicle]
-			local smoothSteer = drivingState and drivingState.SmoothSteer or 0
+			local smoothSteer = drivingState and drivingState.SmoothSteer
 			local throttle = 0
 			local handbrake = false
 			local burnout = false
@@ -752,6 +774,13 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				isBraking = vehicle:GetAttribute("NetBraking") or false
 				isReversing = vehicle:GetAttribute("NetReversing") or false
 				rpm = vehicle:GetAttribute("NetRpm") or 0
+			end
+			-- Not folded into the session branch above: this client only has
+			-- a live SmoothSteer for a car it is driving ITSELF, which is a
+			-- narrower thing than having a session for it - hence the
+			-- separate fallback to the replicated value.
+			if smoothSteer == nil then
+				smoothSteer = vehicle:GetAttribute("NetSteer") or 0
 			end
 
 			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, wheelRotationState[vehicle], {

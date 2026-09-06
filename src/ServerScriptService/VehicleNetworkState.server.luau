@@ -32,6 +32,19 @@ local function toThrottle(value)
 	return math.clamp(value, -1, 1)
 end
 
+-- Steer is the driving client's SMOOTHED steer (-1..1 of full lock), not the
+-- raw key axis - it's the exact number that client feeds its own wheel
+-- visuals, so a bystander reproducing it lands on the same wheel frame the
+-- driver does. That frame is what the tire-slip measurement is taken in, so
+-- without this a bystander measures a steered front wheel's "sideways"
+-- velocity in the chassis frame and reads an ordinary turn as a slide.
+local function toSteer(value)
+	if typeof(value) ~= "number" then
+		return 0
+	end
+	return math.clamp(value, -1, 1)
+end
+
 -- Rpm is Gearbox's 0-1 normalized value (see Gearbox.new's IdleRpm floor),
 -- never signed like throttle.
 local function toRpm(value)
@@ -41,7 +54,7 @@ local function toRpm(value)
 	return math.clamp(value, 0, 1)
 end
 
-remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm)
+remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm, steer)
 	if typeof(vehicle) ~= "Instance" or not vehicle:IsA("Model") or vehicle.Parent ~= workspace.Vehicles then
 		return
 	end
@@ -61,4 +74,5 @@ remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, i
 	vehicle:SetAttribute("NetHandbrake", toBoolean(isHandbrake))
 	vehicle:SetAttribute("NetThrottle", toThrottle(throttle))
 	vehicle:SetAttribute("NetRpm", toRpm(rpm))
+	vehicle:SetAttribute("NetSteer", toSteer(steer))
 end)
