@@ -77,14 +77,21 @@ local exitVehicleEvent = Instance.new("RemoteEvent")
 exitVehicleEvent.Name = "ExitVehicle"
 exitVehicleEvent.Parent = ReplicatedStorage
 
--- [carModel] = { CarModel, Seat, Busy }
+-- [carModel] = { CarModel, Seats = { [seatInstance] = { Seat, IsDriverSeat, Busy } } }
 local carsData = {}
 
 -- Authoritative ownership gate. The rule itself lives in VehicleOwnership so
 -- the client's "Enter" prompt can ask the same question and never offer a car
 -- that would be refused here - but this is the copy that decides, and it runs
 -- on a request the client cannot forge past.
-local function playerCanEnter(player, carModel)
+--
+-- Only gates the DriverSeat. Passenger seats are open to anyone - riding
+-- along doesn't grant control of the car, so ownership has nothing to protect
+-- there, and VehicleDoorPrompts.client.luau's own ShouldShow already agrees.
+local function playerCanEnter(player, carModel, seatData)
+	if not seatData.IsDriverSeat then
+		return true
+	end
 	return VehicleOwnership.CanEnter(player, carModel)
 end
 
@@ -118,11 +125,11 @@ local function fireDoorSound(player, at, action)
 	end
 end
 
-local function tryEnter(carData, exit, player)
-	if carData.Busy or carData.Seat.Occupant then
+local function tryEnter(carData, seatData, exit, player)
+	if seatData.Busy or seatData.Seat.Occupant then
 		return
 	end
-	if not playerCanEnter(player, carData.CarModel) then
+	if not playerCanEnter(player, carData.CarModel, seatData) then
 		return
 	end
 
@@ -132,7 +139,7 @@ local function tryEnter(carData, exit, player)
 		return -- already sitting somewhere (this car or another) - can't be entering a second one
 	end
 
-	carData.Busy = true
+	seatData.Busy = true
 
 	local ok, err = pcall(function()
 		fireDoorSound(player, exit, "Open")
@@ -149,7 +156,7 @@ local function tryEnter(carData, exit, player)
 		-- be facing when they pressed F. Landing them on the seat first leaves
 		-- the weld with essentially no error to resolve, so there is nothing
 		-- left to swing the car with.
-		local seatPivot = carData.Seat.CFrame * CFrame.new(0, SEAT_PIVOT_HEIGHT, 0)
+		local seatPivot = seatData.Seat.CFrame * CFrame.new(0, SEAT_PIVOT_HEIGHT, 0)
 		character:PivotTo(seatPivot)
 		local rootPart = character:FindFirstChild("HumanoidRootPart")
 		if rootPart then
@@ -159,39 +166,39 @@ local function tryEnter(carData, exit, player)
 			rootPart.AssemblyAngularVelocity = Vector3.zero
 		end
 
-		carData.Seat:Sit(humanoid)
-		carData.Busy = false -- committed - Seat.Occupant now guards re-entry on its own
+		seatData.Seat:Sit(humanoid)
+		seatData.Busy = false -- committed - Seat.Occupant now guards re-entry on its own
 
 		task.wait(DOOR_SOUND_GAP)
 		fireDoorSound(player, exit, "Close")
 	end)
 
 	-- Safety net: if the sequence above errored before reaching its own release
-	-- point, don't leave this car permanently unusable.
-	carData.Busy = false
+	-- point, don't leave this seat permanently unusable.
+	seatData.Busy = false
 	if not ok then
 		warn("VehicleDoors: enter sequence errored for " .. carData.CarModel:GetFullName() .. ": " .. tostring(err))
 	end
 end
 
-local function tryExit(carData, player)
-	if carData.Busy or not carData.Seat.Occupant then
+local function tryExit(carData, seatData, player)
+	if seatData.Busy or not seatData.Seat.Occupant then
 		return
 	end
-	local occupantCharacter = carData.Seat.Occupant.Parent
+	local occupantCharacter = seatData.Seat.Occupant.Parent
 	local occupantPlayer = Players:GetPlayerFromCharacter(occupantCharacter)
 	if occupantPlayer ~= player then
 		return
 	end
 
-	carData.Busy = true
+	seatData.Busy = true
 
 	local ok, err = pcall(function()
 		-- The seat's preferred exit if it's clear, otherwise the nearest other
 		-- one that is - see VehicleExits.ChooseExit. The same attachment is
 		-- used for the sound and sent to the client, so what you hear and where
 		-- you land always agree.
-		local chosenExit = VehicleExits.ChooseExit(carData.CarModel, carData.Seat, occupantCharacter)
+		local chosenExit = VehicleExits.ChooseExit(carData.CarModel, seatData.Seat, occupantCharacter)
 		fireDoorSound(player, chosenExit, "Open")
 
 		-- Go-ahead: the driving client does its own unseat + step-out (see
@@ -199,21 +206,21 @@ local function tryExit(carData, player)
 		if player.Parent then
 			exitVehicleEvent:FireClient(player, chosenExit)
 		end
-		carData.Busy = false -- released as soon as the client's been told to go
+		seatData.Busy = false -- released as soon as the client's been told to go
 
 		task.wait(EXIT_CLEAR_TIME)
 		fireDoorSound(player, chosenExit, "Close")
 	end)
 
-	carData.Busy = false
+	seatData.Busy = false
 	if not ok then
 		warn("VehicleDoors: exit sequence errored for " .. carData.CarModel:GetFullName() .. ": " .. tostring(err))
 	end
 end
 
 local function setupCar(carModel)
-	local seat = VehicleSeats.GetDriverSeat(carModel)
-	if not seat then
+	local driverSeat = VehicleSeats.GetDriverSeat(carModel)
+	if not driverSeat then
 		warn("VehicleDoors: " .. carModel:GetFullName() .. " has no DriverSeat - skipping")
 		return
 	end
@@ -226,13 +233,17 @@ local function setupCar(carModel)
 		return
 	end
 
-	-- Walking into the seat would otherwise sit the player instantly, bypassing
-	-- the prompt entirely - Seat:Sit(humanoid) (used by tryEnter above) still
-	-- works fine on a Disabled seat, so this only blocks the automatic
-	-- touch-to-sit path, not our own scripted one.
-	seat.Disabled = true
+	local seats = {}
+	for _, seat in VehicleSeats.GetAllSeats(carModel) do
+		-- Walking into the seat would otherwise sit the player instantly,
+		-- bypassing the prompt entirely - Seat:Sit(humanoid) (used by tryEnter
+		-- above) still works fine on a Disabled seat, so this only blocks the
+		-- automatic touch-to-sit path, not our own scripted one.
+		seat.Disabled = true
+		seats[seat] = { Seat = seat, IsDriverSeat = seat == driverSeat, Busy = false }
+	end
 
-	carsData[carModel] = { CarModel = carModel, Seat = seat, Busy = false }
+	carsData[carModel] = { CarModel = carModel, Seats = seats }
 end
 
 local function trySetupCar(carModel)
@@ -242,13 +253,18 @@ local function trySetupCar(carModel)
 	end
 end
 
--- The client-side prompt (see VehicleDoorPrompts.client.luau) only decides WHEN
--- to show its single "Enter" UI and fires this on F - which door that resolves
--- to is decided here, from the player's actual position, rather than trusted
--- from the client.
-enterVehicleEvent.OnServerEvent:Connect(function(player, carModel)
+-- The client-side prompts (see VehicleDoorPrompts.client.luau) only decide
+-- WHEN to show each seat's "Enter"/"Ride Along" UI and fire this with the seat
+-- they're attached to - which door that resolves to is decided here, from the
+-- player's actual position, rather than trusted from the client. The seat
+-- itself IS trusted only as far as "is this actually one of this car's seats"
+-- - a forged seat gets rejected by the carData.Seats lookup, and playerCanEnter
+-- (inside tryEnter) still re-checks ownership for the DriverSeat regardless of
+-- what the client claims.
+enterVehicleEvent.OnServerEvent:Connect(function(player, carModel, seat)
 	local carData = typeof(carModel) == "Instance" and carsData[carModel]
-	if not carData then
+	local seatData = carData and typeof(seat) == "Instance" and carData.Seats[seat]
+	if not seatData then
 		return
 	end
 
@@ -263,18 +279,20 @@ enterVehicleEvent.OnServerEvent:Connect(function(player, carModel)
 		return
 	end
 
-	tryEnter(carData, exit, player)
+	tryEnter(carData, seatData, exit, player)
 end)
 
 -- One shared remote for every car, so the handler has to work out which car
--- (if any) the requesting player is actually seated in rather than assuming.
+-- and seat (if any) the requesting player is actually seated in rather than
+-- assuming.
 exitVehicleEvent.OnServerEvent:Connect(function(player)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local seatPart = humanoid and humanoid.SeatPart
 	local carData = seatPart and carsData[seatPart.Parent]
-	if carData and carData.Seat == seatPart then
-		tryExit(carData, player)
+	local seatData = carData and carData.Seats[seatPart]
+	if seatData then
+		tryExit(carData, seatData, player)
 	end
 end)
 

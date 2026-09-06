@@ -38,7 +38,16 @@ end
 function VehicleSeats.GetPassengerSeats(carModel)
 	local seats = {}
 	for _, child in carModel:GetChildren() do
-		if child:IsA("VehicleSeat") and child.Name:match("^PassengerSeat%d+$") then
+		-- Seat, not VehicleSeat: passenger seats are plain Seat parts. A
+		-- passenger never drives, so there's no reason to carry VehicleSeat's
+		-- Throttle/Steer/Torque/MaxSpeed (which the built-in controls would
+		-- read WASD into, fighting the custom suspension controller) or its
+		-- HeadsUpDisplay property (the built-in speed/throttle GUI) - Seat
+		-- has neither, and everything else here only ever uses
+		-- Occupant/Sit()/Disabled/CFrame, which both classes share. Checked
+		-- explicitly rather than via a common base class - Seat and
+		-- VehicleSeat don't share an IsA()-visible abstract superclass.
+		if child:IsA("Seat") and child.Name:match("^PassengerSeat%d+$") then
 			table.insert(seats, child)
 		end
 	end
