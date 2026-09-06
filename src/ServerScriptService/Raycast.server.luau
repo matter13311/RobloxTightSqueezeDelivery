@@ -79,6 +79,27 @@ end
 -- how it was welded in Studio; whatever pose it was left in becomes its
 -- resting pose.
 --
+-- Any joint already on `part` is destroyed first, so it doesn't matter how it
+-- was welded in Studio (or, for a needle, how the earlier whole-folder
+-- WeldFolderToChassis pass just welded it) - whatever pose it was left in
+-- becomes its resting pose.
+local function SetUpAnimatableWeld(chassis, part, weldName)
+	for _, joint in part:GetJoints() do
+		joint:Destroy()
+	end
+
+	part.Anchored = false
+	part.CanCollide = false
+
+	local weld = Instance.new("Weld")
+	weld.Name = weldName
+	weld.Part0 = chassis
+	weld.Part1 = part
+	weld.C0 = chassis.CFrame:ToObjectSpace(part.CFrame)
+	weld:SetAttribute("BaseC0", weld.C0)
+	weld.Parent = part
+end
+
 -- The resting C0 is stored as an attribute rather than kept in a table here,
 -- because the client is what actually spins the wheel and it needs a
 -- neutral to rotate away from. Reading it back off the joint means the client
@@ -87,14 +108,6 @@ local function SetUpSteeringWheel(carModel, chassis)
 	local part = VehiclePhysics.GetSteeringWheelPart(carModel)
 	if not part then
 		return -- car has no steering wheel prop, which is fine
-	end
-
-	for _, joint in carModel:GetDescendants() do
-		if (joint:IsA("Weld") or joint:IsA("WeldConstraint") or joint:IsA("Motor6D"))
-			and (joint.Part0 == part or joint.Part1 == part)
-		then
-			joint:Destroy()
-		end
 	end
 
 	part.Anchored = false
@@ -118,13 +131,22 @@ local function SetUpSteeringWheel(carModel, chassis)
 		end
 	end
 
-	local weld = Instance.new("Weld")
-	weld.Name = "SteeringWheelWeld"
-	weld.Part0 = chassis
-	weld.Part1 = part
-	weld.C0 = chassis.CFrame:ToObjectSpace(part.CFrame)
-	weld:SetAttribute("BaseC0", weld.C0)
-	weld.Parent = part
+	SetUpAnimatableWeld(chassis, part, "SteeringWheelWeld")
+end
+
+-- SpeedNeedle and RPMNeedle (Dashboard.SpeedNeedle / Dashboard.RPMNeedle) spin
+-- the same way the steering wheel does - see SetUpAnimatableWeld. Anything
+-- the earlier "Dashboard" pass in WeldFolderToChassis just welded them with
+-- gets torn out and replaced here, same as the steering wheel's own
+-- Studio-authored weld does above. Blinker parts are deliberately left alone:
+-- they don't rotate, so the plain WeldConstraint from that pass is all they need.
+local function SetUpDashboardNeedles(carModel, chassis)
+	for _, name in { "SpeedNeedle", "RPMNeedle" } do
+		local part = VehiclePhysics.GetDashboardPart(carModel, name)
+		if part then
+			SetUpAnimatableWeld(chassis, part, name .. "Weld")
+		end
+	end
 end
 
 local function AddCar(carModel)
@@ -180,7 +202,12 @@ local function AddCar(carModel)
 	-- If a mirror ever drops straight to the floor on spawn, check the Enabled
 	-- property of its WeldConstraint before suspecting anything here: a disabled
 	-- one still shows up in the Explorer looking exactly like a working weld.
-	for _, folderName in { "Body", "Lights", "Engine", "Collision" } do
+	-- "Dashboard" is in this list too: it welds the blinker indicators (which
+	-- never move) rigidly, same as any other decoration. The gauge needles
+	-- get welded the same way here and then immediately re-rigged by
+	-- SetUpDashboardNeedles below with an animatable joint instead - simpler
+	-- than special-casing them out of this pass.
+	for _, folderName in { "Body", "Lights", "Engine", "Collision", "Dashboard" } do
 		local folder = carModel:FindFirstChild(folderName)
 		if folder then
 			VehiclePhysics.WeldFolderToChassis(folder, chassis)
@@ -188,6 +215,7 @@ local function AddCar(carModel)
 	end
 
 	SetUpSteeringWheel(carModel, chassis)
+	SetUpDashboardNeedles(carModel, chassis)
 
 	-- Parked by default: fully Anchored, so there is no physics running at
 	-- all (and nothing that can jitter) until someone actually drives it.

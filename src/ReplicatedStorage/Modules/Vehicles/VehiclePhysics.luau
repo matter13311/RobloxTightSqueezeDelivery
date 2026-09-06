@@ -88,6 +88,26 @@ local DEFAULTS = {
 	SteeringWheelAxis = "Auto",
 	SteeringWheelInvert = false, -- flip if the wheel spins the correct way round its column but in the wrong direction. Kept separate from the axis on purpose, so getting the direction wrong never means second-guessing the axis
 
+	-- Dashboard gauge needles (Dashboard.SpeedNeedle / Dashboard.RPMNeedle - see
+	-- GetDashboardPart). Each needle sweeps from Min to Max degrees as its
+	-- value goes from 0 to its own max (config.MaxSpeed for the speedometer,
+	-- always 0-1 for the tachometer since Rpm already is). 0 is the needle's
+	-- resting pose (whatever angle it was built at in Studio) - a positive
+	-- sweep is a clockwise reading when viewed from outside the Axis, which
+	-- matches a real gauge face reading left-to-right as the value climbs.
+	SpeedNeedleMinAngle = 0,
+	SpeedNeedleMaxAngle = 180,
+	RPMNeedleMinAngle = 0,
+	RPMNeedleMaxAngle = 180,
+	-- Same "Auto" convention as SteeringWheelAxis: a needle is long and skinny,
+	-- so the column it spins about is its THINNEST dimension, same as a
+	-- steering wheel's disc. Set an explicit Vector3 (in the PART'S OWN local
+	-- space) only if a needle's proportions make Auto guess wrong.
+	SpeedNeedleAxis = "Auto",
+	RPMNeedleAxis = "Auto",
+	SpeedNeedleInvert = false,
+	RPMNeedleInvert = false,
+
 	-- Traction loss. Used ONLY to drive the screech and smoke effects - none
 	-- of it feeds back into the physics, so tuning these can't change how the
 	-- car actually handles.
@@ -1214,6 +1234,38 @@ function VehiclePhysics.GetSteeringWheelPart(carModel)
 		return found.PrimaryPart
 	end
 	return found:FindFirstChild("SteeringWheel") or found:FindFirstChildWhichIsA("BasePart")
+end
+
+-- A named part under the car's Dashboard folder (SpeedNeedle, RPMNeedle,
+-- BlinkerLeft, BlinkerRight, ...), or nil if the car has no Dashboard folder
+-- or hasn't got that particular part. Every dashboard piece is optional -
+-- callers just skip whatever isn't there, the same contract as
+-- GetSteeringWheelPart.
+function VehiclePhysics.GetDashboardPart(carModel, name)
+	local dashboard = carModel:FindFirstChild("Dashboard")
+	local part = dashboard and dashboard:FindFirstChild(name)
+	return (part and part:IsA("BasePart")) and part or nil
+end
+
+-- Shared by every rotating dashboard prop (steering wheel, gauge needles):
+-- resolves an Axis config value - either an explicit Vector3 in the part's
+-- own local space, or "Auto", which picks the part's thinnest dimension.
+-- That heuristic is correct for anything shaped like a thin disc or a thin
+-- blade (a steering wheel, a gauge needle) - the axis it spins about is
+-- necessarily the one dimension that ISN'T wide, since a rotation about
+-- either wide axis would sweep the part edge-on through its own housing.
+function VehiclePhysics.AxisFromConfig(axisConfig, part)
+	if typeof(axisConfig) == "Vector3" then
+		return axisConfig
+	end
+
+	local size = part.Size
+	if size.X <= size.Y and size.X <= size.Z then
+		return Vector3.xAxis
+	elseif size.Y <= size.Z then
+		return Vector3.yAxis
+	end
+	return Vector3.zAxis
 end
 
 -- Surface speed a burnout's drive wheels are shown spinning at when the car

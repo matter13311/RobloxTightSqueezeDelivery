@@ -9,6 +9,7 @@ local VehicleDashboard = require(script.Parent.VehicleDashboard)
 local VehicleEffects = require(script.Parent.VehicleEffects)
 local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
+local VehicleDashboardGauges = require(script.Parent.VehicleDashboardGauges)
 local VehicleControls = require(script.Parent.VehicleControls)
 local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
 local VehicleZoom = require(script.Parent.VehicleZoom)
@@ -599,28 +600,8 @@ end
 -- weld and its untouched resting C0 are set up on the server (see
 -- Raycast.server.luau) - all that happens here is spinning about the part's
 -- own axis, so the prop keeps whatever position and tilt it was built with.
--- The axis the wheel spins about, in the part's own local space.
---
--- "Auto" reads it off the part's proportions: a steering wheel is a flat
--- disc, so the column runs through whichever dimension is thinnest. That is a
--- far more reliable answer than asking someone to name an axis by hand, where
--- it is very easy to read a colour off Studio's rotate handles while they are
--- in World mode and get an axis that has nothing to do with the part's own.
-local function steeringWheelAxis(part, config)
-	local axis = config.SteeringWheelAxis
-	if typeof(axis) == "Vector3" then
-		return axis
-	end
-
-	local size = part.Size
-	if size.X <= size.Y and size.X <= size.Z then
-		return Vector3.xAxis
-	elseif size.Y <= size.Z then
-		return Vector3.yAxis
-	end
-	return Vector3.zAxis
-end
-
+-- Axis resolution ("Auto" or an explicit Vector3) is shared with the
+-- dashboard gauge needles - see VehiclePhysics.AxisFromConfig.
 local function updateSteeringWheel(vehicle, config, smoothSteer)
 	local part = VehiclePhysics.GetSteeringWheelPart(vehicle)
 	if not part then
@@ -639,7 +620,7 @@ local function updateSteeringWheel(vehicle, config, smoothSteer)
 	-- was built with.
 	local direction = if config.SteeringWheelInvert then -1 else 1
 	local angle = math.rad(smoothSteer * config.SteeringWheelMaxAngle * direction)
-	weld.C0 = baseC0 * CFrame.fromAxisAngle(steeringWheelAxis(part, config), angle)
+	weld.C0 = baseC0 * CFrame.fromAxisAngle(VehiclePhysics.AxisFromConfig(config.SteeringWheelAxis, part), angle)
 end
 
 -- Cars can be removed at runtime; their smoke emitters and screech loop are
@@ -649,6 +630,7 @@ workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	VehicleEffects.Clear(vehicle)
 	ExhaustEffects.Clear(vehicle)
 	VehicleLights.Clear(vehicle)
+	VehicleDashboardGauges.Clear(vehicle)
 	wheelAttachmentsCache[vehicle] = nil
 	wheelRotationState[vehicle] = nil
 	wheelSlipState[vehicle] = nil
@@ -667,6 +649,8 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 		-- unconditionally rather than inside the Anchored check below.
 		VehicleLights.EnsureHeadlights(vehicle)
 		VehicleLights.EnsureTurnSignals(vehicle)
+		VehicleDashboardGauges.EnsureGauges(vehicle)
+		VehicleDashboardGauges.EnsureBlinkers(vehicle)
 
 		local attachments = getWheelAttachments(vehicle)
 		local chassis = attachments and vehicle.PrimaryPart
@@ -799,6 +783,10 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			VehiclePhysics.UpdateEngineSound(vehicle, config, rpm)
 			VehicleLights.Update(vehicle, isBraking, isReversing)
 			updateSteeringWheel(vehicle, config, smoothSteer)
+			-- Speed comes straight off the chassis' own replicated velocity
+			-- rather than the session/Net split above - see the module
+			-- comment in VehicleDashboardGauges for why that's fine.
+			VehicleDashboardGauges.UpdateGauges(vehicle, config, chassis.AssemblyLinearVelocity.Magnitude, rpm)
 		end
 	end
 end)
