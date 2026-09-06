@@ -78,6 +78,25 @@ for _, plotModel in plotChildren do
 	print(("  Terminal.Screen  : %s"):format(if screen then "OK" else "MISSING"))
 	print(("  CollisionBox     : %s"):format(if collisionBox then "OK" else "MISSING"))
 
+	-- The barrier each client builds is a solid copy of this box (see
+	-- PlotBarriers.client.luau), so the box's own dimensions decide whether a
+	-- claimed plot can be walked over, jumped into, or driven round. A box
+	-- that only covers the parking slab is exactly the "the wall doesn't
+	-- work" report, and it looks identical in Explorer to one that does.
+	if collisionBox and collisionBox:IsA("BasePart") then
+		print(("  box size         : %.1f x %.1f x %.1f (W x H x D)"):format(
+			collisionBox.Size.X,
+			collisionBox.Size.Y,
+			collisionBox.Size.Z
+		))
+		if collisionBox.Size.Y < 8 then
+			print("  WARN  box is under 8 studs tall - a player can jump over the barrier. Make it roof-height.")
+		end
+		if not collisionBox.Anchored then
+			print("  WARN  box is unanchored - PlotCollisionGuard anchors it at runtime, but fix it in Studio too")
+		end
+	end
+
 	if not screen then
 		print("  (client won't build a prompt for this plot at all without Terminal.Screen)")
 		continue
