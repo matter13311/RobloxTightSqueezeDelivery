@@ -69,11 +69,9 @@ local DEFAULTS = {
 	SteerReturnSpeed = 8, -- letting go re-centres faster than turning in does, the way a real car's castor pulls the wheel straight on its own
 
 	-- The steering wheel PROP in the cab (see GetSteeringWheelPart). Degrees
-	-- it rotates at full lock. Games usually use something tiny like 30, which
-	-- looks obviously fake; a real car is more like 450 (1.25 turns) each way.
-	-- 180 is the compromise: unmistakably a wheel being turned, without
-	-- spinning wildly in first person every time you tap A.
-	SteeringWheelMaxAngle = 180,
+	-- it rotates at full lock. 1080 (three full turns) matches a real car's
+	-- wheel travel lock-to-lock.
+	SteeringWheelMaxAngle = 360,
 	-- Which axis the wheel spins about. "Auto" works this out from the part
 	-- itself and is almost always right: a steering wheel is a flat disc, so
 	-- the column necessarily runs through its THINNEST dimension. There is

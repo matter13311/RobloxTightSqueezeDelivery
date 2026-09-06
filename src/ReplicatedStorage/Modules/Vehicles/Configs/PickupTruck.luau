@@ -217,7 +217,7 @@ return {
 	-- nothing else here changes it. Still shifting too eagerly? Halve Torque.
 	-- Too sluggish? Raise it. The standstill shove stays put either way as
 	-- long as you move StallTorqueMultiplier the opposite way.
-	Torque = 25,
+	Torque = 20,
 	-- Torque = 100,
 
 	-- studs/s in TOP gear, and the number every SpeedFraction below is
@@ -229,22 +229,22 @@ return {
 	-- MaxSpeed always crawls - the higher this is, the longer that crawl).
 	MaxSpeed = 100,
 
-	-- Steering feel. DEFAULTS' 5 reaches full lock in a fifth of a second,
-	-- which on a truck reads as the front axle snapping sideways. 2 takes
-	-- half a second to wind on full lock, so threading a gap becomes a
-	-- deliberate input rather than a twitch. Re-centring stays quicker than
-	-- turning in, which is what a real car's castor does on its own.
+	-- Steering feel. 1.3 winds on full lock in about 0.77 seconds - a bit
+	-- brisker than a dead-on 1 second, while still nowhere near DEFAULTS'
+	-- fifth-of-a-second snap, so the cab's steering wheel prop (which swings
+	-- past a full turn - see SteeringWheelMaxAngle below) doesn't whip
+	-- around unrealistically fast. Re-centring stays quicker than turning
+	-- in, which is what a real truck's castor does on its own.
 	--
 	-- This is separate from SteerAngle (how far the wheels actually point) -
 	-- turn this down for heavier steering, that one down for a wider circle.
-	SteerSpeed = 2,
-	SteerReturnSpeed = 3.5,
+	SteerSpeed = 1.3,
+	SteerReturnSpeed = 2,
 
-	-- Steering wheel prop in the cab. 180 degrees at full lock: clearly a
-	-- wheel being turned rather than the token 30-degree nudge most games
-	-- use, but nowhere near the ~450 a real truck does, which in first person
-	-- would have the wheel whirling every time a player taps A.
-	SteeringWheelMaxAngle = 180,
+	-- Steering wheel prop in the cab. 400 degrees at full lock: a bit past
+	-- a full turn, so the rim passes its starting orientation and ends up
+	-- 40 degrees around.
+	SteeringWheelMaxAngle = 400,
 	-- Auto-detected from the wheel part's own proportions - see DEFAULTS. If
 	-- the wheel ends up spinning the right way round its column but mirrored,
 	-- set SteeringWheelInvert = true rather than touching the axis.

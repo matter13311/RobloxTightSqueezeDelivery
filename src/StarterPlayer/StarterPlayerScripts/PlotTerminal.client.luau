@@ -981,7 +981,7 @@ local function setupPlotPrompts(plotModel)
 		-- Hold rather than instant-press: claiming can't be undone for the
 		-- rest of the server (see PlotManager.server.luau's header), so this
 		-- is a bit of a guard against a stray tap claiming the wrong plot.
-		HoldDuration = 1.5,
+		HoldDuration = 0.5,
 		ShouldShow = function()
 			return not PlotOwnership.IsClaimed(plotModel) and not localPlayerOwnsAnyPlot()
 		end,
