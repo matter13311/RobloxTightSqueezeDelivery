@@ -37,18 +37,9 @@ local BALLAST_NAME = "CargoBallast"
 -- Layout
 --=============================================================================
 
--- Crates are laid out in a fixed grid around the CargoBed attachment rather
--- than fitted to the bed's real dimensions, because an Attachment is a point
--- and knows nothing about the size of the bed it sits in. Two across and three
--- deep fills a pickup bed convincingly and stacks a second layer above it once
--- capacity goes past six.
---
--- If a vehicle ever needs a different shape (a box van, a flatbed), these
--- become per-car config keys. They are constants until a second body style
--- actually exists - guessing at that API now would be guessing.
-local CRATES_ACROSS = 2
-local ROWS_ALONG = 3
-local CRATE_GAP = 0.15 -- studs between crates, so a stack reads as separate boxes rather than one slab
+-- The crate grid itself lives in CargoLoad.Layout / CargoLoad.CrateOffset, so
+-- the contract board's preview stacks crates exactly the way this does. See
+-- the comment there.
 
 -- Whether crates are part of the truck's collision silhouette.
 --
@@ -110,22 +101,6 @@ local function getBedCFrame(carModel, chassis, config)
 	-- a pickup bed floor is on most models, and visibly wrong on the ones it
 	-- isn't, which is the point of the warning above.
 	return modelCFrame * CFrame.new(0, modelSize.Y * 0.15, modelSize.Z * 0.2)
-end
-
-local function crateOffset(index, crateSize)
-	local perLayer = CRATES_ACROSS * ROWS_ALONG
-	local col = index % CRATES_ACROSS
-	local row = math.floor(index / CRATES_ACROSS) % ROWS_ALONG
-	local layer = math.floor(index / perLayer)
-
-	-- Centred on the attachment across and along, but sitting ON it vertically
-	-- - the attachment marks the bed FLOOR, so the first layer's centre is half
-	-- a crate above it.
-	return Vector3.new(
-		(col - (CRATES_ACROSS - 1) / 2) * (crateSize.X + CRATE_GAP),
-		crateSize.Y / 2 + layer * (crateSize.Y + CRATE_GAP),
-		(row - (ROWS_ALONG - 1) / 2) * (crateSize.Z + CRATE_GAP)
-	)
 end
 
 --=============================================================================
@@ -278,7 +253,7 @@ function CargoManager.Load(carModel, typeId, units)
 
 	for index = 0, loadedUnits - 1 do
 		local crate = buildCrate(cargoType, chassis)
-		crate.CFrame = bedCFrame * CFrame.new(crateOffset(index, cargoType.CrateSize))
+		crate.CFrame = bedCFrame * CFrame.new(CargoLoad.CrateOffset(index, cargoType.CrateSize))
 		crate.Parent = folder
 		weldTo(crate, chassis)
 	end

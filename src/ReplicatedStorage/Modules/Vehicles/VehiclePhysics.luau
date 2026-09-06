@@ -198,7 +198,20 @@ local DEFAULTS = {
 	-- SpotLight headlight at full strength reads as blindingly bright up
 	-- close. Per-car tuning knob, not an upgrade - a beat-up van and a sports
 	-- car have no business sharing one brightness.
+	--
+	-- TailLightBrightness (an OPTIONAL_KEYS entry below, so it's nil unless a
+	-- car sets it) overrides just the tail/turn PointLights on top of this -
+	-- for when a cab is short enough that the shared headlight/taillight
+	-- number can't be pushed down without also dimming the headlights.
 	LightBrightness = 0.5,
+
+	-- Tail-light/turn-signal PointLight range multiplier, applied on top of
+	-- the base 12-stud Range each is built with in VehicleLights.luau. 1 is
+	-- that base range; per-car tuning knob for how far the glow reaches, not
+	-- how bright it looks up close - see LightBrightness for that. Does NOT
+	-- touch the headlight SpotLight's range, which is meant to throw light
+	-- well down the road.
+	LightRange = 1,
 
 	-- The horn (H). Unlike every other sound listed above, this one is NOT
 	-- created or played by the driving client - it is a Sound the SERVER puts
@@ -472,6 +485,7 @@ local OPTIONAL_KEYS = {
 	"RearLateralGripStrength",
 	"HighSpeedSteerAngle",
 	"SteerAngleFalloffSpeed",
+	"TailLightBrightness",
 }
 
 -- Non-numeric per-car-type overrides that don't belong in DEFAULTS (they're

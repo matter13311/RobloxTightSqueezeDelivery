@@ -184,15 +184,20 @@ local nextContractId = 0
 -- Offers are sized to the truck the player is actually sitting in, which is
 -- what makes CargoCapacity worth buying: a bigger bed does not merely let you
 -- carry more of the same job, it changes what the board is willing to offer.
-local function capacityOf(carModel)
+-- The truck's config, or an empty table if the player is not in one. Returned
+-- rather than just the capacity because the board also quotes each offer's
+-- weight, and weight is CargoMassFractionPerUnit - another config key. One
+-- lookup, two answers, and no chance of the two being read off different
+-- vehicles if the player swaps trucks mid-call.
+local function configOf(carModel)
 	local chassis = carModel and carModel.PrimaryPart
 	if not chassis then
-		return 0
+		return {}
 	end
-	return CargoLoad.Capacity(VehiclePhysics.GetConfig(chassis))
+	return VehiclePhysics.GetConfig(chassis)
 end
 
-local function makeContract(capacity)
+local function makeContract(config, capacity)
 	local destinationName = destinationOrder[math.random(#destinationOrder)]
 	local destination = destinations[destinationName]
 	local typeId = CargoTypes.Order[math.random(#CargoTypes.Order)]
@@ -218,6 +223,12 @@ local function makeContract(capacity)
 		Units = units,
 		QuotedValue = math.floor(baseValue * (1 + destination.DistanceBonus)),
 		Distance = destination.Distance,
+		-- How much this load adds to the truck, as a fraction of its empty
+		-- mass. Computed here rather than on the client because the client has
+		-- no business deciding what a vehicle's config says - and because an
+		-- offer is a fixed quote, so every number on the card should come from
+		-- the same snapshot of the truck.
+		MassFraction = CargoLoad.MassFraction(config, units, typeId),
 	}
 end
 
@@ -235,11 +246,12 @@ getContractsFunction.OnServerInvoke = function(player)
 	end
 
 	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
-	local capacity = capacityOf(carModel)
+	local config = configOf(carModel)
+	local capacity = CargoLoad.Capacity(config)
 
 	local offers = {}
 	for _ = 1, DeliveryConfig.Contracts.OfferCount do
-		table.insert(offers, makeContract(capacity))
+		table.insert(offers, makeContract(config, capacity))
 	end
 	offeredContracts[player] = offers
 

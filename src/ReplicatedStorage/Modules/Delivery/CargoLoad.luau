@@ -27,6 +27,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
+-- DeliveryConfig requires nothing itself, so this cannot cycle.
+local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 
 local CargoLoad = {}
 
@@ -92,6 +94,119 @@ function CargoLoad.AddedMass(config, emptyMass, units, typeId)
 	local cargoType = CargoTypes.GetOrDefault(typeId)
 	local perUnit = (config.CargoMassFractionPerUnit or 0) * cargoType.MassMultiplier
 	return math.max(0, emptyMass) * perUnit * CargoLoad.ClampUnits(config, units)
+end
+
+--=============================================================================
+-- Weight, as the player sees it
+--=============================================================================
+
+-- The mass a load adds, as a fraction of the truck's own empty mass.
+--
+-- The same quantity AddedMass multiplies emptyMass by, pulled out on its own
+-- because it is the vehicle-independent half: it needs no truck present, which
+-- is what lets the contract board describe a job's heft before the crates
+-- exist. Deliberately NOT clamped to capacity - the board quotes offers that
+-- are already sized to the bed, and clamping here would silently under-report
+-- a load if a caller ever passed an unclamped count.
+function CargoLoad.MassFraction(config, units, typeId)
+	local cargoType = CargoTypes.GetOrDefault(typeId)
+	local perUnit = (config.CargoMassFractionPerUnit or 0) * cargoType.MassMultiplier
+	return math.max(0, math.floor(units or 0)) * perUnit
+end
+
+-- A mass fraction turned into the two things a UI needs: a word and a 0-1 bar
+-- fill. Both come from here rather than from the HUD so that a second screen
+-- showing weight (a garage comparison, a van-buying preview) cannot band the
+-- same load differently.
+--
+-- Returns an Id alongside the label so a caller can pick its own colour
+-- without string-matching on display text.
+function CargoLoad.WeightBand(massFraction)
+	local weight = DeliveryConfig.Weight
+	local fraction = math.max(0, massFraction or 0)
+
+	local id, label
+	if fraction > weight.HeavyAbove then
+		id, label = "Heavy", "Heavy"
+	elseif fraction > weight.ModerateAbove then
+		id, label = "Moderate", "Moderate"
+	else
+		id, label = "Light", "Light"
+	end
+
+	return {
+		Id = id,
+		Label = label,
+		Fraction = fraction,
+		-- Pins at 1 rather than overflowing the bar; see BarFullAt.
+		Fill = math.clamp(fraction / math.max(weight.BarFullAt, 0.001), 0, 1),
+	}
+end
+
+--=============================================================================
+-- Crate layout
+--=============================================================================
+
+-- Crates are laid out in a fixed grid around the CargoBed attachment rather
+-- than fitted to the bed's real dimensions, because an Attachment is a point
+-- and knows nothing about the size of the bed it sits in. Two across and three
+-- deep fills a pickup bed convincingly and stacks a second layer above it once
+-- capacity goes past six.
+--
+-- If a vehicle ever needs a different shape (a box van, a flatbed), these
+-- become per-car config keys. They are constants until a second body style
+-- actually exists - guessing at that API now would be guessing.
+--
+-- Shared rather than living in CargoManager, for the usual reason in this
+-- codebase: the contract board draws a preview of the load in a ViewportFrame,
+-- and a preview that stacks its crates differently from the truck is a lie the
+-- player finds out about after they have already accepted the job.
+CargoLoad.Layout = {
+	Across = 2,
+	RowsAlong = 3,
+	Gap = 0.15, -- studs between crates, so a stack reads as separate boxes rather than one slab
+}
+
+-- Where the Nth crate (0-based) sits, relative to the middle of the bed FLOOR.
+function CargoLoad.CrateOffset(index, crateSize)
+	local layout = CargoLoad.Layout
+	local perLayer = layout.Across * layout.RowsAlong
+	local col = index % layout.Across
+	local row = math.floor(index / layout.Across) % layout.RowsAlong
+	local layer = math.floor(index / perLayer)
+
+	-- Centred on the bed across and along, but sitting ON it vertically - the
+	-- origin marks the bed FLOOR, so the first layer's centre is half a crate
+	-- above it.
+	return Vector3.new(
+		(col - (layout.Across - 1) / 2) * (crateSize.X + layout.Gap),
+		crateSize.Y / 2 + layer * (crateSize.Y + layout.Gap),
+		(row - (layout.RowsAlong - 1) / 2) * (crateSize.Z + layout.Gap)
+	)
+end
+
+-- The overall size of a stack of `units` crates. Only the board's preview
+-- needs this today - it is what lets the camera frame any crate count without
+-- a hand-tuned distance per cargo type - but it is derived from the same
+-- constants as CrateOffset, which is the point of it being here.
+function CargoLoad.StackSize(units, crateSize)
+	local layout = CargoLoad.Layout
+	local count = math.max(0, math.floor(units or 0))
+	if count == 0 then
+		return Vector3.zero
+	end
+
+	local perLayer = layout.Across * layout.RowsAlong
+	local inLayer = math.min(count, perLayer)
+	local cols = math.min(inLayer, layout.Across)
+	local rows = math.min(math.ceil(inLayer / layout.Across), layout.RowsAlong)
+	local layers = math.ceil(count / perLayer)
+
+	return Vector3.new(
+		cols * crateSize.X + (cols - 1) * layout.Gap,
+		layers * crateSize.Y + (layers - 1) * layout.Gap,
+		rows * crateSize.Z + (rows - 1) * layout.Gap
+	)
 end
 
 --=============================================================================

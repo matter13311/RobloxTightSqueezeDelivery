@@ -31,27 +31,51 @@ local ParkGrade = {}
 -- box grows upward with cargo aboard (crates are part of the model). Testing
 -- the vertical extent too would mean a tall load could not park anywhere,
 -- which is a rule nobody would guess from looking at the bay.
-local function boundingBoxFitsFootprint(carModel, spacePart)
+--
+-- Returns the SLACK in studs on the worst corner: how far the truck could move
+-- outward before it stopped fitting. Positive means parked, negative means
+-- that corner is hanging out by that much, and zero is exactly on the line.
+--
+-- A signed distance rather than a boolean because the depot's floor guide
+-- (DepotGuides.client.luau) shades from red to green on how close the player
+-- is to a legal park, and "how close" has to be the same measurement as "is
+-- it in" or the guide goes green a moment before or after the board opens -
+-- which is precisely the confusion the guide exists to prevent.
+local function footprintSlack(carModel, spacePart)
 	local boxCFrame, boxSize = carModel:GetBoundingBox()
-	local halfX, halfZ = spacePart.Size.X / 2, spacePart.Size.Z / 2
-	local tolerance = DeliveryConfig.Parking.ContainmentTolerance
+	local halfX = spacePart.Size.X / 2 + DeliveryConfig.Parking.ContainmentTolerance
+	local halfZ = spacePart.Size.Z / 2 + DeliveryConfig.Parking.ContainmentTolerance
 
 	-- All eight corners, transformed into the bay's own frame. Corners rather
 	-- than the centre point because a truck can sit with its middle nicely
 	-- inside a bay while half its length hangs out into the road, and that
 	-- should not count as parked.
+	local worst = math.huge
 	for _, x in { -0.5, 0.5 } do
 		for _, y in { -0.5, 0.5 } do
 			for _, z in { -0.5, 0.5 } do
 				local corner = (boxCFrame * CFrame.new(boxSize.X * x, boxSize.Y * y, boxSize.Z * z)).Position
 				local localPoint = spacePart.CFrame:PointToObjectSpace(corner)
-				if math.abs(localPoint.X) > halfX + tolerance or math.abs(localPoint.Z) > halfZ + tolerance then
-					return false
-				end
+				worst = math.min(worst, halfX - math.abs(localPoint.X), halfZ - math.abs(localPoint.Z))
 			end
 		end
 	end
-	return true
+	return worst
+end
+
+-- 0 when the truck is ApproachStuds or more outside the bay, rising to 1 the
+-- instant it is fully inside. 1 therefore means EXACTLY "Evaluate would say
+-- Inside", which is what makes it safe to drive a go/no-go colour from.
+function ParkGrade.Approach(carModel, spacePart)
+	if not carModel.PrimaryPart then
+		return 0
+	end
+	local slack = footprintSlack(carModel, spacePart)
+	if slack >= 0 then
+		return 1
+	end
+	local reach = math.max(DeliveryConfig.Guides.ApproachStuds, 0.001)
+	return math.clamp(1 + slack / reach, 0, 1)
 end
 
 -- `Inside` false means everything else in the result is meaningless - a truck
@@ -67,7 +91,7 @@ function ParkGrade.Evaluate(carModel, spacePart)
 		return { Inside = false }
 	end
 
-	if not boundingBoxFitsFootprint(carModel, spacePart) then
+	if footprintSlack(carModel, spacePart) < 0 then
 		return { Inside = false }
 	end
 

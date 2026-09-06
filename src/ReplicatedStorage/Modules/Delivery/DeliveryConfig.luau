@@ -85,6 +85,64 @@ DeliveryConfig.Payout = {
 }
 
 --=============================================================================
+-- Weight banding
+--=============================================================================
+
+-- How the board describes a load's heft. The number banded here is the mass
+-- the load ADDS as a fraction of the truck's own empty mass - so 0.5 means
+-- "half the truck again" - which is the one measure that means the same thing
+-- on every vehicle in the catalog. An absolute figure in mass units would
+-- read as "heavy" on the starter van and "light" on something twice its size,
+-- which is exactly backwards from how it would drive.
+--
+-- Banded rather than shown as a raw number because the player is choosing
+-- between three jobs in a moving truck, not reading a spec sheet.
+DeliveryConfig.Weight = {
+	-- Below ModerateAbove is Light, above HeavyAbove is Heavy, between is
+	-- Moderate. With the catalog's default CargoMassFractionPerUnit of 0.10
+	-- and a capacity of 4: a full load of Glassware lands at 0.36 (Moderate)
+	-- and a full load of Sand & Gravel at 0.84 (Heavy), which is the spread
+	-- these are set to separate.
+	ModerateAbove = 0.25,
+	HeavyAbove = 0.55,
+	-- What a completely full bar means. Above this the bar simply pins - the
+	-- difference between "doubles the truck" and "triples it" is not something
+	-- a 90-pixel bar can usefully show.
+	BarFullAt = 1,
+}
+
+--=============================================================================
+-- Depot guides (the floor glow and the sign)
+--=============================================================================
+
+-- Pure client-side feedback. None of this is read by the server - see
+-- DepotGuides.client.luau's header for why the colour is not replicated.
+DeliveryConfig.Guides = {
+	-- How far outside the space's footprint the truck can be and still get any
+	-- colour at all. The glow runs red at this distance and green the moment
+	-- the truck is fully inside, so the player can see the bay reacting to
+	-- them before they are anywhere near parked - which is the entire point of
+	-- it. Measured on the worst corner of the truck's bounding box.
+	ApproachStuds = 10,
+
+	-- How near the vehicle has to be before a space's guide appears at all,
+	-- measured from the vehicle to the space's centre. Separate from
+	-- ApproachStuds, and much larger, because the two answer different
+	-- questions: this one is "is this bay any of my business right now", and
+	-- ApproachStuds is "how close am I to being parked in it". Without this
+	-- gate every bay in the map glows red the moment you sit in a vehicle,
+	-- which turns the guide from a hint into wallpaper.
+	ShowWithinStuds = 75,
+	-- The guide fades in across this last stretch of ShowWithinStuds rather
+	-- than popping on at the boundary.
+	FadeBandStuds = 25,
+
+	-- The floor frame the guide draws, when a space has no outline of its own.
+	FrameThickness = 0.45,
+	FrameHeight = 0.08, -- how far above the space's own base the frame floats, so it does not z-fight a decal
+}
+
+--=============================================================================
 -- Contracts
 --=============================================================================
 

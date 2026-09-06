@@ -185,6 +185,15 @@ return {
 	-- re-bases the upgrade.
 	BodyStrength = 1,
 
+	-- Tail-light/turn-signal glow. DEFAULTS' Brightness (0.5, shared with the
+	-- headlights) and Range (1, i.e. the base 12 studs) are bright/far enough
+	-- to wash out the driver's cab from the rear brake lights on this car's
+	-- short chassis, so both are cut further here - TailLightBrightness
+	-- overrides just the rear/turn-signal PointLights, leaving the headlights
+	-- at the normal LightBrightness.
+	TailLightBrightness = 0.5,
+	LightRange = 0.5,
+
 	-- Horn (H). Server-played and audible to every player in the game, from
 	-- this car's position - see VehicleHorn.server.luau. Swap this id to give
 	-- this car its own horn; VehiclePhysics.Defaults has the shared fallback,

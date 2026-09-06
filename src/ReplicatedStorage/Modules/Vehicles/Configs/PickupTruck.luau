@@ -53,8 +53,8 @@ return {
 			Description = "How much punishment the bodywork takes before panels start falling off. Higher Body Strength means more scrapes and knocks before your car starts looking wrecked. It won't protect what's in the back, though - only careful driving does that.",
 		},
 		Torque = {
-			Max = 50,
-			Step = 5,
+			Max = 25,
+			Step = 2.5,
 			BaseCost = 150,
 			CostGrowth = 1.5,
 			Description = "How hard the engine pulls when you hit the gas. Higher Torque means quicker acceleration and an easier time powering up over kerbs and ramps.",
@@ -169,6 +169,15 @@ return {
 	-- re-bases the upgrade.
 	BodyStrength = 1,
 
+	-- Tail-light/turn-signal glow. DEFAULTS' Brightness (0.5, shared with the
+	-- headlights) and Range (1, i.e. the base 12 studs) are bright/far enough
+	-- to wash out the driver's cab from the rear brake lights on this truck's
+	-- short chassis, so both are cut further here - TailLightBrightness
+	-- overrides just the rear/turn-signal PointLights, leaving the headlights
+	-- at the normal LightBrightness.
+TailLightBrightness = 0.5,
+	LightRange = 0.5,
+
 	-- Horn (H). Server-played and audible to every player in the game, from
 	-- this car's position - see VehicleHorn.server.luau. Swap this id to give
 	-- this car its own horn; VehiclePhysics.Defaults has the shared fallback,
@@ -217,7 +226,7 @@ return {
 	-- nothing else here changes it. Still shifting too eagerly? Halve Torque.
 	-- Too sluggish? Raise it. The standstill shove stays put either way as
 	-- long as you move StallTorqueMultiplier the opposite way.
-	Torque = 20,
+	Torque = 10,
 	-- Torque = 100,
 
 	-- studs/s in TOP gear, and the number every SpeedFraction below is

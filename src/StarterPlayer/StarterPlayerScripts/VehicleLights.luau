@@ -40,6 +40,37 @@ local function lightBrightnessOf(vehicle)
 	return brightness
 end
 
+-- Tail/turn-signal-only override on top of lightBrightnessOf, for a car whose
+-- cab is close enough to the rear lights that the shared headlight/taillight
+-- number can't come down without also dimming the headlights (see
+-- VehiclePhysics.Defaults.LightBrightness). Falls back to lightBrightnessOf
+-- when unset, same as every other optional config key.
+local function tailLightBrightnessOf(vehicle)
+	local chassis = vehicle.PrimaryPart
+	if not chassis then
+		return 1
+	end
+	local brightness = VehiclePhysics.GetConfig(chassis).TailLightBrightness
+	if type(brightness) ~= "number" or brightness ~= brightness or brightness <= 0 then
+		return lightBrightnessOf(vehicle)
+	end
+	return brightness
+end
+
+-- Same defensive pattern as lightBrightnessOf, for the tail/turn-signal
+-- PointLights' Range (see VehiclePhysics.Defaults.LightRange).
+local function lightRangeOf(vehicle)
+	local chassis = vehicle.PrimaryPart
+	if not chassis then
+		return 1
+	end
+	local range = VehiclePhysics.GetConfig(chassis).LightRange
+	if type(range) ~= "number" or range ~= range or range <= 0 then
+		return 1
+	end
+	return range
+end
+
 -- ===== Brake / reverse =====
 
 local BRAKE_COLOR = Color3.fromRGB(255, 0, 0)
@@ -49,12 +80,12 @@ local BRAKE_PART_NAMES = { "BrakeLeft", "BrakeRight", "ReverseLeft", "ReverseRig
 
 local rigs = {} -- [vehicle] = { [partName] = { Part, Light, OffMaterial } }
 
-local function buildPointLight(part, color, name, brightnessMultiplier)
+local function buildPointLight(part, color, name, brightnessMultiplier, rangeMultiplier)
 	local light = Instance.new("PointLight")
 	light.Name = name
 	light.Color = color
 	light.Brightness = 2 * (brightnessMultiplier or 1)
-	light.Range = 12
+	light.Range = 12 * (rangeMultiplier or 1)
 	light.Enabled = false
 	light.Parent = part
 	return light
@@ -72,7 +103,8 @@ local function getRig(vehicle)
 		return nil -- car isn't fully set up yet; try again next frame
 	end
 
-	local brightness = lightBrightnessOf(vehicle)
+	local brightness = tailLightBrightnessOf(vehicle)
+	local range = lightRangeOf(vehicle)
 
 	rig = {}
 	for _, name in BRAKE_PART_NAMES do
@@ -83,7 +115,7 @@ local function getRig(vehicle)
 		local isReverse = name:find("Reverse") ~= nil
 		rig[name] = {
 			Part = part,
-			Light = buildPointLight(part, if isReverse then REVERSE_COLOR else BRAKE_COLOR, "TailLight", brightness),
+			Light = buildPointLight(part, if isReverse then REVERSE_COLOR else BRAKE_COLOR, "TailLight", brightness, range),
 			-- Whatever material the part was built with (Plastic, SmoothPlastic,
 			-- ...) - restored when the light turns back off, so the lit look
 			-- comes purely from switching to Neon plus the PointLight, without
@@ -312,7 +344,8 @@ local function getTurnSignalRig(vehicle)
 		return nil
 	end
 
-	local brightness = lightBrightnessOf(vehicle)
+	local brightness = tailLightBrightnessOf(vehicle)
+	local range = lightRangeOf(vehicle)
 
 	rig = { ActiveSide = nil, BlinkGeneration = 0 }
 	for _, side in TURN_SIGNAL_SIDES do
@@ -322,7 +355,7 @@ local function getTurnSignalRig(vehicle)
 		end
 		rig[side] = {
 			Part = part,
-			Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight", brightness),
+			Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight", brightness, range),
 			OffMaterial = part.Material,
 		}
 	end
