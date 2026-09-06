@@ -67,6 +67,17 @@ local WEIGHT_COLORS = {
 	Heavy = WARN_TEXT,
 }
 
+-- Tough / Sturdy / Delicate / Fragile, keyed by CargoTypes.CareBand's Id for
+-- exactly the same reason. Green is "you can drive this normally" and red is
+-- "one kerb and it is worthless", matching what the colours mean on the weight
+-- bar right next to it.
+local CARE_COLORS = {
+	Tough = ACCENT,
+	Sturdy = ACCENT,
+	Delicate = CAUTION,
+	Fragile = WARN_TEXT,
+}
+
 --=============================================================================
 -- Small builders
 --=============================================================================
@@ -116,7 +127,10 @@ screenGui.Parent = player:WaitForChild("PlayerGui")
 -- CoreGui leaves alone at every screen size - the leaderboard takes the right,
 -- chat the left - and it is still out of the windscreen.
 local jobFrame = Instance.new("Frame")
-jobFrame.Size = UDim2.fromOffset(260, 92)
+-- Wider than it was: the title spells out "Destination: <name>" rather than
+-- pointing an arrow at it, which is clearer at a glance in first person but
+-- costs about eighty pixels of the line.
+jobFrame.Size = UDim2.fromOffset(300, 92)
 jobFrame.AnchorPoint = Vector2.new(0.5, 0)
 jobFrame.Position = UDim2.new(0.5, 0, 0, 12)
 jobFrame.BackgroundColor3 = PANEL
@@ -130,6 +144,10 @@ stroke(jobFrame)
 local jobTitle = label(jobFrame, "", 15, BRIGHT_TEXT, true)
 jobTitle.Position = UDim2.fromOffset(12, 10)
 jobTitle.Size = UDim2.new(1, -24, 0, 18)
+-- Destination names are hand-authored in Studio, so one of them will eventually
+-- be longer than this panel. Truncating with an ellipsis keeps the panel the
+-- size it was designed to be; the waypoint caption carries the full name anyway.
+jobTitle.TextTruncate = Enum.TextTruncate.AtEnd
 
 local jobCargo = label(jobFrame, "", 13, DIM_TEXT)
 jobCargo.Position = UDim2.fromOffset(12, 32)
@@ -184,7 +202,7 @@ corner(closeButton, 6)
 -- is worse than no cap increase at all.
 local offerList = Instance.new("ScrollingFrame")
 offerList.Position = UDim2.fromOffset(20, 76)
-offerList.Size = UDim2.new(1, -40, 1, -140)
+offerList.Size = UDim2.new(1, -40, 1, -200)
 offerList.BackgroundTransparency = 1
 offerList.BorderSizePixel = 0
 offerList.ScrollBarThickness = 6
@@ -204,7 +222,7 @@ offerLayout.Parent = offerList
 -- is precisely the moment they are most likely to just close the game.
 local emptyNotice = Instance.new("TextLabel")
 emptyNotice.Position = UDim2.fromOffset(20, 76)
-emptyNotice.Size = UDim2.new(1, -40, 1, -140)
+emptyNotice.Size = UDim2.new(1, -40, 1, -200)
 emptyNotice.BackgroundTransparency = 1
 emptyNotice.Font = Enum.Font.Gotham
 emptyNotice.TextSize = 15
@@ -219,36 +237,84 @@ emptyNotice.Parent = board
 -- The board footer: what the pool is doing, and the button that skips it
 --=============================================================================
 
-local footer = Instance.new("Frame")
-footer.Position = UDim2.new(0, 20, 1, -56)
-footer.Size = UDim2.new(1, -40, 0, 36)
-footer.BackgroundTransparency = 1
-footer.Parent = board
+-- The progression line, above the timer panel. Deliberately the quietest thing
+-- down here: it is the long game, and the countdown below it is what the player
+-- is actually waiting on right now.
+local poolProgress = label(board, "", 12, DIM_TEXT)
+poolProgress.Position = UDim2.new(0, 20, 1, -116)
+poolProgress.Size = UDim2.new(1, -40, 0, 16)
 
--- Left half: "3 of 4 jobs - next in 7:12". The pool's whole state in one line,
--- because it is the line that explains why the board looks the way it does.
-local poolStatus = label(footer, "", 13, DIM_TEXT)
-poolStatus.Position = UDim2.fromOffset(0, 2)
-poolStatus.Size = UDim2.new(1, -180, 0, 16)
+-- THE COUNTDOWN, as a panel rather than as a clause in a sentence.
+--
+-- It started as thirteen-pixel grey text reading "3 of 4 jobs - next in 7:12",
+-- tucked under the cards, and it was invisible: the one number that explains
+-- why the board is short, why it is worth coming back, and what the refresh
+-- button is actually selling, styled like a footnote. A player who never
+-- registers the wait has no reason to care that it can be skipped.
+--
+-- So it gets its own card, its own colour and thirty-pixel digits, plus a bar
+-- that visibly creeps toward the next job. The bar is the part that makes it
+-- read as something IN PROGRESS rather than a static label - motion is what the
+-- eye catches, and it is also what makes a wait feel like a wait.
+local timerPanel = Instance.new("Frame")
+timerPanel.Position = UDim2.new(0, 20, 1, -96)
+timerPanel.Size = UDim2.new(1, -206, 0, 76)
+timerPanel.BackgroundColor3 = CARD
+timerPanel.BorderSizePixel = 0
+timerPanel.Parent = board
+corner(timerPanel, 8)
+stroke(timerPanel)
 
-local poolProgress = label(footer, "", 12, DIM_TEXT)
-poolProgress.Position = UDim2.fromOffset(0, 19)
-poolProgress.Size = UDim2.new(1, -180, 0, 15)
+local timerCaption = label(timerPanel, "", 11, DIM_TEXT, true)
+timerCaption.Position = UDim2.fromOffset(16, 11)
+timerCaption.Size = UDim2.new(1, -32, 0, 14)
 
--- Outlined rather than filled, and no price in the label: this is a
--- secondary action next to the job cards, not the thing the board wants the
--- player's eye to land on first.
+local timerValue = label(timerPanel, "", 30, CAUTION, true)
+timerValue.Position = UDim2.fromOffset(16, 26)
+timerValue.Size = UDim2.new(1, -32, 0, 34)
+
+-- There is deliberately no "3 OF 4 JOBS" readout up here. The cards are right
+-- above this panel and the player can count them; printing the number as well
+-- put a second thing to read into a panel whose whole job is to make ONE number
+-- unmissable. The cap still gets explained, on the progression line.
+
+local timerTrack = Instance.new("Frame")
+timerTrack.Position = UDim2.new(0, 16, 1, -14)
+timerTrack.Size = UDim2.new(1, -32, 0, 5)
+timerTrack.BackgroundColor3 = PANEL
+timerTrack.BorderSizePixel = 0
+timerTrack.Parent = timerPanel
+corner(timerTrack, 3)
+
+local timerFill = Instance.new("Frame")
+timerFill.Size = UDim2.fromScale(0, 1)
+timerFill.BackgroundColor3 = CAUTION
+timerFill.BorderSizePixel = 0
+timerFill.Parent = timerTrack
+corner(timerFill, 3)
+
+-- Bottom-right corner, small, and a real button.
+--
+-- It was a transparent rectangle with a hairline outline and dim grey text,
+-- which is the styling this UI uses for things that are NOT clickable - so it
+-- read as a caption that happened to have a border. A quiet fill plus brighter
+-- text is still clearly secondary against the accent-green job cards, while
+-- looking like something you press.
+--
+-- Its bottom edge lines up with the timer panel's, so the two sit as one row
+-- along the base of the board rather than as two floating elements.
 local refreshButton = Instance.new("TextButton")
-refreshButton.AnchorPoint = Vector2.new(1, 0)
-refreshButton.Position = UDim2.new(1, 0, 0, 0)
-refreshButton.Size = UDim2.fromOffset(170, 34)
-refreshButton.BackgroundTransparency = 1
+refreshButton.AnchorPoint = Vector2.new(1, 1)
+refreshButton.Position = UDim2.new(1, -20, 1, -20)
+refreshButton.Size = UDim2.fromOffset(150, 34)
+refreshButton.BackgroundColor3 = CARD
 refreshButton.BorderSizePixel = 0
+refreshButton.AutoButtonColor = true
 refreshButton.Font = Enum.Font.GothamBold
-refreshButton.TextSize = 14
-refreshButton.TextColor3 = DIM_TEXT
+refreshButton.TextSize = 13
+refreshButton.TextColor3 = BRIGHT_TEXT
 refreshButton.Text = ""
-refreshButton.Parent = footer
+refreshButton.Parent = board
 corner(refreshButton, 8)
 stroke(refreshButton, PANEL_EDGE)
 
@@ -264,7 +330,9 @@ summary.BorderSizePixel = 0
 summary.Visible = false
 summary.Parent = screenGui
 corner(summary, 10)
-stroke(summary, ACCENT)
+-- Kept, because this panel is reused for a cancelled contract as well as a
+-- completed one and the edge recolours to say which (see showCancelled).
+local summaryStroke = stroke(summary, ACCENT)
 
 local summaryTitle = label(summary, "", 20, ACCENT, true)
 summaryTitle.Position = UDim2.fromOffset(16, 12)
@@ -280,6 +348,9 @@ summaryBody.TextColor3 = BRIGHT_TEXT
 summaryBody.TextXAlignment = Enum.TextXAlignment.Left
 summaryBody.TextYAlignment = Enum.TextYAlignment.Top
 summaryBody.RichText = true
+-- The payout text breaks its own lines, but the cancellation notice is prose
+-- and has to wrap. Harmless for the payout, whose lines are all short.
+summaryBody.TextWrapped = true
 summaryBody.Text = ""
 summaryBody.Parent = summary
 
@@ -424,12 +495,36 @@ local function makeOfferCard(offer, index)
 	destinationLabel.Position = UDim2.fromOffset(TEXT_X, 10)
 	destinationLabel.Size = UDim2.new(1, TEXT_WIDTH, 0, 20)
 
+	-- "4 x Glassware - Fragile": the cargo and how carefully it has to be
+	-- driven, on ONE line, because both are facts about the goods.
+	--
+	-- The care word briefly lived on the weight row instead, after the weight
+	-- bar, and that was a mistake: a bar with a word on each side reads as a
+	-- scale running BETWEEN those two words, so the card appeared to be
+	-- measuring something on an axis from "Heavy" to "Tough". Putting care back
+	-- with the cargo leaves the bar with a single label on one side, which is
+	-- the only arrangement that reads as "this bar belongs to this word".
+	--
+	-- One RichText label rather than two positioned ones because the cargo name
+	-- varies in length, so where the care word starts is not knowable up front.
+	local careBand = CargoTypes.CareBand(cargoType.Fragility)
+	local careColor = CARE_COLORS[careBand.Id] or DIM_TEXT
+
 	local cargoLabel = label(
 		card,
-		string.format("%d x %s  -  fragility %.2f", offer.Units, cargoType.DisplayName, cargoType.Fragility),
+		string.format(
+			'%d x %s  -  <font color="rgb(%d,%d,%d)"><b>%s</b></font>',
+			offer.Units,
+			cargoType.DisplayName,
+			math.round(careColor.R * 255),
+			math.round(careColor.G * 255),
+			math.round(careColor.B * 255),
+			careBand.Label
+		),
 		13,
 		DIM_TEXT
 	)
+	cargoLabel.RichText = true
 	cargoLabel.Position = UDim2.fromOffset(TEXT_X, 32)
 	cargoLabel.Size = UDim2.new(1, TEXT_WIDTH, 0, 16)
 
@@ -466,15 +561,25 @@ local function makeOfferCard(offer, index)
 
 	-- Described as a minimum on purpose: the server quotes a pristine, nose-in
 	-- delivery, and reversing in cleanly pays more. Telling the player the
-	-- figure can only go up is what makes the parking bonus feel like a reward
+	-- figure can only go up is what makes careful parking feel like a reward
 	-- rather than the removal of a penalty.
 	local payLabel = label(card, string.format("$%d+", offer.QuotedValue), 22, ACCENT, true)
-	payLabel.Position = UDim2.new(1, -120, 0, 22)
+	-- Vertically centred in the card now that nothing sits under it.
+	payLabel.Position = UDim2.new(1, -120, 0, 34)
 	payLabel.Size = UDim2.fromOffset(106, 26)
 	payLabel.TextXAlignment = Enum.TextXAlignment.Right
 
-	local payNote = label(card, "before parking bonus", 11, DIM_TEXT)
-	payNote.Position = UDim2.new(1, -120, 0, 48)
+	-- Empty until the card is clicked. It used to carry a permanent caption -
+	-- "before parking bonus", then "park well for more" - and both spent a line
+	-- of every card explaining a trailing "+". The plus does that on its own,
+	-- and the payout summary shows the parking grade at the moment it actually
+	-- pays, which is where the lesson lands anyway.
+	--
+	-- The line still EXISTS because accepting a job needs somewhere to say
+	-- "loading..." and, if the server refuses, why. That is the one time the
+	-- card has something to tell the player, so that is the only time it speaks.
+	local payNote = label(card, "", 11, DIM_TEXT)
+	payNote.Position = UDim2.new(1, -120, 0, 62)
 	payNote.Size = UDim2.fromOffset(106, 14)
 	payNote.TextXAlignment = Enum.TextXAlignment.Right
 
@@ -524,20 +629,12 @@ local function formatDuration(seconds)
 	return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
 end
 
--- "4th", "5th". Only ever called on a contract cap, which
--- ProgressionConfig keeps in single digits - so this handles
--- the range that exists rather than pretending to be a general ordinal
--- formatter it would then have to get right for 11 through 13.
-local ORDINALS = { "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th" }
-
-local function ordinal(n)
-	return ORDINALS[n] or tostring(n) .. "th"
-end
-
 local function updateFooter()
 	local state = boardState
 	if not state then
-		poolStatus.Text = ""
+		timerCaption.Text = ""
+		timerValue.Text = ""
+		timerFill.Size = UDim2.fromScale(0, 1)
 		poolProgress.Text = ""
 		return
 	end
@@ -546,10 +643,39 @@ local function updateFooter()
 	local cap = state.Cap or count
 
 	if state.SecondsUntilNext then
-		local remaining = state.SecondsUntilNext - (os.clock() - boardStateAt)
-		poolStatus.Text = string.format("%d of %d jobs  -  next in %s", count, cap, formatDuration(remaining))
+		local remaining = math.max(0, state.SecondsUntilNext - (os.clock() - boardStateAt))
+		timerCaption.Text = "NEXT JOB IN"
+		timerValue.Text = formatDuration(remaining)
+		timerValue.TextSize = 30
+
+		-- Red once the board is actually empty, amber while there is still
+		-- something to drive. The distinction is the whole point of colouring it
+		-- at all: a countdown with three jobs sitting under it is information,
+		-- and the same countdown with nothing under it is the player being
+		-- stopped - which is precisely the moment the refresh is worth its price
+		-- and the moment they are most likely to close the game instead.
+		local urgent = count == 0
+		local tint = if urgent then WARN_TEXT else CAUTION
+		timerValue.TextColor3 = tint
+		timerFill.BackgroundColor3 = tint
+
+		-- Fills UP toward the next job rather than draining away from the last
+		-- one. A bar that empties reads as something being taken; this one is
+		-- something arriving, which is what it actually is.
+		local regen = ProgressionConfig.Contracts.RegenSeconds
+		timerFill.Size = UDim2.fromScale(math.clamp(1 - remaining / regen, 0, 1), 1)
 	else
-		poolStatus.Text = string.format("%d of %d jobs", count, cap)
+		-- "NO WAIT" over "BOARD FULL" was the first attempt and it asked two
+		-- questions of anyone new: no wait for what, and what board? Both were
+		-- shorthand for something the player has not been told yet. A plain
+		-- sentence answers itself, and there is room for one because the
+		-- countdown it replaces is only four characters wide.
+		timerCaption.Text = ""
+		timerValue.Text = string.format("All %d jobs ready", count)
+		timerValue.TextSize = 22
+		timerValue.TextColor3 = ACCENT
+		timerFill.BackgroundColor3 = ACCENT
+		timerFill.Size = UDim2.fromScale(1, 1)
 	end
 
 	-- Second line: how to make the board bigger. A player looking at a board
@@ -561,15 +687,18 @@ local function updateFooter()
 	local milestone = state.NextCapMilestone
 
 	if milestone then
+		-- "a 4th job" was ambiguous in the worst way - it reads as one more job
+		-- appearing now, rather than as the board's ceiling going up. Naming the
+		-- new ceiling says what actually changes.
 		poolProgress.Text = string.format(
-			"%s completed  -  %s more for a %s job",
+			"%s completed  -  %s more for %d maximum jobs",
 			ProgressionConfig.DeliveryCountText(deliveries),
 			ProgressionConfig.DeliveryCountText(math.max(0, milestone.Deliveries - deliveries)),
-			ordinal(milestone.Cap)
+			milestone.Cap
 		)
 	else
 		poolProgress.Text = string.format(
-			"%s completed  -  every job slot unlocked",
+			"%s completed  -  you have the maximum jobs",
 			ProgressionConfig.DeliveryCountText(deliveries)
 		)
 	end
@@ -780,7 +909,7 @@ local function refreshJobFrame()
 		condition = if type(value) == "number" then value else 1
 	end
 
-	jobTitle.Text = "-> " .. activeContract.Stops[1]
+	jobTitle.Text = "Destination: " .. activeContract.Stops[1]
 	jobCargo.Text = string.format("%d x %s", activeContract.Units, cargoType.DisplayName)
 	jobCondition.Text = string.format("Cargo condition  %d%%", math.floor(condition * 100 + 0.5))
 	-- Turns amber then red as goods get wrecked, so the cost of a scrape is
@@ -820,10 +949,14 @@ end
 local summaryToken = 0
 
 -- The line under the payout that says the delivery counted for something beyond
--- money. Unlocking a job slot is the loudest thing that can happen at a
+-- money. Raising the board's maximum is the loudest thing that can happen at a
 -- drop-off, so it takes the whole line; otherwise the line quietly counts down
 -- to the next one, which is what makes the ladder visible without needing a
 -- screen of its own.
+--
+-- Phrased as a MAXIMUM throughout, matching the board footer. "A 4th job slot"
+-- reads as one more job turning up now; "4 maximum jobs" is what actually
+-- changes.
 local function progressLine(progress)
 	if type(progress) ~= "table" then
 		return "" -- they left between parking and being paid; there is no count to show
@@ -831,7 +964,7 @@ local function progressLine(progress)
 	local deliveries = progress.Deliveries or 0
 
 	if progress.CapIncreased and progress.ContractCap then
-		return string.format("\n<b>Job slot unlocked - the board now holds %d</b>", progress.ContractCap)
+		return string.format("\n<b>Unlocked: %d maximum jobs</b>", progress.ContractCap)
 	end
 
 	local milestone = progress.NextCapMilestone
@@ -839,14 +972,19 @@ local function progressLine(progress)
 		return string.format("\n%s completed", ProgressionConfig.DeliveryCountText(deliveries))
 	end
 	return string.format(
-		"\n%s to a %s job slot",
+		"\n%s to %d maximum jobs",
 		ProgressionConfig.DeliveryCountText(math.max(0, milestone.Deliveries - deliveries)),
-		ordinal(milestone.Cap)
+		milestone.Cap
 	)
 end
 
 local function showSummary(completed)
 	local cargoType = CargoTypes.GetOrDefault(completed.TypeId)
+	-- Reset, because showCancelled below repaints both of these red and the two
+	-- share one panel. Set unconditionally rather than only after a cancellation
+	-- so there is no state to have got wrong.
+	summaryStroke.Color = ACCENT
+	summaryTitle.TextColor3 = ACCENT
 	summaryTitle.Text = string.format("Delivered  +$%d", completed.Payout)
 	summaryBody.Text = string.format(
 		"%d x %s to %s\nCondition on arrival: %d%%\nPark: %s  (x%.2f total)%s%s",
@@ -872,6 +1010,36 @@ local function showSummary(completed)
 	end)
 end
 
+-- The same panel, recoloured, for a job that ended without being delivered -
+-- which today means one thing: the truck carrying it was replaced or destroyed.
+--
+-- It gets a panel at all because the alternative is what used to happen, which
+-- was nothing. The job frame simply disappeared, identically to how it
+-- disappears on a successful delivery, and the player was left to work out on
+-- their own that a contract slot had gone. A slot costs ten minutes or a
+-- purchase, so its loss is worth a sentence.
+local function showCancelled(cancelled)
+	summaryStroke.Color = WARN_TEXT
+	summaryTitle.TextColor3 = WARN_TEXT
+	summaryTitle.Text = "Contract lost"
+	summaryBody.Text = string.format(
+		"The load bound for %s went with your old truck.\n\nCargo is welded into the vehicle carrying it, so "
+			.. "replacing that vehicle scraps the job.",
+		cancelled.Destination or "its destination"
+	)
+	summary.Visible = true
+
+	summaryToken += 1
+	local token = summaryToken
+	-- Longer than a payout's six seconds: this one has to actually be read, and
+	-- it arrives right as the player is walking away from the terminal.
+	task.delay(9, function()
+		if summaryToken == token then
+			summary.Visible = false
+		end
+	end)
+end
+
 deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 	if type(update) ~= "table" then
 		return
@@ -885,6 +1053,8 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 	setActiveContract(update.Active)
 	if update.Completed then
 		showSummary(update.Completed)
+	elseif update.Cancelled then
+		showCancelled(update.Cancelled)
 	end
 end)
 

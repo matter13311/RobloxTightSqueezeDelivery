@@ -18,8 +18,10 @@
 --
 -- The guide's green means EXACTLY "the board will open" - it is driven by
 -- ParkGrade.Approach, which returns 1 precisely when ParkGrade.Evaluate would
--- say Inside. That is the whole point: a player who cannot work out why the
--- job board is not appearing can watch the bay instead of guessing.
+-- say Inside, and green is a hard step at that value rather than the top of a
+-- gradient (see `ramp` for why that distinction is the entire feature). That is
+-- the whole point: a player who cannot work out why the job board is not
+-- appearing can watch the bay instead of guessing.
 --
 -- ONLY ONE PLACE IS EVER LIT, and only from a vehicle. On foot, nothing: a
 -- player walking past cannot park in anything, so a glowing bay is decoration
@@ -63,11 +65,26 @@ local IN = Color3.fromRGB(74, 214, 116) -- inside: the board will open
 local HAZARD_YELLOW = Color3.fromRGB(250, 204, 48)
 local HAZARD_DARK = Color3.fromRGB(28, 26, 22)
 
+-- GREEN IS A STEP, NOT THE END OF A GRADIENT. This is the whole reason the
+-- guide was lying.
+--
+-- ParkGrade.Approach has always returned 1 at exactly the moment Evaluate would
+-- say Inside, so the DATA was right. The old ramp then spread NEAR -> IN across
+-- the top half of it, which meant t = 0.9 - a truck still hanging a stud out of
+-- the bay, with the board refusing to open - painted a colour four fifths of the
+-- way to green. The eye cannot tell 80%-green from green, so the bay looked
+-- legal while the game disagreed, which is precisely the confusion this guide
+-- exists to prevent.
+--
+-- Now the whole approach is spent going red -> amber, and green appears only on
+-- the frame the park actually becomes legal. Amber therefore means "close, but
+-- the board will NOT open", and green means "it will" - a go/no-go signal with
+-- nothing in between to misread.
 local function ramp(t)
-	if t < 0.5 then
-		return FAR:Lerp(NEAR, t / 0.5)
+	if t >= 1 then
+		return IN
 	end
-	return NEAR:Lerp(IN, (t - 0.5) / 0.5)
+	return FAR:Lerp(NEAR, t)
 end
 
 --=============================================================================

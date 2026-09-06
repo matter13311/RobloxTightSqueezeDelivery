@@ -105,10 +105,18 @@ DeliveryConfig.Payout = {
 -- between three jobs in a moving truck, not reading a spec sheet.
 DeliveryConfig.Weight = {
 	-- Below ModerateAbove is Light, above HeavyAbove is Heavy, between is
-	-- Moderate. With the catalog's default CargoMassFractionPerUnit of 0.10
-	-- and a capacity of 4: a full load of Glassware lands at 0.36 (Moderate)
-	-- and a full load of Sand & Gravel at 0.84 (Heavy), which is the spread
-	-- these are set to separate.
+	-- Moderate. With the catalog's default CargoMassFractionPerUnit of 0.10 and
+	-- a capacity of 4, full loads of the four cargo types land at:
+	--
+	--     Parcels     0.40   Moderate
+	--     Produce     0.46   Moderate
+	--     Glassware   0.56   Heavy
+	--     Sand&Gravel 0.84   Heavy
+	--
+	-- which is the spread these thresholds are set to separate. Glassware only
+	-- moved into Heavy when its MassMultiplier was raised to make pay track
+	-- weight (see CargoTypes' pricing rule); it sits just over the line, which
+	-- is right for a load that is both awkward and breakable.
 	ModerateAbove = 0.25,
 	HeavyAbove = 0.55,
 	-- What a completely full bar means. Above this the bar simply pins - the

@@ -101,7 +101,31 @@ local activeContracts = {}
 -- [Player] = seconds the truck has been continuously stopped in a bay.
 local stoppedFor = {}
 
+-- The destination of the job this player is carrying, mirrored onto the Player
+-- as an Attribute so OTHER scripts can see it without this one having to know
+-- they exist. PlotTerminal.client.luau reads it to warn that respawning a truck
+-- bins the contract in its bed.
+--
+-- An Attribute rather than a remote: the terminal is a different script from
+-- the HUD, all it needs is whether a job exists, and an attribute is simply
+-- already there when the terminal opens instead of needing a round trip that
+-- would land after the panel had drawn. It replicates to every client, which is
+-- fine - a job's destination is not a secret, and the HUD already shows it.
+local ACTIVE_CONTRACT_ATTRIBUTE = "ActiveContractStop"
+
+-- The ONE writer of activeContracts, so the attribute can never be left saying
+-- a player is carrying something they are not. Every path that starts, finishes
+-- or cancels a job goes through here.
+local function setActiveContract(player, contract)
+	activeContracts[player] = contract
+	player:SetAttribute(ACTIVE_CONTRACT_ATTRIBUTE, contract and contract.Stops[1] or nil)
+end
+
 Players.PlayerRemoving:Connect(function(player)
+	-- Straight to the tables rather than through setActiveContract: the Player
+	-- is on its way out, so there is nothing left to mirror the attribute to,
+	-- and what matters here is that this script stops holding a reference to
+	-- them and to their truck.
 	activeContracts[player] = nil
 	stoppedFor[player] = nil
 end)
@@ -258,7 +282,7 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- never going to earn.
 	contract.Units = loaded
 	contract.Vehicle = carModel
-	activeContracts[player] = contract
+	setActiveContract(player, contract)
 
 	deliveryUpdateEvent:FireClient(player, { Active = contract })
 end)
@@ -288,7 +312,7 @@ local function completeDelivery(player, carModel, contract, space, grade)
 
 	local payout = math.floor(value * multiplier)
 
-	activeContracts[player] = nil
+	setActiveContract(player, nil)
 	stoppedFor[player] = nil
 	CargoManager.Unload(carModel)
 
@@ -340,13 +364,33 @@ RunService.Heartbeat:Connect(function(delta)
 
 	for player, contract in activeContracts do
 		local carModel = contract.Vehicle
-		-- Their truck was destroyed or despawned mid-run (they went back to
-		-- their plot and swapped vehicles, say). The contract goes with it -
-		-- the cargo no longer exists to deliver.
+		-- Their truck was destroyed or despawned mid-run - almost always because
+		-- they went back to their plot and pressed Spawn, which replaces
+		-- whatever was parked there (see PlotManager's despawnVehicle).
+		--
+		-- The contract goes with it, and that is the intended rule, not an
+		-- accident of cleanup: the crates were welded into THAT bed, the load's
+		-- condition is an attribute on THAT model, and there is no honest way to
+		-- pay out for goods that no longer exist. It costs the player a real
+		-- contract slot, which is why the terminal warns them before they press
+		-- the button rather than after.
+		--
+		-- Everything the job owned dies with the model: CargoManager keeps its
+		-- entire state (type, units, condition, ballast, crates) as Attributes
+		-- and children ON the car, so there is no table anywhere holding a
+		-- reference to a destroyed vehicle. The two lines below are the whole
+		-- cleanup.
 		if not carModel or not carModel.Parent or not carModel.PrimaryPart then
-			activeContracts[player] = nil
+			setActiveContract(player, nil)
 			stoppedFor[player] = nil
-			deliveryUpdateEvent:FireClient(player, { Active = nil })
+			-- Cancelled, not merely cleared. Both used to arrive as the same
+			-- bare { Active = nil }, so losing a job looked exactly like
+			-- finishing one - the panel just vanished, with nothing said about
+			-- a slot the player had spent ten minutes or 49 Robux on.
+			deliveryUpdateEvent:FireClient(player, {
+				Active = nil,
+				Cancelled = { Destination = contract.Stops[1] },
+			})
 			continue
 		end
 

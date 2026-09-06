@@ -47,6 +47,9 @@ local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
 local DIM_TEXT = Color3.fromRGB(120, 130, 148)
 local ACCENT = Color3.fromRGB(86, 200, 128)
 local LOCKED = Color3.fromRGB(48, 52, 62)
+-- Same amber DeliveryHud uses for a load that is at risk, so "this action costs
+-- you something" is one colour across both panels rather than two.
+local CAUTION = Color3.fromRGB(224, 178, 84)
 local STAMP_RED = Color3.fromRGB(214, 76, 76)
 
 --============================================================================
@@ -424,6 +427,54 @@ spawnButton.MouseButton1Click:Connect(function()
 	-- the player isn't stuck clicking X before they can actually go drive.
 	closeTerminal()
 end)
+
+-- SPAWNING REPLACES whatever is already parked here (PlotManager's
+-- despawnVehicle), and a truck carrying a contract takes the contract with it -
+-- the crates are welded into that bed and its condition is an attribute on that
+-- model, so there is nothing left to deliver. That is the intended rule, but it
+-- costs a contract slot, and a slot is ten minutes of waiting or a purchase.
+--
+-- So it gets said BEFORE the click rather than explained after it. Driven off
+-- the ActiveContractStop attribute DeliveryManager mirrors onto the Player: it
+-- is already there when the terminal opens, so the warning is on screen with
+-- the first frame instead of arriving a round trip later - which, for a warning
+-- about a button sitting right above it, would be too late to be a warning.
+local ACTIVE_CONTRACT_ATTRIBUTE = "ActiveContractStop"
+
+-- Beside the button rather than under it. Under it would mean either
+-- permanently reserving a strip of the upgrades list for a warning that is
+-- usually not there, or shifting the whole panel's layout whenever a job is
+-- picked up - and the carousel row already has 250px of empty space to the
+-- right of a 160px button.
+local contractWarning = Instance.new("TextLabel")
+contractWarning.Size = UDim2.fromOffset(240, 40)
+contractWarning.Position = UDim2.new(0.5, 88, 0, 157)
+contractWarning.BackgroundTransparency = 1
+contractWarning.Font = Enum.Font.GothamBold
+contractWarning.TextSize = 12
+contractWarning.TextColor3 = CAUTION
+contractWarning.TextXAlignment = Enum.TextXAlignment.Left
+contractWarning.TextYAlignment = Enum.TextYAlignment.Center
+contractWarning.TextWrapped = true
+contractWarning.Visible = false
+contractWarning.Text = ""
+contractWarning.Parent = carousel
+
+local function refreshContractWarning()
+	local stop = player:GetAttribute(ACTIVE_CONTRACT_ATTRIBUTE)
+	local carrying = type(stop) == "string" and stop ~= ""
+	contractWarning.Visible = carrying
+	if carrying then
+		contractWarning.Text = string.format("Spawning scraps your load for %s. The contract is lost.", stop)
+	end
+	-- The button turns amber while a job is at stake. The label alone is easy
+	-- to read past when the eye is already on the green button it is warning
+	-- about; recolouring the button is what makes the two read as one thing.
+	spawnButton.BackgroundColor3 = if carrying then CAUTION else ACCENT
+end
+
+player:GetAttributeChangedSignal(ACTIVE_CONTRACT_ATTRIBUTE):Connect(refreshContractWarning)
+refreshContractWarning()
 
 local upgradesScroll = Instance.new("ScrollingFrame")
 upgradesScroll.Size = UDim2.new(1, 0, 1, -198)
