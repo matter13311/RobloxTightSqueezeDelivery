@@ -94,12 +94,18 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
--- The running job, top-left. Deliberately small and always-on rather than a
+-- The running job, top-CENTRE. Deliberately small and always-on rather than a
 -- key-to-open panel: in first person, with mirrors to watch and a gap to
 -- thread, anything you have to stop and open is something you will not open.
+--
+-- Not top-left, where it started: Roblox's own chat and menu buttons live
+-- there and sit on top of it. Top-centre is the one horizontal band the
+-- CoreGui leaves alone at every screen size - the leaderboard takes the right,
+-- chat the left - and it is still out of the windscreen.
 local jobFrame = Instance.new("Frame")
 jobFrame.Size = UDim2.fromOffset(260, 92)
-jobFrame.Position = UDim2.fromOffset(16, 16)
+jobFrame.AnchorPoint = Vector2.new(0.5, 0)
+jobFrame.Position = UDim2.new(0.5, 0, 0, 12)
 jobFrame.BackgroundColor3 = PANEL
 jobFrame.BackgroundTransparency = 0.1
 jobFrame.BorderSizePixel = 0
@@ -783,6 +789,10 @@ end
 -- off screen. Enough to keep the whole caption on screen rather than half a
 -- word of it.
 local WAYPOINT_MARGIN = 86
+-- The top margin is deeper because the job panel now sits at top-centre, and
+-- the waypoint is only ever on screen while that panel is too - so they would
+-- otherwise collide every time the destination is straight ahead and above.
+local WAYPOINT_MARGIN_TOP = 128
 
 RunService.RenderStepped:Connect(function()
 	if not activeContract then
@@ -813,7 +823,7 @@ RunService.RenderStepped:Connect(function()
 	local y = if behind then viewport.Y - point.Y else point.Y
 
 	local clampedX = math.clamp(x, WAYPOINT_MARGIN, viewport.X - WAYPOINT_MARGIN)
-	local clampedY = math.clamp(y, WAYPOINT_MARGIN, viewport.Y - WAYPOINT_MARGIN)
+	local clampedY = math.clamp(y, WAYPOINT_MARGIN_TOP, viewport.Y - WAYPOINT_MARGIN)
 	local edge = behind or not onScreen or clampedX ~= x or clampedY ~= y
 
 	waypoint.Position = UDim2.fromOffset(clampedX, clampedY)

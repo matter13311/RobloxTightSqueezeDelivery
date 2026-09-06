@@ -80,11 +80,18 @@ function Dashboard.new(player)
 	gui.Parent = player:WaitForChild("PlayerGui")
 	self.Gui = gui
 
-	-- Compact corner HUD, tucked out of the way in the bottom-right rather
-	-- than sitting big and centered - the player's eyes should mostly be on
-	-- the road, not the dashboard.
-	local panel = newFrame(gui, "Panel", UDim2.new(1, -16, 1, -16), UDim2.fromOffset(196, 90))
-	panel.AnchorPoint = Vector2.new(1, 1)
+	-- Compact HUD along the bottom edge, small rather than sitting big and
+	-- centered - the player's eyes should mostly be on the road, not the
+	-- dashboard.
+	--
+	-- Bottom-CENTRE rather than bottom-right, where this started: the two
+	-- bottom corners are the busiest real estate on a Roblox screen. The right
+	-- carries the in-game money readout and the settings gear, and on a touch
+	-- device it is also the jump button; the left is the movement thumbstick.
+	-- The centre strip is the one part of the bottom edge nothing else claims,
+	-- and it happens to be where a real dashboard sits anyway.
+	local panel = newFrame(gui, "Panel", UDim2.new(0.5, 0, 1, -16), UDim2.fromOffset(196, 90))
+	panel.AnchorPoint = Vector2.new(0.5, 1)
 	panel.BackgroundTransparency = 0.08
 	corner(panel, 10)
 	stroke(panel, PANEL_EDGE)

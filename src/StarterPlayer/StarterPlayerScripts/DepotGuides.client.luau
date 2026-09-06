@@ -86,6 +86,12 @@ local function isSpace(instance)
 	return instance:IsA("BasePart") and instance.Name:sub(1, #world.SpacePrefix) == world.SpacePrefix
 end
 
+-- A prefix rather than an exact name, for the same reason SpacePrefix is one:
+-- a big destination can carry Sign1 over each door without a list anywhere.
+local function isSign(instance)
+	return instance:IsA("BasePart") and instance.Name:sub(1, #world.SignPrefix) == world.SignPrefix
+end
+
 --=============================================================================
 -- The sign
 --=============================================================================
@@ -202,6 +208,133 @@ local function buildSign(signPart)
 end
 
 --=============================================================================
+-- Destination signs
+--=============================================================================
+
+-- Every destination names itself. The board is drawn from the destination
+-- MODEL's name rather than from anything typed onto the sign part, so a place
+-- renamed in Studio renames its own sign - and the name on the sign is
+-- guaranteed to be the same string the contract board, the waypoint and the
+-- payout summary all use, because it is the same string.
+--
+-- Two states, because a destination sign has two jobs. Idle, it is a landmark:
+-- this is somewhere deliveries go, remember it for later. Lit, it is the
+-- answer to "am I there yet" for the one player carrying that contract - and
+-- since it is a SurfaceGui built on the client, one player seeing their
+-- destination lit up costs every other player nothing at all.
+local DEST_IDLE = Color3.fromRGB(120, 134, 158)
+local DEST_ACTIVE = Color3.fromRGB(74, 214, 116)
+
+local function buildDestinationSign(signPart, destinationName)
+	local existing = signPart:FindFirstChild("DestinationSignGui")
+	if existing then
+		existing:Destroy() -- rebuilt rather than reused, so a renamed model updates
+	end
+
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "DestinationSignGui"
+	gui.Face = signFace(signPart)
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 50
+	-- Readable at night, same reasoning as the depot sign.
+	gui.LightInfluence = 0
+	gui.Parent = signPart
+
+	local backdrop = Instance.new("Frame")
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
+	backdrop.BorderSizePixel = 0
+	backdrop.Parent = gui
+
+	-- A colour bar down the left edge rather than a full border: it reads as a
+	-- status light from a distance, where a thin outline just disappears.
+	local accentBar = Instance.new("Frame")
+	accentBar.Size = UDim2.new(0.035, 0, 1, 0)
+	accentBar.BackgroundColor3 = DEST_IDLE
+	accentBar.BorderSizePixel = 0
+	accentBar.Parent = backdrop
+
+	local kicker = Instance.new("TextLabel")
+	kicker.Position = UDim2.fromScale(0.09, 0.13)
+	kicker.Size = UDim2.fromScale(0.85, 0.16)
+	kicker.BackgroundTransparency = 1
+	kicker.Font = Enum.Font.GothamBold
+	kicker.TextScaled = true
+	kicker.TextXAlignment = Enum.TextXAlignment.Left
+	kicker.TextColor3 = DEST_IDLE
+	kicker.Text = "DELIVERY POINT"
+	kicker.Parent = backdrop
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Position = UDim2.fromScale(0.09, 0.31)
+	nameLabel.Size = UDim2.fromScale(0.85, 0.36)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Font = Enum.Font.LuckiestGuy
+	nameLabel.TextScaled = true
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextColor3 = Color3.fromRGB(236, 240, 247)
+	nameLabel.Text = destinationName
+	nameLabel.Parent = backdrop
+
+	local status = Instance.new("TextLabel")
+	status.Position = UDim2.fromScale(0.09, 0.71)
+	status.Size = UDim2.fromScale(0.85, 0.16)
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.GothamBold
+	status.TextScaled = true
+	status.TextXAlignment = Enum.TextXAlignment.Left
+	status.TextColor3 = DEST_IDLE
+	status.Text = "TAKE A JOB AT THE DEPOT"
+	status.Parent = backdrop
+
+	-- Built once and left paused. Creating a Tween per state change would leak
+	-- one every time the player took a contract.
+	local pulse = TweenService:Create(
+		accentBar,
+		TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ BackgroundTransparency = 0.65 }
+	)
+
+	return {
+		Name = destinationName,
+		AccentBar = accentBar,
+		Kicker = kicker,
+		Status = status,
+		Pulse = pulse,
+		Active = false,
+	}
+end
+
+local destinationSigns = {}
+
+local function setSignActive(sign, active)
+	if sign.Active == active then
+		return
+	end
+	sign.Active = active
+
+	local color = if active then DEST_ACTIVE else DEST_IDLE
+	sign.AccentBar.BackgroundColor3 = color
+	sign.Kicker.TextColor3 = color
+	sign.Status.TextColor3 = color
+	sign.Kicker.Text = if active then "YOUR DELIVERY" else "DELIVERY POINT"
+	sign.Status.Text = if active then "DROP OFF HERE - PARK IN THE BAY" else "TAKE A JOB AT THE DEPOT"
+
+	if active then
+		sign.Pulse:Play()
+	else
+		sign.Pulse:Cancel()
+		sign.AccentBar.BackgroundTransparency = 0
+	end
+end
+
+local function refreshDestinationSigns(activeName)
+	for _, sign in destinationSigns do
+		setSignActive(sign, sign.Name == activeName)
+	end
+end
+
+--=============================================================================
 -- The floor guide
 --=============================================================================
 
@@ -279,6 +412,23 @@ end
 -- a destination model called "Depot".
 local DEPOT_GROUP = "\0Depot"
 
+-- Which destination the player is carrying for, or nil.
+--
+-- Read straight off the same RemoteEvent DeliveryHud listens to rather than
+-- asked of the HUD: a RemoteEvent takes as many connections as you like, and
+-- routing it through the HUD would make the floor guide depend on a script
+-- that is otherwise only about the screen.
+local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
+local activeDestination = nil
+
+deliveryUpdateEvent.OnClientEvent:Connect(function(update)
+	if type(update) ~= "table" then
+		return
+	end
+	activeDestination = update.Active and update.Active.Stops[1] or nil
+	refreshDestinationSigns(activeDestination)
+end)
+
 local entries = nil
 
 local function build()
@@ -287,15 +437,12 @@ local function build()
 		return false
 	end
 
-	local sign = loadingBay:FindFirstChild("Sign")
-	if sign and sign:IsA("BasePart") then
-		buildSign(sign)
-	end
-
 	local built = {}
 	for _, descendant in loadingBay:GetDescendants() do
 		if isSpace(descendant) then
 			table.insert(built, buildFrame(descendant, DEPOT_GROUP))
+		elseif isSign(descendant) then
+			buildSign(descendant)
 		end
 	end
 
@@ -308,6 +455,10 @@ local function build()
 		for _, descendant in model:GetDescendants() do
 			if isSpace(descendant) then
 				table.insert(built, buildFrame(descendant, model.Name))
+			elseif isSign(descendant) then
+				-- The MODEL's name, not the sign part's - see the section
+				-- header. Warehouse1.Sign reads "Warehouse1".
+				table.insert(destinationSigns, buildDestinationSign(descendant, model.Name))
 			end
 		end
 	end
@@ -328,22 +479,11 @@ task.spawn(function()
 	while not build() do
 		task.wait(2)
 	end
-end)
-
--- Which destination the player is carrying for, or nil.
---
--- Read straight off the same RemoteEvent DeliveryHud listens to rather than
--- asked of the HUD: a RemoteEvent takes as many connections as you like, and
--- routing it through the HUD would make the floor guide depend on a script
--- that is otherwise only about the screen.
-local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
-local activeDestination = nil
-
-deliveryUpdateEvent.OnClientEvent:Connect(function(update)
-	if type(update) ~= "table" then
-		return
-	end
-	activeDestination = update.Active and update.Active.Stops[1] or nil
+	-- The depot geometry can finish appearing after a contract is already in
+	-- hand (a slow first load, or a builder dropping the folder in mid-session),
+	-- so the signs are brought into step once rather than waiting for the next
+	-- DeliveryUpdate - which, mid-contract, is the delivery itself.
+	refreshDestinationSigns(activeDestination)
 end)
 
 -- Target colour and visibility are recomputed on a slow tick (a lit space

@@ -22,6 +22,12 @@ DeliveryConfig.World = {
 	-- destination can have Space1/Space2/SpaceLoadingRamp without a list
 	-- anywhere.
 	SpacePrefix = "Space",
+	-- Any Part whose name starts with this, inside the loading bay or a
+	-- destination model, gets a sign board drawn on it. A prefix for the same
+	-- reason SpacePrefix is one: a big destination can carry Sign1 over each
+	-- door without a list anywhere. A destination's sign takes its text from
+	-- the MODEL's name, so it never has to be typed twice.
+	SignPrefix = "Sign",
 	-- Optional per-space attribute, so one awkward bay can be worth more than
 	-- the easy one next to it.
 	SpacePayoutAttribute = "PayoutMultiplier",
