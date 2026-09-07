@@ -31,8 +31,10 @@
 -- need. That is why there is no door rig module any more.
 
 local Players = game:GetService("Players")
+local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
 local VehicleExits = require(ReplicatedStorage.Modules.Vehicles.VehicleExits)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
@@ -64,6 +66,96 @@ local EXIT_CLEAR_TIME = 0.3
 -- has to be close enough that the seat weld has no meaningful error left to
 -- resolve; the weld itself decides the exact final position.
 local SEAT_PIVOT_HEIGHT = 2
+
+--=============================================================================
+-- Leaving a seat without colliding with the car you just got out of
+--=============================================================================
+--
+-- The scripted exit above (tryExit / performExit in RayCastSuspension) always
+-- lands the player at a clear Exit# attachment, well outside the car's own
+-- geometry, so it never actually needs this. But a passenger seat is a plain
+-- Seat, and Roblox's own character controller unseats a sitting Humanoid the
+-- instant Jump is pressed - with no attachment, no clearance check, and no
+-- say from this script at all. That drops the player wherever the seat
+-- happened to be, which is inside or hard against the car's hull, and the
+-- Vehicle and Attached collision groups both collide with a standing player
+-- (see VehicleCollisionSetup.server.luau) - so the frame the Humanoid
+-- controller lets go of the seat weld, the solver finds a body freshly
+-- overlapping the chassis and shoves the two apart, which reads as being
+-- flung out of the car and can shunt the car itself.
+--
+-- The seat weld's own no-collide only ever covered the seat-to-character
+-- pair while seated; it says nothing about the rest of the car, and it's
+-- gone the instant the weld is. So this is not redundant with anything
+-- Roblox already does - it is the piece Roblox's built-in seat-exit doesn't
+-- cover.
+--
+-- The fix: whenever ANY seat's Occupant clears - jump-exit or our own
+-- scripted one, no need to tell them apart - put that character in a
+-- collision group that can't touch the car for a short grace window, then
+-- put it back. Harmless for the scripted exit (they're already clear of the
+-- car by the time this would matter); it's the only thing standing between a
+-- jumping passenger and a shove.
+local EXIT_GRACE_GROUP = VehicleCollision.Groups.ExitGrace
+local EXIT_COLLISION_GRACE_TIME = 0.75 -- seconds; comfortably longer than the single frame performExit waits on, enough for a jump-exit to clear the hull on foot
+
+local function ensureGroup(name)
+	-- RegisterCollisionGroup throws if the group already exists - another
+	-- car's setup, or a hot-reload in Studio. Existing is the desired end
+	-- state either way; same pattern as VehicleCollisionSetup.server.luau and
+	-- RagdollUtility.
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(name)
+	end)
+end
+
+ensureGroup(EXIT_GRACE_GROUP)
+for _, group in { VehicleCollision.Groups.Vehicle, VehicleCollision.Groups.Attached, VehicleCollision.Groups.Cosmetic } do
+	-- May not exist yet - VehicleCollisionSetup is a separate script and the
+	-- two can run in either order, so these are registered here too rather
+	-- than assumed present.
+	ensureGroup(group)
+	PhysicsService:CollisionGroupSetCollidable(EXIT_GRACE_GROUP, group, false)
+end
+
+-- [character] = generation number, so a character that jumps out, gets back
+-- in, and jumps out again doesn't have an earlier grace period's timer put
+-- its collision back to Default out from under the newer one.
+local exitGraceGeneration = {}
+
+local function applyExitCollisionGrace(character)
+	if not character or not character.Parent then
+		return
+	end
+
+	local generation = (exitGraceGeneration[character] or 0) + 1
+	exitGraceGeneration[character] = generation
+
+	for _, part in character:GetDescendants() do
+		if part:IsA("BasePart") and part.CollisionGroup == "Default" then
+			part.CollisionGroup = EXIT_GRACE_GROUP
+		end
+	end
+
+	task.delay(EXIT_COLLISION_GRACE_TIME, function()
+		-- Only restore if nothing else has claimed this character's collision
+		-- group since - a later jump-exit's own grace period, or the
+		-- character having been ragdolled (RagdollUtility owns that group
+		-- while it applies and already restores to Default on its own).
+		if exitGraceGeneration[character] ~= generation then
+			return
+		end
+		exitGraceGeneration[character] = nil
+		if not character.Parent then
+			return
+		end
+		for _, part in character:GetDescendants() do
+			if part:IsA("BasePart") and part.CollisionGroup == EXIT_GRACE_GROUP then
+				part.CollisionGroup = "Default"
+			end
+		end
+	end)
+end
 
 local doorSoundEvent = Instance.new("RemoteEvent")
 doorSoundEvent.Name = "PlayDoorSound"
@@ -241,6 +333,21 @@ local function setupCar(carModel)
 		-- automatic touch-to-sit path, not our own scripted one.
 		seat.Disabled = true
 		seats[seat] = { Seat = seat, IsDriverSeat = seat == driverSeat, Busy = false }
+
+		-- Catches every way a seat empties out, not just our own tryExit -
+		-- most importantly, a passenger hitting Jump, which Roblox unseats on
+		-- its own without ever going through this script. See the collision
+		-- grace section above for why that needs handling at all.
+		local lastCharacter = nil
+		seat:GetPropertyChangedSignal("Occupant"):Connect(function()
+			local occupant = seat.Occupant
+			if occupant then
+				lastCharacter = occupant.Parent
+			elseif lastCharacter then
+				applyExitCollisionGrace(lastCharacter)
+				lastCharacter = nil
+			end
+		end)
 	end
 
 	carsData[carModel] = { CarModel = carModel, Seats = seats }

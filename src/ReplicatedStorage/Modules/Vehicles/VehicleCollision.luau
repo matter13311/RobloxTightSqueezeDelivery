@@ -83,6 +83,7 @@ VehicleCollision.Groups = {
 	Cosmetic = "VehicleCosmetic", -- body mesh parts once hulls exist: collide with nothing at all
 	Attached = "VehicleAttached", -- doors, mirrors, seats, frame, steering wheel, wheels: collide with the world, never with vehicle geometry
 	Debris = "VehicleDebris", -- knocked-off panels: bounce on the ground, never shove a car
+	ExitGrace = "VehicleExitGrace", -- a character in the instant after leaving a seat - see VehicleDoors.server.luau
 }
 
 --=============================================================================
