@@ -540,6 +540,13 @@ local function ownedIdsInCatalogOrder(data)
 	return ordered
 end
 
+local function formatStatName(statName)
+	-- Config keys are PascalCase (e.g. "BrakeFriction") so they double as
+	-- Lua identifiers; insert a space before each interior capital so the
+	-- displayed label reads as "Brake Friction" instead.
+	return (statName:gsub("(%l)(%u)", "%1 %2"))
+end
+
 local function formatStatValue(value)
 	-- Whole numbers read cleaner without a decimal (e.g. Torque "30" not
 	-- "30.0"), but a stat like SuspensionMaxLength genuinely needs one
@@ -569,15 +576,31 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 	padding.PaddingTop = UDim.new(0, 8)
 
 	local maxLevel = VehicleUpgrades.MaxLevel(spec)
+
+	-- Name + (i) button live in their own horizontal-list frame so the info
+	-- icon hugs the end of the name text (via AutomaticSize) instead of
+	-- sitting at a fixed offset from the buy button, far off to the right
+	-- where it's easy to miss.
+	local nameRow = Instance.new("Frame")
+	nameRow.Size = UDim2.new(0.6, 0, 0, 18)
+	nameRow.BackgroundTransparency = 1
+	nameRow.Parent = row
+	local nameRowLayout = Instance.new("UIListLayout")
+	nameRowLayout.FillDirection = Enum.FillDirection.Horizontal
+	nameRowLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	nameRowLayout.Padding = UDim.new(0, 6)
+	nameRowLayout.Parent = nameRow
+
 	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(0.6, 0, 0, 18)
+	nameLabel.AutomaticSize = Enum.AutomaticSize.X
+	nameLabel.Size = UDim2.new(0, 0, 1, 0)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.TextSize = 13
 	nameLabel.TextColor3 = if locked then DIM_TEXT else BRIGHT_TEXT
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-	nameLabel.Text = (if locked then "\u{1F512} " else "") .. statName .. "  -  " .. formatStatValue(currentValue)
-	nameLabel.Parent = row
+	nameLabel.Text = (if locked then "\u{1F512} " else "") .. formatStatName(statName) .. "  -  " .. formatStatValue(currentValue)
+	nameLabel.Parent = nameRow
 
 	local buyButton = Instance.new("TextButton")
 	buyButton.Size = UDim2.fromOffset(120, 22)
@@ -605,13 +628,11 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 	end)
 
 	-- (i) info button - opens showInfoModal with this stat's plain-language
-	-- Description from its Configs/<Name>.luau spec. Pinned a fixed offset to
-	-- the LEFT of buyButton (rather than right after nameLabel, whose actual
-	-- rendered width depends on AbsoluteSize) so the gap between them stays
-	-- consistent regardless of row width.
+	-- Description from its Configs/<Name>.luau spec. Lives in nameRow right
+	-- after nameLabel (whose AutomaticSize hugs the text) so it sits right
+	-- next to the upgrade name instead of far off near the buy button.
 	local infoButton = Instance.new("TextButton")
-	infoButton.Size = UDim2.fromOffset(22, 22)
-	infoButton.Position = UDim2.new(1, -150, 0, -2)
+	infoButton.Size = UDim2.fromOffset(18, 18)
 	infoButton.BackgroundColor3 = TAB_OFF
 	infoButton.BorderSizePixel = 0
 	infoButton.AutoButtonColor = false
@@ -619,7 +640,7 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 	infoButton.TextSize = 13
 	infoButton.TextColor3 = DIM_TEXT
 	infoButton.Text = "i"
-	infoButton.Parent = row
+	infoButton.Parent = nameRow
 	Instance.new("UICorner", infoButton).CornerRadius = UDim.new(1, 0)
 
 	infoButton.MouseEnter:Connect(function()
@@ -632,7 +653,7 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 	end)
 	infoButton.MouseButton1Click:Connect(function()
 		playClickSound()
-		showInfoModal(statName, spec.Description or "")
+		showInfoModal(formatStatName(statName), spec.Description or "")
 	end)
 
 	-- Track: a thin bar the knob rides along. Filled portion shows how far
@@ -704,7 +725,7 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 		local snappedFraction = (snapped - spec.Min) / (spec.Max - spec.Min)
 		valueFill.Size = UDim2.new(snappedFraction, 0, 1, 0)
 		knob.Position = UDim2.new(snappedFraction, 0, 0.5, 0)
-		nameLabel.Text = statName .. "  -  " .. formatStatValue(snapped)
+		nameLabel.Text = formatStatName(statName) .. "  -  " .. formatStatValue(snapped)
 		return snapped
 	end
 
@@ -782,14 +803,37 @@ local function renderGarageForVehicle(data, vehicleId)
 	end
 	local levels = data.UpgradeLevels[vehicleId] or {}
 	local configValues = data.CarConfigs[vehicleId] or {}
-	-- VehicleCatalog doesn't define a stat display order, so fall back to a
-	-- stable alphabetical one rather than Lua's unspecified table order,
-	-- which would otherwise reshuffle the list on every refresh.
+	-- VehicleCatalog doesn't define a stat display order, so rank by how
+	-- familiar/fun the stat is to a new player - MaxSpeed/Torque/BrakeFriction/
+	-- CargoCapacity are the ones everyone recognizes and gets excited about,
+	-- while the suspension/traction internals go last since they read as
+	-- jargon to most kids. Anything not listed here (future stats) falls back
+	-- to alphabetical after the ranked ones, so the list stays stable rather
+	-- than reshuffling on every refresh.
+	local STAT_ORDER_RANK = {
+		MaxSpeed = 1,
+		Torque = 2,
+		BrakeFriction = 3,
+		CargoCapacity = 4,
+		SteerAngle = 5,
+		BodyStrength = 6,
+		Stiffness = 7,
+		Damper = 8,
+		SuspensionMaxLength = 9,
+		TractionSlipThreshold = 10,
+	}
 	local statNames = {}
 	for statName in specs do
 		table.insert(statNames, statName)
 	end
-	table.sort(statNames)
+	table.sort(statNames, function(a, b)
+		local rankA = STAT_ORDER_RANK[a] or math.huge
+		local rankB = STAT_ORDER_RANK[b] or math.huge
+		if rankA ~= rankB then
+			return rankA < rankB
+		end
+		return a < b
+	end)
 
 	for _, statName in statNames do
 		local spec = specs[statName]

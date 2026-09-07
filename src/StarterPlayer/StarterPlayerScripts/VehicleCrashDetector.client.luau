@@ -20,6 +20,9 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
+local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
+-- Temporary; see the module header. Remove with the rest of the instrumentation.
+local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
 local VehicleCrashSounds = require(ReplicatedStorage.Modules.Vehicles.VehicleCrashSounds)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
@@ -122,6 +125,19 @@ end
 -- Impacts
 --=============================================================================
 
+-- Mirror of the server's entry-grace rule (see EntryDamageGrace in
+-- VehicleCollision, and validate in VehicleDamage.server.luau). The SERVER is
+-- the authority and rejects these reports regardless; this exists only so the
+-- client doesn't spend a round trip and a rate-limit slot on a report it
+-- already knows will be thrown away.
+--
+-- Timed off this session's own start rather than off the server's attribute:
+-- the two clocks aren't comparable, and the moment this client cares about is
+-- the moment IT started measuring - which is exactly when the session began.
+local function withinEntryGrace(mySession)
+	return (os.clock() - mySession.StartedAt) < VehicleCollision.EntryDamageGrace
+end
+
 local function onImpact(mySession, deltaV, velocity)
 	local chassis = mySession.Chassis
 	local carModel = mySession.CarModel
@@ -174,6 +190,21 @@ local function onImpact(mySession, deltaV, velocity)
 	local impulse = chassis.AssemblyMass * deltaV.Magnitude
 	local severityRange = VehicleCollision.ImpactSevereDeltaV - VehicleCollision.ImpactMinDeltaV
 	local severity = math.clamp((deltaV.Magnitude - VehicleCollision.ImpactMinDeltaV) / severityRange, 0, 1)
+
+	VehicleEntryDebug.Note(
+		"IMPACT deltaV=%.2f impulse=%.0f hit=%s%s",
+		deltaV.Magnitude,
+		impulse,
+		if hitPart then hitPart:GetFullName() else "<nothing>",
+		if withinEntryGrace(mySession) then "  [SUPPRESSED - entry grace]" else ""
+	)
+
+	-- The rebound kill above still runs during the grace window: that is
+	-- honest physics correction, not damage. Only the DAMAGE report and its
+	-- crunch are held back.
+	if withinEntryGrace(mySession) then
+		return
+	end
 
 	impactRemote:FireServer(carModel, hitPosition, impulse, hitPart)
 	playImpactSound(hitPosition, severity)
@@ -240,7 +271,10 @@ local function checkScrape(mySession, velocity, delta, now)
 	-- server rate-limits.
 	if now - mySession.LastScrapeReport >= VehicleCollision.ScrapeReportInterval then
 		mySession.LastScrapeReport = now
-		scrapeRemote:FireServer(mySession.CarModel, bestPosition, bestTangent)
+		VehicleEntryDebug.Note("SCRAPE tangent=%.1f%s", bestTangent, if withinEntryGrace(mySession) then "  [SUPPRESSED - entry grace]" else "")
+		if not withinEntryGrace(mySession) then
+			scrapeRemote:FireServer(mySession.CarModel, bestPosition, bestTangent)
+		end
 	end
 end
 
@@ -253,6 +287,10 @@ local function endSession()
 		return
 	end
 	stopScrapeEffect(session)
+	-- Nothing is draining this any more, so don't leave a stale reading (or a
+	-- reference to the car) behind for the next session to subtract.
+	VehiclePhysics.ClearSuspensionDeltaV(session.CarModel)
+	VehicleEntryDebug.Finish()
 	for _, connection in session.Connections do
 		connection:Disconnect()
 	end
@@ -272,11 +310,59 @@ local function step(mySession, delta)
 	local now = os.clock()
 	local velocity = chassis.AssemblyLinearVelocity
 
+	-- Same gate the suspension loop uses (see Raycast.server.luau): until the
+	-- server has handed this client network ownership, the velocity being
+	-- sampled here is a replicated echo the server is actively overwriting -
+	-- it jumps to whatever the server last sent, and the jump has nothing to
+	-- do with hitting anything. Keep the sample fresh so the first real frame
+	-- differences against the right value, but never judge these frames.
+	if mySession.CarModel:GetAttribute("DriveReady") == false then
+		VehicleEntryDebug.Frame(mySession.CarModel, {
+			Dt = delta,
+			DriveReady = false,
+			Mass = chassis.AssemblyMass,
+			RawDeltaV = velocity - mySession.LastVelocity,
+			GravityDeltaV = workspace.Gravity * delta,
+		})
+		mySession.LastVelocity = velocity
+		VehiclePhysics.TrackSuspensionDeltaV(mySession.CarModel)
+		return
+	end
+
 	-- Gravity's own contribution is subtracted before anything is called a
 	-- crash, or every landing after a kerb would read as one.
 	local gravityDeltaV = Vector3.new(0, -workspace.Gravity * delta, 0)
-	local deltaV = (velocity - mySession.LastVelocity) - gravityDeltaV
+	-- ...and so is the suspension's, for exactly the same reason. Gravity and
+	-- the ground holding the car up are a matched pair, and subtracting only
+	-- one of them left the other in the signal: a car sitting perfectly still
+	-- on flat road read a phantom deltaV of `gravity * delta` EVERY frame,
+	-- because that is precisely the impulse its springs were applying to
+	-- cancel the gravity above. Frame time is the whole problem - the phantom
+	-- is 3.3 studs/s at 60fps, 6.5 at 30 and 9.8 at 20, against an
+	-- ImpactMinDeltaV of 12 - so on a slow machine ordinary suspension
+	-- movement, and in particular the settle when a driver's mass first joins
+	-- the assembly, read as a crash and detached bodywork. That is the "the
+	-- car exploded the moment I got in" half of the low-frame-rate bug; the
+	-- other half is the integration itself, in VehiclePhysics.
+	--
+	-- Exact, not an allowance: this client is the one that applied those
+	-- impulses, so it knows what they were rather than having to guess a
+	-- bound. A real collision comes from the contact solver and is untouched
+	-- by this.
+	local suspensionDeltaV = VehiclePhysics.ConsumeSuspensionDeltaV(mySession.CarModel)
+	local rawDeltaV = velocity - mySession.LastVelocity
+	local deltaV = rawDeltaV - gravityDeltaV - suspensionDeltaV
 	mySession.LastVelocity = velocity
+
+	VehicleEntryDebug.Frame(mySession.CarModel, {
+		Dt = delta,
+		DriveReady = mySession.CarModel:GetAttribute("DriveReady"),
+		Mass = chassis.AssemblyMass,
+		RawDeltaV = rawDeltaV,
+		GravityDeltaV = gravityDeltaV.Magnitude,
+		SuspensionDeltaV = suspensionDeltaV,
+		JudgedDeltaV = deltaV.Magnitude,
+	})
 
 	for part, touchedAt in mySession.Contacts do
 		if now - touchedAt > CONTACT_TIMEOUT or part.Parent == nil then
@@ -302,6 +388,12 @@ local function beginSession(carModel)
 	end
 
 	endSession()
+	-- Opts this car in to suspension accounting, and zeroes it: anything left
+	-- unread belongs to a different frame and a different drive, and
+	-- subtracting it would remove movement that isn't in this session's first
+	-- velocity sample either.
+	VehiclePhysics.TrackSuspensionDeltaV(carModel)
+	VehicleEntryDebug.Begin(carModel)
 
 	local impactParams = RaycastParams.new()
 	impactParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -320,6 +412,7 @@ local function beginSession(carModel)
 	local mySession = {
 		CarModel = carModel,
 		Chassis = chassis,
+		StartedAt = os.clock(),
 		LastVelocity = chassis.AssemblyLinearVelocity,
 		LastImpact = 0,
 		LastScrapeReport = 0,

@@ -4,6 +4,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+-- Only for the entry damage-grace stamp on the seat path below; this script
+-- owns no other part of the collision system.
+local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
 
 local wheelsFolder = ReplicatedStorage.Wheels
 local defaultWheelModel = wheelsFolder.StarterVehicleWheel
@@ -34,6 +37,12 @@ local INITIAL_SETTLE_TIME = 5 -- seconds - how long the server runs real suspens
 -- the SERVER still owns the chassis - once ownership is the driver's, their
 -- client's physics state is authoritative and anything written here is
 -- overwritten by the next replication tick.
+-- Set on the car model while - and only while - the driving client both owns
+-- the chassis and is expected to be simulating it. Read by
+-- RayCastSuspension.client.luau and VehicleCrashDetector.client.luau, which
+-- both sit out every frame it is false. See the entry path below for why.
+local DRIVE_READY_ATTRIBUTE = "DriveReady"
+
 local SEAT_SETTLE_FRAMES = 3
 
 -- The same idea for getting OUT - see the Occupant handler's else branch. This
@@ -227,6 +236,7 @@ local function AddCar(carModel)
 	-- SettleThenAnchor (below) briefly takes over right after to calibrate
 	-- its actual resting pose before freezing it there for real.
 	chassis.Anchored = true
+	carModel:SetAttribute(DRIVE_READY_ATTRIBUTE, false)
 
 	driverSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
 		local occupant = driverSeat.Occupant
@@ -234,6 +244,30 @@ local function AddCar(carModel)
 			local player = Players:GetPlayerFromCharacter(occupant.Parent)
 			if player then
 				SetEngineSoundPlaying(carModel, true)
+
+				-- Cleared BEFORE the car is unanchored and set again only
+				-- once ownership has actually changed hands, so the driving
+				-- client knows exactly which frames are its to simulate.
+				-- Without it the client starts applying suspension impulses
+				-- the instant it sees itself seated, which is several frames
+				-- before it owns the chassis - so it spends the settle below
+				-- fighting a server that is re-writing the pose and zeroing
+				-- the velocity underneath it, and then inherits whatever
+				-- that argument left behind as its starting state. That is
+				-- the disturbance the low-frame-rate suspension bug was
+				-- being triggered BY; the stability work in VehiclePhysics
+				-- stops it exploding, and this stops it happening.
+				carModel:SetAttribute(DRIVE_READY_ATTRIBUTE, false)
+				-- Nothing that happens in the next second counts as a crash -
+				-- see EntryDamageGrace in VehicleCollision for why that is a
+				-- classification rule rather than a shield. Stamped here, at
+				-- the top of the entry path, so the window covers the settle
+				-- and the ownership handover as well as the first frames the
+				-- client simulates.
+				carModel:SetAttribute(
+					VehicleCollision.ENTRY_GRACE_ATTRIBUTE,
+					os.clock() + VehicleCollision.EntryDamageGrace
+				)
 
 				local pose = chassis.CFrame
 				chassis.Anchored = false
@@ -258,6 +292,8 @@ local function AddCar(carModel)
 					return
 				end
 				chassis:SetNetworkOwner(player)
+				-- Only now is the client's own simulation the real one.
+				carModel:SetAttribute(DRIVE_READY_ATTRIBUTE, true)
 			end
 		else
 			-- Freeze the pose the car was ACTUALLY in at the instant the
@@ -287,6 +323,8 @@ local function AddCar(carModel)
 			-- ownership back after SetNetworkOwner(player) on entry. Then
 			-- anchor, and re-assert the pose for a few frames to absorb any
 			-- client CFrame already in flight when ownership changed hands.
+			carModel:SetAttribute(DRIVE_READY_ATTRIBUTE, false)
+
 			local pose = chassis.CFrame
 			-- Throws if the assembly isn't simulated (already anchored, say),
 			-- and there's nothing useful to do about that - it means no client

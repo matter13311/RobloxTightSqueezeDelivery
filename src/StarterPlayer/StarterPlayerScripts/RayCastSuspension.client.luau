@@ -15,6 +15,8 @@ local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
 local VehicleZoom = require(script.Parent.VehicleZoom)
 local VehicleViewMode = require(script.Parent.VehicleViewMode)
 local VehicleThirdPersonShop = require(script.Parent.VehicleThirdPersonShop)
+-- Temporary instrumentation; see the module header. Remove with the rest of it.
+local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
 
 local player = Players.LocalPlayer
 
@@ -470,6 +472,9 @@ local function beginDrive(humanoid, seatPart)
 		Braking = false,
 		Reversing = false,
 		ExitRequested = false,
+		-- Set the first frame this client actually simulates the car; see the
+		-- handover note in the drive loop below.
+		TookOver = false,
 		-- Mirror of the physics state's smoothed steer, refreshed each drive
 		-- frame purely so the network payload can be assembled from one table.
 		NetSteerValue = 0,
@@ -523,6 +528,53 @@ local function beginDrive(humanoid, seatPart)
 		-- every session.X below would throw. Re-check before touching it.
 		if session ~= mySession then
 			break
+		end
+
+		-- The server hands network ownership over a few frames after the
+		-- seat is taken (see Raycast.server.luau), and until it has, this
+		-- client's impulses land on a body the server is still holding in
+		-- place - they achieve nothing except a fight whose result the
+		-- client then inherits as its opening state. Sit those frames out.
+		-- The attribute is absent on a car saved before this existed, so
+		-- treat a missing value as ready rather than never driving it.
+		if carModel:GetAttribute("DriveReady") == false then
+			continue
+		end
+
+		-- FIRST frame this client is both allowed and able to simulate.
+		--
+		-- Ownership arrives one frame before the suspension does, and in that
+		-- gap the chassis is a bare rigid body: unanchored, client-owned, and
+		-- with nothing holding it up. Roblox integrates a full frame of
+		-- gravity into it before this loop ever gets to push back. At 60fps
+		-- that is 3.3 studs/s and invisible. At 20fps it is 11.4 studs/s, and
+		-- a 20fps capture shows exactly what that does next: the springs
+		-- absorb the fall (bottoming out at 0.55 of 3 studs of travel), store
+		-- the energy, and throw the car straight back up - one enormous bounce
+		-- with a peak suspension impulse of 19.7 studs/s against an
+		-- ImpactMinDeltaV of 12. That bounce is the "car jumps around
+		-- violently on entry" symptom, and it is NOT an instability - it is a
+		-- correct spring response to a drop that should never have happened.
+		--
+		-- The car was parked and stationary a frame ago (parked cars are
+		-- Anchored), so any velocity it has right now is handover artifact and
+		-- nothing else. Dropping it is not cheating physics; it is declining
+		-- to inherit a frame of freefall that the player did not cause.
+		--
+		-- Deliberately only the first frame. A hitch LATER in a drive is a
+		-- real car really falling, and cancelling that would be wrong.
+		if not mySession.TookOver then
+			mySession.TookOver = true
+			VehicleEntryDebug.Note(
+				"TAKEOVER - discarding handover velocity %.2f studs/s (angular %.2f)",
+				chassis.AssemblyLinearVelocity.Magnitude,
+				chassis.AssemblyAngularVelocity.Magnitude
+			)
+			-- Booked as a deliberate change before it is made, or the crash
+			-- detector reads cancelling the drop as a crash in its own right.
+			VehiclePhysics.NoteNonCollisionDeltaV(carModel, -chassis.AssemblyLinearVelocity)
+			chassis.AssemblyLinearVelocity = Vector3.zero
+			chassis.AssemblyAngularVelocity = Vector3.zero
 		end
 
 		-- Raw key state, nothing more. What W and S actually DO is the

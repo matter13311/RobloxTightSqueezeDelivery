@@ -279,6 +279,34 @@ VehicleCollision.DetachedLifetime = 20 -- seconds before a knocked-off panel des
 -- validation, and those have opposite fixes.
 --
 -- Noisy by design. Turn it off once the numbers are tuned.
+-- Seconds after a driver sits down during which a car cannot be damaged at
+-- all - no impacts, no scrapes, nothing detaches.
+--
+-- This is a classification rule, not a shield. Getting into a parked car is
+-- not a crash: the player pressed E, the car was standing still, and there is
+-- no gameplay event in that moment that should cost anyone a body panel. But
+-- entry is also the single largest disturbance the physics ever sees - the
+-- driver's mass joins the assembly, the chassis leaves the anchored pose it
+-- was frozen in, and network ownership changes hands, all in the same handful
+-- of frames - and on a slow machine that machine is ALSO building the
+-- dashboard, the mirrors' ViewportFrames and the engine sounds on exactly
+-- those frames. Whatever the suspension does while all that lands, it is not
+-- something the player did to the car.
+--
+-- Enforced on the SERVER (see validate in VehicleDamage.server.luau), which is
+-- the authority; the driving client skips sending during the window too, but
+-- only to save the round trip and the rate-limit bucket.
+--
+-- Cost of being wrong: a player who stops, gets out and gets back in has a
+-- second of immunity. That is not a route to anything - you cannot drive while
+-- unseated - so it is not worth guarding against.
+VehicleCollision.EntryDamageGrace = 1.0
+
+-- Server-set on the car model: the value of os.clock() (server-local, and only
+-- ever read on the server) until which EntryDamageGrace applies. Written by
+-- Raycast.server.luau's Occupant handler.
+VehicleCollision.ENTRY_GRACE_ATTRIBUTE = "DamageGraceUntil"
+
 VehicleCollision.DebugLogging = true
 
 --=============================================================================

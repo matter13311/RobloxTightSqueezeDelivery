@@ -129,6 +129,15 @@ local function validate(player, carModel, position, magnitude)
 	if not isDriverOf(player, carModel) then
 		return false, "reporting player is not the driver of this car"
 	end
+	-- Just got in. See EntryDamageGrace in VehicleCollision: entry is not a
+	-- crash, and it is the one moment the physics is guaranteed to be
+	-- disturbed. Checked here rather than in either remote handler so impacts
+	-- and scrapes are covered by the same rule, and logged like every other
+	-- rejection so it is visible why a report went nowhere.
+	local graceUntil = carModel:GetAttribute(VehicleCollision.ENTRY_GRACE_ATTRIBUTE)
+	if type(graceUntil) == "number" and os.clock() < graceUntil then
+		return false, string.format("within the %.2fs entry grace (%.2fs left)", VehicleCollision.EntryDamageGrace, graceUntil - os.clock())
+	end
 	-- A crash has to have happened somewhere near the car that reported it.
 	local chassis = carModel.PrimaryPart
 	if chassis and (chassis.Position - position).Magnitude > 100 then

@@ -12,6 +12,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- no cycle. It is required here only for the handling penalty a load applies -
 -- see the two call sites in Step.
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
+-- Temporary instrumentation; see the module header. Remove with the rest of it.
+local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
 
 local VehiclePhysics = {}
 
@@ -28,6 +30,185 @@ local REST_VELOCITY_EPSILON = 0.1
 -- old per-frame behaviour exactly and every other frame rate now matches it
 -- instead of drifting - see the note in Step where frameScale is built.
 local SUSPENSION_REFERENCE_FPS = 60
+local REFERENCE_STEP = 1 / SUSPENSION_REFERENCE_FPS
+
+-- Everything below is about ONE failure: the suspension is a spring and a
+-- damper integrated EXPLICITLY (each frame's impulse is computed from the
+-- state at the start of that frame), and an explicit spring-damper is only
+-- stable while the step is short enough.
+--
+-- The loop is: this code turns spring compression and closing speed into a
+-- velocity change, and Roblox then turns velocity into a new compression by
+-- moving the car for a frame. Write `h` for the step the impulses are
+-- integrated over and `delta` for the frame Roblox integrates position over -
+-- normally the same number, and deliberately NOT the same number once the cap
+-- below engages - and the round-trip gains are
+--     a = springRate * h * delta / m       b = damperRate * h / m
+-- with the discrete system stable exactly while `a + 2b <= 4`. There is no
+-- soft edge: below it the car settles, above it every frame's correction is
+-- larger than the last and the car shakes itself apart.
+--
+-- frameScale (see Step) made the STEADY STATE frame-rate independent - ride
+-- height no longer sags on a slow machine - but it left the per-frame GAINS
+-- growing linearly with frame time, so `a + 2b` grows with it too. Measured
+-- on the StarterVehicle's roll mode, which is the mode that goes first:
+--     144fps  0.6     60fps  1.5     30fps  3.2     20fps  5.1  <- diverges
+-- 30fps is under the bound but ringing hard, which is why a car entered at
+-- 30fps threw its panels off on the entry transient and then drove normally
+-- once the ringing decayed, while at 20fps the truck came apart outright.
+--
+-- The fix is to cap the step the two stiff terms are integrated with at the
+-- largest one that still satisfies the criterion (SolveStableStep below), and
+-- to pay for the shortfall with a term that has no stability limit at all -
+-- see the weight-support split in Step. Above that frame rate NOTHING here
+-- engages and the math is identical to what it was, term for term.
+
+-- How much of the `a + 2b <= 4` budget to actually spend.
+--
+-- 4 is where the car destroys itself; it is NOT where the car behaves. The
+-- number that decides behaviour is b on its own, because b is how much of the
+-- closing speed one frame's damping takes out:
+--     b < 1   under-corrects, settles smoothly
+--     b = 1   deadbeat - exactly cancelled
+--     b > 1   OVERSHOOTS: the correction reverses the motion, and the car
+--             alternates up-down-up-down at one bounce per frame
+--
+-- Chosen from a 20fps capture, not from theory. At 3.0 (the first value here)
+-- the StarterVehicle sat exactly on the cap with b = 1.18, and the recording
+-- shows precisely the predicted overshoot: chassis velocity alternating
+-- +2/-2 studs/s every single frame, forever, with the springs breathing a
+-- tenth of a stud. Stable - it never diverged - but permanently ringing.
+--
+-- That ringing was not just cosmetic. It swung the suspension's own impulse
+-- between 8 and 12.7 studs/s of velocity change per frame, and
+-- ImpactMinDeltaV is 12: the peaks were the crash the car kept reporting on
+-- itself. Damping properly is what puts real margin under that threshold
+-- rather than relying on the subtraction in VehicleCrashDetector being
+-- perfectly in phase.
+--
+-- 2.0 holds b under 1 at every frame rate below 60 for both cars, stock and
+-- fully upgraded, so the response settles instead of ringing. It is also high
+-- enough that the cap stays dormant at 60fps for every current config except
+-- a fully-upgraded StarterVehicle, whose scale steps by 21% crossing 60fps -
+-- and that config is the one already overshooting at its own tuned frame rate
+-- (b = 1.14 at 60fps), so it is the one that least deserves protecting.
+--
+-- Lowering this further is safe for stability but makes the suspension
+-- progressively softer and slower to return to ride height on slow machines;
+-- 1.6 was tried and widens that 60fps step to 37% for no settling benefit.
+local SUSPENSION_STABILITY_BUDGET = 2.0
+
+-- The effective mass of one corner for the ROLL mode, as a fraction of that
+-- corner's share of the car's mass. An impulse at a strut mount is off-centre
+-- so the body answers mostly by ROTATING, and the mass that resists that is
+-- several times smaller than the mass that resists the whole car moving down.
+-- Roll is therefore what destabilises first, and it is what this fraction has
+-- to describe.
+--
+-- 0.25 is measured, not derived: on the StarterVehicle the roll effective mass
+-- at a strut is about 7.5 against a per-corner heave mass of 30.6. It cannot
+-- be computed from mass and bounding box (a chassis carries its mass near the
+-- centreline, so its real roll inertia is roughly a third of a uniform box's -
+-- see the Damper note in DEFAULTS), so a new chassis shaped very differently
+-- from these two wants re-measuring rather than trusting this number.
+--
+-- Sanity check on the value: it predicts the Damper ceiling this game found by
+-- hand. Damping alone diverges at b = 2, i.e. Damper = 2 * rollMass * 60 /
+-- (60 * delta * 60) which at 60fps and rollMass 7.6 comes out at 15 - exactly
+-- the "somewhere around 15" the DEFAULTS note records from testing.
+local SUSPENSION_ROLL_MASS_FRACTION = 0.25
+
+-- The longest step the spring and damper can be integrated over, given that
+-- Roblox is going to move the car for `delta` afterwards regardless, while
+-- `a + 2b <= SUSPENSION_STABILITY_BUDGET` still holds. Both gains are linear
+-- in h, so this is a division rather than a quadratic:
+--     h * (springRate*delta + 2*damperRate) <= budget * rollMass
+--
+-- Rates are in force units (the config numbers are per-frame impulses at
+-- SUSPENSION_REFERENCE_FPS, so a rate is `configValue * that reference`).
+--
+-- Note what this does as delta grows without bound: h falls away toward zero,
+-- so a machine that hitches for half a second applies almost no restoring
+-- force for that frame. That is the correct answer and not a degradation - the
+-- car is still carried by the weight-support term, which has no stability
+-- limit and always gets the full frame (see Step). It coasts through the
+-- hitch level rather than being catapulted by a spring impulse eighteen times
+-- the size it was tuned for. A hitch on ENTRY is exactly what a weak machine
+-- serves up, with the dashboard, the mirrors' ViewportFrames and the engine
+-- sounds all being built on the same frame the drive starts.
+local function SolveStableStep(springRate, damperRate, rollMass, delta)
+	local gainPerStep = springRate * delta + 2 * damperRate
+	if gainPerStep <= 0 then
+		return math.huge
+	end
+	return (SUSPENSION_STABILITY_BUDGET * rollMass) / gainPerStep
+end
+
+-- The velocity change each car's suspension has applied since something last
+-- read it, in studs/s, world space. Written by Step, drained by
+-- VehicleCrashDetector.client.luau - see ConsumeSuspensionDeltaV.
+--
+-- OPT-IN: a car only has an entry here while something has asked to be told
+-- (TrackSuspensionDeltaV), and Step writes nothing for a car that hasn't. The
+-- server's parked-car settle calls Step too and has no consumer, so without
+-- that check it would accumulate a total nobody ever reads. Weak keys as well,
+-- so a car destroyed mid-drive can't be held alive by this table.
+local pendingSuspensionDeltaV = setmetatable({}, { __mode = "k" })
+
+-- Start accounting for this car. Cheap, and only the driving client's crash
+-- detector ever calls it.
+function VehiclePhysics.TrackSuspensionDeltaV(carModel)
+	pendingSuspensionDeltaV[carModel] = Vector3.zero
+end
+
+-- Stop accounting for this car - a drive session ending, or the car going
+-- away.
+function VehiclePhysics.ClearSuspensionDeltaV(carModel)
+	pendingSuspensionDeltaV[carModel] = nil
+end
+
+-- Books a velocity change that this game deliberately caused, so the crash
+-- detector doesn't read it as a collision. Same channel as the suspension's
+-- own impulses and for the same reason: the thing that moved the car knows it
+-- moved the car, and the detector should only be judging what's left over.
+--
+-- Currently one caller - RayCastSuspension discarding the frame of freefall
+-- the chassis picks up between gaining network ownership and its first
+-- suspension step. Without booking it here, cancelling an 11.4 studs/s drop
+-- would itself land as an 11.4 studs/s spike, which is most of the way to
+-- ImpactMinDeltaV on its own: the cure would report as the disease.
+--
+-- No-op for a car nothing is tracking, so this cannot start an accumulation
+-- that never gets drained.
+function VehiclePhysics.NoteNonCollisionDeltaV(carModel, deltaV)
+	local pending = pendingSuspensionDeltaV[carModel]
+	if pending then
+		pendingSuspensionDeltaV[carModel] = pending + deltaV
+	end
+end
+
+-- Returns (and zeroes) how much of a car's velocity change since the last call
+-- came from its own suspension rather than from hitting something.
+--
+-- The crash detector measures a crash as "velocity changed a lot in one
+-- frame", and already subtracts gravity so that falling isn't a crash. The
+-- ground pushing BACK is the other half of that pair and was not subtracted,
+-- so a car simply sitting on the road read a phantom deltaV of
+-- `gravity * delta` every single frame - 3.3 studs/s at 60fps, 9.8 at 20fps,
+-- and past ImpactMinDeltaV (12) on its own by about 15fps. Any suspension
+-- movement on top of that took it over the line much sooner, which is how
+-- entering a car on a slow machine detached half its bodywork.
+--
+-- This is exact rather than an allowance, because the driving client is the
+-- one that applied the impulses and so knows precisely what they were.
+function VehiclePhysics.ConsumeSuspensionDeltaV(carModel)
+	local pending = pendingSuspensionDeltaV[carModel]
+	if not pending then
+		return Vector3.zero
+	end
+	pendingSuspensionDeltaV[carModel] = Vector3.zero
+	return pending
+end
 
 -- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
@@ -52,6 +233,10 @@ local DEFAULTS = {
 	-- centreline. So a new vehicle's ceiling has to be found by testing:
 	-- raise Damper until the car starts shivering left-to-right at rest or
 	-- after a landing, then keep the ladder's Max at roughly half of that.
+	--
+	-- Test it AT 60FPS. Below that the stability cap in Step takes over and
+	-- will hold any Damper value together, so a value that shivers at 60 will
+	-- look perfectly calm at 30 and tell you nothing.
 	Damper = 5,
 	LateralGripStrength = 1.5, -- friction coefficient (like a real tire, roughly 0.7-1.5 is a normal grippy range) - the max sideways g-force this wheel's grip can generate. Applies to whichever axle doesn't have its own Front/RearLateralGripStrength override. Raised from 1 for more margin before an ordinary turn trips the binary grip/no-grip model
 	DriveWheels = "All", -- "All", "Front", or "Rear" - which axle receives drive/brake force from the throttle
@@ -759,6 +944,16 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	-- surface that isn't there.
 	rayParams.RespectCanCollide = true
 
+	-- Totalled across all four struts and handed to the crash detector, which
+	-- otherwise reads the ground holding the car up as the car hitting
+	-- something - see ConsumeSuspensionDeltaV.
+	local suspensionImpulse = Vector3.zero
+	-- Instrumentation only; see VehicleEntryDebug.
+	local debugSpringLengths = {}
+	local debugGrounded = 0
+	local debugStiff, debugDamp = 0, 0
+	local debugFrameScale, debugStableScale = 0, 0
+
 	for _, wheelName in WHEEL_NAMES do
 		local attachment = attachments[wheelName]
 		local carCFrame = carPrim.CFrame
@@ -783,7 +978,83 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- ground and breaks parts" bug, and a plausible trigger for jitter
 			-- that starts on a frame drop.
 			local frameScale = delta * SUSPENSION_REFERENCE_FPS
-			local stiffnessForce = config.Stiffness * (config.SuspensionMaxLength - springLength) * frameScale
+
+			-- ...but scaling alone is only half the job, and the half it does
+			-- not do is what tore cars apart on slow machines. frameScale
+			-- fixes the steady state; it does nothing about the per-frame
+			-- GAIN, which grows with it and eventually breaks the explicit
+			-- integration outright. See the block above SUSPENSION_STABILITY_
+			-- BUDGET for the criterion and the measured numbers.
+			--
+			-- stableScale is frameScale capped at the largest value that still
+			-- satisfies that criterion. At any frame rate fast enough for the
+			-- integration to be stable it IS frameScale, unchanged, and
+			-- everything below reduces to exactly the old expressions - the
+			-- weight-support split is an algebraic identity when the two
+			-- scales are equal (worked through at stiffnessForce).
+			local cornerMass = carPrim.AssemblyMass / 4
+			local springRate = config.Stiffness * SUSPENSION_REFERENCE_FPS
+			local damperRate = config.Damper * SUSPENSION_REFERENCE_FPS
+			local rollMass = math.max(cornerMass * SUSPENSION_ROLL_MASS_FRACTION, 1e-3)
+			-- A frame at or under the reference length is never shortened,
+			-- whatever the criterion says. That is a hard promise rather than
+			-- an optimisation: every Stiffness and Damper number in this game
+			-- was tuned at 60fps and is known good there, and the roll mass
+			-- this criterion leans on is an ESTIMATE that must not be allowed
+			-- to quietly retune a car nobody has reported a problem with. A
+			-- car genuinely unstable at 60fps is a tuning bug and belongs in
+			-- the Damper ladder's Max, where DEFAULTS already handles it.
+			-- Below 60fps there is no tuning to protect - that is territory
+			-- nothing was ever tuned in - so the criterion wins outright.
+			local stableStep = delta
+			if delta > REFERENCE_STEP then
+				stableStep = math.min(delta, SolveStableStep(springRate, damperRate, rollMass, delta))
+			end
+			local stableScale = stableStep * SUSPENSION_REFERENCE_FPS
+
+			-- Capping the scale on its own would reintroduce the exact bug
+			-- frameScale was added to cure: gravity keeps getting the full
+			-- frame while the spring gets a short one, so the car sinks
+			-- through its own springs on a slow machine.
+			--
+			-- So split the spring into the two jobs it is really doing:
+			--
+			--   SUPPORT - carrying this corner's share of the weight. This is
+			--     a constant impulse. It does not read position or velocity,
+			--     so it is not part of the feedback loop and has NO stability
+			--     limit; it can always take the full frame. Being exactly the
+			--     weight, it cancels gravity outright at any frame rate.
+			--
+			--   RESTORING - the spring's pull back toward that resting
+			--     compression, which is the stiff, position-dependent term and
+			--     the one the criterion is about. This is what gets capped.
+			--
+			-- Below the cap the two are algebraically the old single term:
+			--     cornerMass*g*delta + Stiffness*(c - cRest)*frameScale
+			--   and since Stiffness*cRest*frameScale = cornerMass*g*delta by
+			--   the definition of cRest, that is Stiffness*c*frameScale. So
+			--   nothing about how either car drives at 60fps changes at all.
+			--
+			-- What DOES change, below the cap, is the failure mode: a car on a
+			-- slow machine is still fully held up, and merely returns to ride
+			-- height more slowly. It behaves like softer suspension instead of
+			-- like a bomb.
+			local compression = config.SuspensionMaxLength - springLength
+			local restCompression = math.clamp(cornerMass * workspace.Gravity / springRate, 0, config.SuspensionMaxLength)
+			local weightSupport = cornerMass * workspace.Gravity * delta
+			local restoring = config.Stiffness * (compression - restCompression) * stableScale
+			-- Bounded by what the real spring would have produced, and by
+			-- zero. Both are no-ops whenever stableScale == frameScale (the
+			-- identity above), and both matter when it doesn't: the upper
+			-- bound keeps a bottomed-out strut on an under-sprung or heavily
+			-- overloaded car from being propped up by a support term its
+			-- spring cannot actually generate, and the lower one keeps the
+			-- rule that a strut may push the body up but never pull it down.
+			local stiffnessForce = math.clamp(
+				weightSupport + restoring,
+				0,
+				math.max(config.Stiffness * compression * frameScale, 0)
+			)
 			-- The damper measures how fast the strut is being compressed, and
 			-- it reads that off the chassis' OWN velocity at the strut mount -
 			-- not off how much springLength changed since last frame.
@@ -812,6 +1083,47 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- retuning; only the phantom spikes are gone.
 			local mountVelocity = carPrim:GetVelocityAtPosition(rayOrigin)
 			local compressionRate = -mountVelocity:Dot(carCFrame.UpVector)
+
+			-- Split that closing speed into the two modes it is made of,
+			-- because they have very different amounts of mass resisting them
+			-- and so very different stability limits. Damping them at one
+			-- shared rate means the tighter limit governs both, and a 20fps
+			-- capture showed exactly what that costs.
+			--
+			--   HEAVE - the whole car moving straight down. GetVelocityAtPosition
+			--     is v_com + omega x r, so the v_com part is common to all four
+			--     struts and IS the heave rate. The mass resisting it is the
+			--     corner's full share, m/4.
+			--
+			--   DIFFERENTIAL - what is left, which is the omega x r part: this
+			--     strut's share of the body ROTATING (roll and pitch). The mass
+			--     resisting that is roughly four times smaller, and it is what
+			--     the stability cap above is built around.
+			--
+			-- No second pass needed for this: the decomposition is exact and
+			-- entirely local, because v_com is already a whole-assembly
+			-- quantity.
+			--
+			-- What it fixes. Capping both at the roll limit left the heave
+			-- damper running at about a fifth of the strength its own mass
+			-- could safely take, and heave is the mode that actually rings:
+			-- the capture shows the springs swinging through a full stud at
+			-- 1.6Hz - the car's natural heave frequency, dead on - and taking
+			-- well over a second to die down. Damping heave against the heave
+			-- mass takes the per-frame decay from 10% to 28%, which puts a
+			-- 20fps car's settling time back in line with a 60fps one.
+			--
+			-- The differential term is NOT freed by this. Its limit is real -
+			-- roll effective mass genuinely is about 7.9 on this chassis - and
+			-- it keeps the capped rate it had.
+			--
+			-- TODO: the SPRING is still capped at the differential rate for
+			-- both modes, which is why the car returns to ride height more
+			-- slowly than it settles. Splitting it the same way needs the four
+			-- spring lengths before any force is applied, i.e. a second pass
+			-- over the wheels, so it is left alone until something asks for it.
+			local heaveRate = -carPrim.AssemblyLinearVelocity:Dot(carCFrame.UpVector)
+			local differentialRate = compressionRate - heaveRate
 			-- The damper is a velocity-proportional term applied as a per-frame
 			-- impulse, which makes it the one config value a player can turn
 			-- up until the car destroys itself - so it gets the same treatment
@@ -891,8 +1203,23 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- per car during the server's existing spawn settle and caching as
 			-- an attribute. Retuning both cars' Damper values is part of it.
 			local maxDamperImpulse = math.abs(compressionRate) * (carPrim.AssemblyMass / 4)
+			-- stableScale, not frameScale: the damper is the LARGER of the
+			-- two destabilising terms (it enters the criterion as 2b against
+			-- the spring's a), so capping the spring and not this one would
+			-- have fixed almost nothing. The clamps below are the older,
+			-- separate guard and are kept as-is - neither engages at any
+			-- Damper value a player can buy, at any frame rate.
+			-- Heave gets its own, much longer stable step - at 20fps on
+			-- either car it comes out longer than the frame itself, so heave
+			-- damping runs entirely uncapped and behaves exactly as tuned.
+			local heaveStep = delta
+			if delta > REFERENCE_STEP then
+				heaveStep = math.min(delta, SolveStableStep(springRate, damperRate, cornerMass, delta))
+			end
+			local heaveScale = heaveStep * SUSPENSION_REFERENCE_FPS
+
 			local damperForce = math.clamp(
-				config.Damper * compressionRate * frameScale,
+				config.Damper * (heaveRate * heaveScale + differentialRate * stableScale),
 				math.max(-stiffnessForce, -maxDamperImpulse),
 				math.min(config.Stiffness * config.SuspensionMaxLength * frameScale, maxDamperImpulse)
 			)
@@ -1169,6 +1496,14 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			-- (the spring only ever reacts to compression, and nothing was
 			-- creating a compression difference between the wheels).
 			local tireForcePosition = raycast.Position:Lerp(rayOrigin, 1 - config.BodyLean)
+			debugGrounded += 1
+			debugStiff += stiffnessForce
+			debugDamp += damperForce
+			debugFrameScale = frameScale
+			debugStableScale = stableScale
+			table.insert(debugSpringLengths, string.format("%.2f", springLength))
+
+			suspensionImpulse += suspensionForce
 			carPrim:ApplyImpulseAtPosition(suspensionForce, rayOrigin)
 			carPrim:ApplyImpulseAtPosition(lateralForce, rayOrigin:Lerp(tireForcePosition, lateralSaturation))
 			carPrim:ApplyImpulseAtPosition(
@@ -1179,6 +1514,27 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		-- Airborne needs no bookkeeping at all now: with the damper reading
 		-- chassis velocity there is no per-wheel history to keep in step, and
 		-- so no stale value for a landing frame to differentiate against.
+	end
+
+	-- Accumulated rather than assigned: the crash detector runs on the same
+	-- event as this loop and RunService gives no ordering between the two, so
+	-- a frame's worth can land either side of the detector's own sample.
+	-- Adding up until it drains means none is ever dropped; the worst case is
+	-- that a frame's suspension movement is subtracted one frame late, which
+	-- for a signal this smooth is nothing next to not subtracting it at all.
+	VehicleEntryDebug.Step(carModel, {
+		Grounded = string.format("%d/4", debugGrounded),
+		SpringLengths = table.concat(debugSpringLengths, ","),
+		Stiff = debugStiff,
+		Damp = debugDamp,
+		FrameScale = debugFrameScale,
+		StableScale = debugStableScale,
+	})
+
+	local pending = pendingSuspensionDeltaV[carModel]
+	local mass = carPrim.AssemblyMass
+	if pending and mass > 0 then
+		pendingSuspensionDeltaV[carModel] = pending + suspensionImpulse / mass
 	end
 
 	VehiclePhysics.UpdateEngineSound(carModel, config, input.Rpm)
