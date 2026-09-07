@@ -89,7 +89,18 @@ local buyVehicleEvent = Instance.new("RemoteEvent")
 buyVehicleEvent.Name = "BuyVehicle"
 buyVehicleEvent.Parent = ReplicatedStorage
 
-local buyUpgradeEvent = Instance.new("RemoteEvent")
+-- A RemoteFunction, not a fire-and-forget RemoteEvent, on purpose: the client
+-- immediately re-fetches GetPlotData after buying to redraw the row unlocked,
+-- and there is no guaranteed ordering between a RemoteEvent fired a moment
+-- earlier and a RemoteFunction invoked right after it (they're separate
+-- Instances - Roblox only orders calls made through the SAME remote). With a
+-- plain RemoteEvent, that follow-up GetPlotData invoke could reach the server
+-- and return before OnServerEvent here had actually run, so the terminal
+-- redrew the row still locked even though the purchase (and the leaderstat
+-- deduction) had gone through - fixed by only closing/reopening the terminal.
+-- InvokeServer blocks the client until this function returns, so by the time
+-- it does, the purchase is guaranteed already applied.
+local buyUpgradeEvent = Instance.new("RemoteFunction")
 buyUpgradeEvent.Name = "BuyUpgrade"
 buyUpgradeEvent.Parent = ReplicatedStorage
 
@@ -712,19 +723,19 @@ buyVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
 	-- missing entry as "at the default" for exactly this reason.
 end)
 
-buyUpgradeEvent.OnServerEvent:Connect(function(player, vehicleId, statName)
+buyUpgradeEvent.OnServerInvoke = function(player, vehicleId, statName)
 	local data = playerData[player.UserId]
 	if not data or typeof(vehicleId) ~= "string" or typeof(statName) ~= "string" then
-		return
+		return false
 	end
 	if not data.OwnedVehicleIds[vehicleId] then
-		return
+		return false
 	end
 	local vehicleDef = VehicleCatalog.Get(vehicleId)
 	local specs = getUpgradeSpecs(vehicleDef)
 	local spec = specs and specs[statName]
 	if not spec then
-		return
+		return false
 	end
 
 	local levels = data.UpgradeLevels[vehicleId]
@@ -735,17 +746,18 @@ buyUpgradeEvent.OnServerEvent:Connect(function(player, vehicleId, statName)
 	local currentLevel = VehicleUpgrades.ClampLevel(spec, levels[statName] or 0)
 	local nextLevel = currentLevel + 1
 	if nextLevel > VehicleUpgrades.MaxLevel(spec) then
-		return -- already fully upgraded
+		return false -- already fully upgraded
 	end
 
 	local cost = VehicleUpgrades.CostForLevel(spec, nextLevel)
 	if data.Money < cost then
-		return
+		return false
 	end
 
 	setMoney(player, data, data.Money - cost)
 	levels[statName] = nextLevel
-end)
+	return true
+end
 
 setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statName, value)
 	local data = playerData[player.UserId]

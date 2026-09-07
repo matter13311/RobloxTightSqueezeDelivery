@@ -12,6 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
 
 local CustomPrompt = require(ReplicatedStorage.Modules.UI.CustomPrompt)
 local ResponsiveScale = require(ReplicatedStorage.Modules.UI.ResponsiveScale)
@@ -645,7 +646,12 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 			return
 		end
 		playClickSound()
-		buyUpgradeEvent:FireServer(vehicleId, statName)
+		-- BuyUpgrade is a RemoteFunction specifically so this blocks until the
+		-- server has actually applied the purchase - see the comment on its
+		-- creation in PlotManager.server.luau. Refreshing only after it
+		-- returns is what guarantees this redraw sees the unlocked row
+		-- instead of racing ahead of the server and showing stale data.
+		buyUpgradeEvent:InvokeServer(vehicleId, statName)
 		refreshTerminalData()
 	end)
 
@@ -729,8 +735,10 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 	valueFill.Parent = track
 	Instance.new("UICorner", valueFill).CornerRadius = UDim.new(1, 0)
 
+	local KNOB_SIZE = UDim2.fromOffset(16, 16)
+	local KNOB_SIZE_GRABBABLE = UDim2.fromOffset(20, 20)
 	local knob = Instance.new("Frame")
-	knob.Size = UDim2.fromOffset(16, 16)
+	knob.Size = KNOB_SIZE
 	knob.AnchorPoint = Vector2.new(0.5, 0.5)
 	knob.Position = UDim2.new(currentFraction, 0, 0.5, 0)
 	knob.BackgroundColor3 = BRIGHT_TEXT
@@ -739,7 +747,29 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 	knob.Parent = track
 	Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
+	-- Roblox has no CSS-style "grab" cursor for arbitrary GUI elements, so the
+	-- knob signals it's draggable by growing and lighting up on hover, and
+	-- staying that way for the whole drag even if the mouse strays off the
+	-- (small, 16px) knob itself - matching a real drag grip rather than
+	-- snapping back the instant the cursor wanders.
 	local dragging = false
+	local hovering = false
+	local function setKnobGrabbable(grabbable)
+		TweenService:Create(knob, TweenInfo.new(0.1, Enum.EasingStyle.Quad), {
+			Size = if grabbable then KNOB_SIZE_GRABBABLE else KNOB_SIZE,
+			BackgroundColor3 = if grabbable then ACCENT else BRIGHT_TEXT,
+		}):Play()
+	end
+	knob.MouseEnter:Connect(function()
+		hovering = true
+		setKnobGrabbable(true)
+	end)
+	knob.MouseLeave:Connect(function()
+		hovering = false
+		if not dragging then
+			setKnobGrabbable(false)
+		end
+	end)
 	local function updateFromInputX(inputX)
 		local fraction = math.clamp((inputX - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
 		local rawValue = spec.Min + fraction * (spec.Max - spec.Min)
@@ -753,6 +783,7 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 
 	local function beginDrag(inputX)
 		dragging = true
+		setKnobGrabbable(true)
 		local snapped = updateFromInputX(inputX)
 		setCarConfigValueEvent:FireServer(vehicleId, statName, snapped)
 	end
@@ -792,6 +823,9 @@ local function makeSliderRow(vehicleId, statName, spec, unlockedLevel, currentVa
 		end
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = false
+			if not hovering then
+				setKnobGrabbable(false)
+			end
 			-- Fire the final snapped value once more in case InputChanged
 			-- never fired between InputBegan and this (a plain click, no
 			-- drag) - beginDrag already sent one, but sending the same value
