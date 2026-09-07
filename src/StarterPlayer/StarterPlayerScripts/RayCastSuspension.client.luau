@@ -6,6 +6,7 @@ local ContextActionService = game:GetService("ContextActionService")
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local Gearbox = require(ReplicatedStorage.Modules.Vehicles.Gearbox)
 local VehicleDashboard = require(script.Parent.VehicleDashboard)
+local VehicleControlsHint = require(script.Parent.VehicleControlsHint)
 local VehicleEffects = require(script.Parent.VehicleEffects)
 local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
@@ -424,6 +425,7 @@ local function endDrive(expected)
 	VehicleViewMode.ReleaseCameraMode()
 	session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	session.Dashboard:Destroy()
+	session.ControlsHint:Destroy()
 	if session.ShiftSound then
 		session.ShiftSound:Destroy()
 	end
@@ -465,6 +467,7 @@ local function beginDrive(humanoid, seatPart)
 		State = state,
 		Gearbox = Gearbox.new(config),
 		Dashboard = VehicleDashboard.new(player),
+		ControlsHint = VehicleControlsHint.new(player),
 		Handbrake = false,
 		DriveThrottle = 0,
 		DriveRpm = config.Transmission.IdleRpm,
@@ -644,7 +647,9 @@ local function beginDrive(humanoid, seatPart)
 		-- be decided just once at the start of the session.
 		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake, VehicleViewMode.ThirdPersonSecondsRemaining())
 		VehicleViewMode.EnforceCameraMode()
-		mySession.Dashboard:SetVisible(not VehicleViewMode.IsFirstPerson())
+		local firstPerson = VehicleViewMode.IsFirstPerson()
+		mySession.Dashboard:SetVisible(not firstPerson)
+		mySession.ControlsHint:SetVisible(firstPerson)
 	end
 
 	endDrive(mySession)
