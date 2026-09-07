@@ -68,7 +68,7 @@ function ControlsHint.new(player)
 	panel.Name = "Panel"
 	panel.AnchorPoint = Vector2.new(0.5, 0)
 	panel.Position = UDim2.new(0.5, 0, 0, 12)
-	panel.Size = UDim2.fromOffset(300, 26)
+	panel.Size = UDim2.fromOffset(430, 26)
 	panel.BackgroundColor3 = PANEL
 	panel.BackgroundTransparency = 0.15
 	panel.BorderSizePixel = 0
@@ -86,7 +86,7 @@ function ControlsHint.new(player)
 	local row = newLabel(panel, "Hint", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 13, DIM_TEXT, Enum.Font.GothamMedium)
 	row.RichText = true
 	row.Text = string.format(
-		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">Q/E blinkers   H honk   L lights</font>',
+		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">Space handbrake   Q/E blinkers   H honk   L lights</font>',
 		hexEXIT,
 		hexDIM
 	)
