@@ -1,31 +1,38 @@
 -- "Go there." One target at a time, made impossible to miss.
 --
--- Four things fire together, because each one answers a different question and
--- each one fails on its own at exactly the distance the others work:
+-- Four things, split across two ranges by DEFAULT_NEAR_DISTANCE, because each
+-- one answers a different question and each one fails on its own at exactly
+-- the distance the other range's pair works:
 --
 --   THE BEAM - a neon column standing 300 studs out of the target. Answers
 --   "where is it" from the far side of the map, over the rooftops, before the
 --   player knows what they are looking for. It is the only part of this that
 --   survives being a thousand studs away, and it is the part a distracted
---   player can see out of a side window without looking for it.
+--   player can see out of a side window without looking for it. On at every
+--   range.
 --
 --   THE HIGHLIGHT - a glowing outline on the object itself, drawn with
 --   DepthMode AlwaysOnTop so a wall in front of it changes nothing. Answers
 --   "which one" once the player is close enough for there to be more than one
 --   thing in view. A highlight alone is useless at range (it is the size of the
 --   object, so at 400 studs it is a few pixels) and unbeatable up close, which
---   is precisely the opposite of the beam.
+--   is precisely the opposite of the beam. On at every range.
+--
+--   THE SCREEN ARROW - a marker that sits over the target while it is on
+--   screen and clamps to the edge of the screen, rotated to point, when it is
+--   not. Answers "which way do I turn", which none of the other three can
+--   answer at all: every one of them is invisible when the player is facing
+--   the wrong way, and facing the wrong way is the entire problem. On only
+--   BEYOND NearDistance.
 --
 --   THE BILLBOARD - a bouncing arrow and a name, pinned over the target, sized
 --   in PIXELS rather than studs so it stays exactly as readable at 600 studs as
 --   at 6. Answers "is that thing the thing", and names it, which is the part a
---   player has to be able to repeat back later with none of this on screen.
---
---   THE SCREEN ARROW - a marker that sits over the target while it is on
---   screen and clamps to the edge of the screen, rotated to point, when it is
---   not. Answers "which way do I turn", which is the ONLY question the other
---   three cannot answer at all: every one of them is invisible when the player
---   is facing the wrong way, and facing the wrong way is the entire problem.
+--   player has to be able to repeat back later with none of this on screen. On
+--   only WITHIN NearDistance - see DEFAULT_NEAR_DISTANCE for why this and the
+--   screen arrow are never both on: at range the screen arrow is already doing
+--   the only useful work, and a second copy of the same label bouncing over a
+--   target too small to read just reads as two different places.
 --
 -- WHAT IS DELIBERATELY NOT HERE: a painted route along the road. It is the
 -- obvious fifth idea and it needs something this game does not have - a graph
@@ -71,6 +78,17 @@ local PULSE_SPEED = 3.4
 local SCREEN_MARGIN = 96
 -- Deeper at the top, because the delivery HUD's job panel lives at top-centre.
 local SCREEN_MARGIN_TOP = 130
+
+-- Beyond this many studs, only the screen-space marker is on - it is the one
+-- doing all the actual "which way" work at range anyway, and the billboard
+-- is small enough at that distance to be pointless. Inside it, the billboard
+-- takes over and the screen marker goes dark. Without this split, a target a
+-- few hundred studs away showed a bouncing arrow over itself AND a diamond
+-- pinned to the same spot on screen - two markers a viewer has no reason to
+-- expect are describing one and the same place. Overridable per-target via
+-- options.NearDistance (see SetTarget) for a marker whose target is unusually
+-- large or small.
+local DEFAULT_NEAR_DISTANCE = 100
 
 local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
 
@@ -297,12 +315,17 @@ end
 -- recompute its target on a timer without tracking whether it changed.
 --
 -- options:
---   Label        text under the arrow. Defaults to the instance's name.
---   ScreenArrow  draw the screen-edge marker (default true). Turn it off when
---                something else on screen already points at the same place -
---                two arrows disagreeing by a few pixels is worse than one.
---   Beam         draw the column (default true). Worth turning off for a target
---                the player is already standing next to.
+--   Label         text under the arrow. Defaults to the instance's name.
+--   ScreenArrow   draw the screen-edge marker (default true). Turn it off when
+--                 something else on screen already points at the same place -
+--                 two arrows disagreeing by a few pixels is worse than one.
+--   Beam          draw the column (default true). Worth turning off for a
+--                 target the player is already standing next to.
+--   NearDistance  studs at which the billboard takes over from the screen
+--                 marker - see DEFAULT_NEAR_DISTANCE. Worth raising for an
+--                 unusually large target (the billboard is legible from
+--                 further away over something big) or lowering for a small
+--                 one.
 function GuideMarker:SetTarget(instance, options)
 	if instance and not (instance:IsA("Model") or instance:IsA("BasePart")) then
 		instance = nil
@@ -333,7 +356,8 @@ function GuideMarker:SetTarget(instance, options)
 	self._highlight.Enabled = true
 
 	self._caption.Text = self._options.Label or instance.Name
-	self._billboard.Enabled = true
+	-- Not set here: _step decides every frame whether the billboard or the
+	-- screen marker is the one actually on, based on distance.
 end
 
 function GuideMarker:ClearTarget()
@@ -371,16 +395,30 @@ function GuideMarker:_step()
 		self._beam.Transparency = 1
 	end
 
-	-- The billboard bounces. Motion is what a busy eye actually catches - a
-	-- static marker of any size gets read once and then tuned out, which is the
-	-- same reasoning behind the depot sign's pulsing chevrons.
-	local bounce = math.sin(now * BOUNCE_SPEED) * BOUNCE_STUDS
-	self._anchor.CFrame = CFrame.new(top + Vector3.new(0, BILLBOARD_LIFT + BOUNCE_STUDS + bounce, 0))
-
 	self._highlight.FillTransparency = 0.62 + 0.22 * pulse
 
 	local camera = workspace.CurrentCamera
-	if self._options.ScreenArrow == false or not camera then
+	local nearDistance = self._options.NearDistance or DEFAULT_NEAR_DISTANCE
+	local near = camera and (centre - camera.CFrame.Position).Magnitude <= nearDistance
+
+	-- Exactly one of the billboard and the screen marker is ever on - see
+	-- DEFAULT_NEAR_DISTANCE above for why. Near, the billboard bounces right
+	-- over the target; far, only the screen marker is doing anything useful,
+	-- so the billboard goes dark instead of hanging a second, pointless copy
+	-- of the same label over a target too small on screen to read anyway.
+	if near then
+		-- The billboard bounces. Motion is what a busy eye actually catches -
+		-- a static marker of any size gets read once and then tuned out,
+		-- which is the same reasoning behind the depot sign's pulsing
+		-- chevrons.
+		local bounce = math.sin(now * BOUNCE_SPEED) * BOUNCE_STUDS
+		self._anchor.CFrame = CFrame.new(top + Vector3.new(0, BILLBOARD_LIFT + BOUNCE_STUDS + bounce, 0))
+		self._billboard.Enabled = true
+	else
+		self._billboard.Enabled = false
+	end
+
+	if near or self._options.ScreenArrow == false or not camera then
 		self._screen.Visible = false
 		return
 	end

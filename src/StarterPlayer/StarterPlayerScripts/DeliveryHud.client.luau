@@ -1210,17 +1210,23 @@ end)
 -- It also shrinks with distance (or pins at a size that is wrong at every
 -- other distance), and MaxDistance has to be set to something finite.
 --
--- So this is a screen-space marker instead. On screen, it sits over the
--- destination. Off screen - including behind the player - it clamps to the
--- edge and rotates an arrow to point the way. That is the behaviour that
--- answers "which way do I go", and it needs no world part at the far end.
+-- So this is a screen-space marker instead. Off screen - including behind the
+-- player - it clamps to the edge, and it needs no world part at the far end.
+--
+-- Exactly one glyph is ever shown, on a hard distance switch: far away, a
+-- diamond marks roughly where to head - not directional, but the clamped
+-- edge position already gestures the way. Once the player is within
+-- WAYPOINT_NEAR_DISTANCE studs it swaps for a bouncing arrow instead, which
+-- is what "am I basically there, where exactly do I stop" needs rather than
+-- "which way do I turn". Two markers arguing about which one to trust would
+-- be worse than either alone, so only one is ever on screen.
 --
 -- Entirely client-side, as asked: it is one player's private navigation, the
 -- server already knows the contract, and nothing here is an authority on
 -- anything.
 
 local waypoint = Instance.new("Frame")
-waypoint.Size = UDim2.fromOffset(150, 62)
+waypoint.Size = UDim2.fromOffset(230, 96)
 waypoint.AnchorPoint = Vector2.new(0.5, 0.5)
 waypoint.BackgroundTransparency = 1
 waypoint.Visible = false
@@ -1228,24 +1234,30 @@ waypoint.ZIndex = 0 -- under the board and the summary, never over a button
 waypoint.Parent = screenGui
 
 local waypointArrow = Instance.new("TextLabel")
-waypointArrow.Size = UDim2.fromOffset(34, 34)
+waypointArrow.Size = UDim2.fromOffset(56, 56)
 waypointArrow.Position = UDim2.new(0.5, 0, 0, 0)
 waypointArrow.AnchorPoint = Vector2.new(0.5, 0)
 waypointArrow.BackgroundTransparency = 1
 waypointArrow.Font = Enum.Font.GothamBold
-waypointArrow.TextSize = 26
+waypointArrow.TextSize = 44
 waypointArrow.TextColor3 = ACCENT
 waypointArrow.Text = "▲"
 waypointArrow.ZIndex = 0
 waypointArrow.Parent = waypoint
 
+local waypointArrowStroke = Instance.new("UIStroke")
+waypointArrowStroke.Color = Color3.fromRGB(0, 0, 0)
+waypointArrowStroke.Thickness = 2.5
+waypointArrowStroke.Transparency = 0.2
+waypointArrowStroke.Parent = waypointArrow
+
 local waypointCaption = Instance.new("TextLabel")
-waypointCaption.Position = UDim2.new(0.5, 0, 0, 34)
-waypointCaption.Size = UDim2.new(1, 0, 0, 28)
+waypointCaption.Position = UDim2.new(0.5, 0, 0, 56)
+waypointCaption.Size = UDim2.new(1, 0, 0, 38)
 waypointCaption.AnchorPoint = Vector2.new(0.5, 0)
 waypointCaption.BackgroundTransparency = 1
 waypointCaption.Font = Enum.Font.GothamBold
-waypointCaption.TextSize = 13
+waypointCaption.TextSize = 18
 waypointCaption.TextColor3 = BRIGHT_TEXT
 waypointCaption.TextXAlignment = Enum.TextXAlignment.Center
 waypointCaption.TextYAlignment = Enum.TextYAlignment.Top
@@ -1254,7 +1266,7 @@ waypointCaption.TextYAlignment = Enum.TextYAlignment.Top
 -- more thing blocking the windscreen in first person.
 local captionStroke = Instance.new("UIStroke")
 captionStroke.Color = Color3.fromRGB(0, 0, 0)
-captionStroke.Thickness = 2
+captionStroke.Thickness = 3
 captionStroke.Transparency = 0.35
 captionStroke.Parent = waypointCaption
 waypointCaption.ZIndex = 0
@@ -1278,14 +1290,45 @@ local function findDestination(name)
 	return destinationModels:FindFirstChild(name)
 end
 
+-- The exact drop-off SPACE inside a destination model, cached per model since
+-- it never moves once built. Used only once the player is already close - see
+-- the NEAR branch below - so the diamond phase never pays for this lookup.
+local destinationSpaceCache = {}
+
+local function findDestinationSpace(model)
+	local cached = destinationSpaceCache[model]
+	if cached ~= nil then
+		return cached or nil
+	end
+
+	local found = nil
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") and descendant.Name:sub(1, #world.SpacePrefix) == world.SpacePrefix then
+			found = descendant
+			break
+		end
+	end
+	destinationSpaceCache[model] = found or false
+	return found
+end
+
 -- How far in from the screen edge the marker parks when the destination is
 -- off screen. Enough to keep the whole caption on screen rather than half a
 -- word of it.
-local WAYPOINT_MARGIN = 86
+local WAYPOINT_MARGIN = 125
 -- The top margin is deeper because the job panel now sits at top-centre, and
 -- the waypoint is only ever on screen while that panel is too - so they would
 -- otherwise collide every time the destination is straight ahead and above.
-local WAYPOINT_MARGIN_TOP = 128
+local WAYPOINT_MARGIN_TOP = 165
+
+-- Diamond beyond this distance, bouncing arrow within it - see the header for
+-- why the switch is on distance rather than on/off screen. 120 matches
+-- DeliveryConfig.Guides.ShowWithinStuds, so the arrow and the loading-bay-style
+-- ground guide at the destination (see DepotGuides.client.luau) arrive
+-- together rather than at two different, unrelated ranges.
+local WAYPOINT_NEAR_DISTANCE = 120
+local WAYPOINT_BOUNCE_AMPLITUDE = 8
+local WAYPOINT_BOUNCE_SPEED = 3.4
 
 RunService.RenderStepped:Connect(function()
 	if not activeContract then
@@ -1303,10 +1346,36 @@ RunService.RenderStepped:Connect(function()
 	-- The model's centre, as asked - GetPivot rather than GetBoundingBox
 	-- because a destination is a building and its pivot is where the builder
 	-- put it, which is a better "here" than the centre of a box that might
-	-- include an awning.
-	local target = model:GetPivot().Position
-	local point, onScreen = camera:WorldToViewportPoint(target)
+	-- include an awning. This is also what decides far/near below, even once
+	-- the target itself switches to the exact space - a destination with an
+	-- oddly-placed drop-off space should not flip back to a diamond just
+	-- because the space happens to sit further out than the building's pivot.
 	local viewport = camera.ViewportSize
+
+	-- Distance from the TRUCK, not the camera: the player is judging how far
+	-- they have to drive, and in a chase camera the two differ by enough to
+	-- look wrong when parked.
+	local carModel = activeContract.Vehicle
+	local from = carModel and carModel.PrimaryPart and carModel.PrimaryPart.Position or camera.CFrame.Position
+	local pivotTarget = model:GetPivot().Position
+	local near = (pivotTarget - from).Magnitude <= WAYPOINT_NEAR_DISTANCE
+
+	-- Only ONE marker is ever the destination waypoint - never a diamond and
+	-- an arrow both on screen for the same trip. Far away it points at the
+	-- building; once near, it re-targets the exact drop-off SPACE (a more
+	-- precise "here" than the building's pivot) rather than adding a second,
+	-- separate marker for that - two markers independently deciding their own
+	-- icon is exactly what used to let a diamond and an arrow show at once.
+	local target = pivotTarget
+	if near then
+		local space = findDestinationSpace(model)
+		if space then
+			target = space.Position
+		end
+	end
+	local distance = (target - from).Magnitude
+
+	local point, onScreen = camera:WorldToViewportPoint(target)
 
 	-- Behind the camera comes back with a negative Z and coordinates that are
 	-- mirrored through the centre. Flipping them back is what stops the arrow
@@ -1321,23 +1390,26 @@ RunService.RenderStepped:Connect(function()
 
 	waypoint.Position = UDim2.fromOffset(clampedX, clampedY)
 
-	if edge then
-		-- Point from the middle of the screen toward where the destination
-		-- actually is. The glyph is drawn pointing up, hence the +90.
-		local dx, dy = x - viewport.X / 2, y - viewport.Y / 2
-		waypointArrow.Rotation = math.deg(math.atan2(dy, dx)) + 90
+	if near then
+		-- Still rotates to point on the rare close-range case where the
+		-- destination is off screen or behind - otherwise it stands upright
+		-- and just bounces over the spot.
+		if edge then
+			local dx, dy = x - viewport.X / 2, y - viewport.Y / 2
+			waypointArrow.Rotation = math.deg(math.atan2(dy, dx)) + 90
+		else
+			waypointArrow.Rotation = 0
+		end
 		waypointArrow.Text = "▲"
+		local bounce = math.sin(os.clock() * WAYPOINT_BOUNCE_SPEED) * WAYPOINT_BOUNCE_AMPLITUDE
+		waypointArrow.Position = UDim2.new(0.5, 0, 0, bounce)
 	else
 		waypointArrow.Rotation = 0
-		waypointArrow.Text = "◆" -- a pin sitting on the spot, rather than a direction
+		waypointArrow.Text = "◆" -- a pin marking roughly where to head, not a direction
+		waypointArrow.Position = UDim2.new(0.5, 0, 0, 0)
 	end
 
-	-- Distance from the TRUCK, not the camera: the player is judging how far
-	-- they have to drive, and in a chase camera the two differ by enough to
-	-- look wrong when parked.
-	local carModel = activeContract.Vehicle
-	local from = carModel and carModel.PrimaryPart and carModel.PrimaryPart.Position or camera.CFrame.Position
-	waypointCaption.Text = string.format("%s\n%.0f studs", activeContract.Stops[1], (target - from).Magnitude)
+	waypointCaption.Text = string.format("%s\n%.0f studs", activeContract.Stops[1], distance)
 
 	waypoint.Visible = true
 end)

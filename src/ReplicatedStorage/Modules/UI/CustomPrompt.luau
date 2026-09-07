@@ -63,6 +63,31 @@ local function isTouchInput(inputType)
 	return inputType == Enum.UserInputType.Touch
 end
 
+-- Whether the world-space billboard itself should ever be drawn. On touch it
+-- is pure redundancy on top of being a bug: the touch button above already
+-- gives a touch player everything the billboard would (what this is, whether
+-- it's in range), the key badge it shows ("F", "H"...) means nothing without
+-- a keyboard, and BillboardGui.AlwaysOnTop draws in front of every ScreenGui
+-- regardless of ZIndex - so it was rendering directly over the dedicated
+-- mobile button meant to be pressed instead. Tracked live, same reasoning as
+-- everywhere else in this file: a hybrid touchscreen device can switch modes
+-- mid-session, and a prompt already on screen when it does should react
+-- immediately rather than waiting for its next distance check.
+local touchActive = isTouchInput(UserInputService:GetLastInputType())
+
+local function refreshGuiForTouchChange()
+	for prompt in activePrompts do
+		if prompt.Gui and prompt.Visible then
+			prompt.Gui.Enabled = not touchActive
+		end
+	end
+end
+
+UserInputService.LastInputTypeChanged:Connect(function(inputType)
+	touchActive = isTouchInput(inputType)
+	refreshGuiForTouchChange()
+end)
+
 local touchGui = nil
 local touchButtonList = nil
 
@@ -485,8 +510,10 @@ function CustomPrompt:_setVisible(visible)
 	-- object, and anything that leaves its transparency behind (an
 	-- interrupted tween, a CanvasGroup that failed to build) leaves a
 	-- visible panel with nothing left to hide it.
+	--
+	-- Never enabled at all on touch - see touchActive above.
 	if visible and self.Gui then
-		self.Gui.Enabled = true
+		self.Gui.Enabled = not touchActive
 	end
 	TweenService:Create(self.Canvas, TweenInfo.new(FADE_TIME), {
 		GroupTransparency = if visible then VISIBLE_TRANSPARENCY else 1,

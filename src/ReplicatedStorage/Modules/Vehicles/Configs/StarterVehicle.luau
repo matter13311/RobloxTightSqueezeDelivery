@@ -183,7 +183,7 @@ return {
 	-- entry in Upgrades above, and VehicleDamage.server.luau for where it is
 	-- applied. This plain value is the ladder's level-0, so retuning it
 	-- re-bases the upgrade.
-	BodyStrength = 1,
+	BodyStrength = 2.5,
 
 	-- Tail-light/turn-signal glow. DEFAULTS' Brightness (0.5, shared with the
 	-- headlights) and Range (1, i.e. the base 12 studs) are bright/far enough
@@ -266,17 +266,19 @@ return {
 	-- stretch of any MaxSpeed always crawls.
 	MaxSpeed = 50,
 
-	-- Steering feel. 1.3 winds on full lock in about 0.77 seconds - a bit
-	-- brisker than a dead-on 1 second, while still nowhere near DEFAULTS'
-	-- fifth-of-a-second snap, so the cab's steering wheel prop (which swings
-	-- past a full turn - see SteeringWheelMaxAngle below) doesn't whip
-	-- around unrealistically fast. Re-centring stays quicker than turning
-	-- in, which is what a real car's castor does on its own.
+	-- Steering feel. 2.2 winds on full lock in about 0.45 seconds - snappy and
+	-- responsive enough that a new/young player gets an immediate, obvious
+	-- response out of the wheel (the old 1.3 read as sluggish and unintuitive
+	-- to kids, who expect a turn input to do something right away), while
+	-- staying well short of DEFAULTS' fifth-of-a-second snap, which is the
+	-- point past which it stops looking like a real car and starts looking
+	-- twitchy. Re-centring stays quicker than turning in, which is what a
+	-- real car's castor does on its own.
 	--
 	-- This is separate from SteerAngle (how far the wheels actually point) -
 	-- turn this down for heavier steering, that one down for a wider circle.
-	SteerSpeed = 1.3,
-	SteerReturnSpeed = 2,
+	SteerSpeed = 2.2,
+	SteerReturnSpeed = 3.2,
 
 	-- Steering wheel prop in the cab. 400 degrees at full lock: a bit past
 	-- a full turn, so the rim passes its starting orientation and ends up

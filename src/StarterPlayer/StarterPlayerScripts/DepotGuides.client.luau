@@ -240,13 +240,13 @@ end
 -- guaranteed to be the same string the contract board, the waypoint and the
 -- payout summary all use, because it is the same string.
 --
--- Two states, because a destination sign has two jobs. Idle, it is a landmark:
--- this is somewhere deliveries go, remember it for later. Lit, it is the
--- answer to "am I there yet" for the one player carrying that contract - and
--- since it is a SurfaceGui built on the client, one player seeing their
--- destination lit up costs every other player nothing at all.
+-- A landmark only now, and permanently idle - this is somewhere deliveries go,
+-- remember it for later. It used to also light up green for the one player
+-- carrying that contract, but a SurfaceGui only reads from within sight of the
+-- sign itself, which is no use to a player who is still on the other side of
+-- the map. That job now belongs entirely to the diamond/arrow marker below,
+-- which follows the same contract from anywhere.
 local DEST_IDLE = Color3.fromRGB(120, 134, 158)
-local DEST_ACTIVE = Color3.fromRGB(74, 214, 116)
 
 local function buildDestinationSign(signPart, destinationName)
 	local existing = signPart:FindFirstChild("DestinationSignGui")
@@ -309,52 +309,6 @@ local function buildDestinationSign(signPart, destinationName)
 	status.TextColor3 = DEST_IDLE
 	status.Text = "TAKE A JOB AT THE DEPOT"
 	status.Parent = backdrop
-
-	-- Built once and left paused. Creating a Tween per state change would leak
-	-- one every time the player took a contract.
-	local pulse = TweenService:Create(
-		accentBar,
-		TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-		{ BackgroundTransparency = 0.65 }
-	)
-
-	return {
-		Name = destinationName,
-		AccentBar = accentBar,
-		Kicker = kicker,
-		Status = status,
-		Pulse = pulse,
-		Active = false,
-	}
-end
-
-local destinationSigns = {}
-
-local function setSignActive(sign, active)
-	if sign.Active == active then
-		return
-	end
-	sign.Active = active
-
-	local color = if active then DEST_ACTIVE else DEST_IDLE
-	sign.AccentBar.BackgroundColor3 = color
-	sign.Kicker.TextColor3 = color
-	sign.Status.TextColor3 = color
-	sign.Kicker.Text = if active then "YOUR DELIVERY" else "DELIVERY POINT"
-	sign.Status.Text = if active then "DROP OFF HERE - PARK IN THE BAY" else "TAKE A JOB AT THE DEPOT"
-
-	if active then
-		sign.Pulse:Play()
-	else
-		sign.Pulse:Cancel()
-		sign.AccentBar.BackgroundTransparency = 0
-	end
-end
-
-local function refreshDestinationSigns(activeName)
-	for _, sign in destinationSigns do
-		setSignActive(sign, sign.Name == activeName)
-	end
 end
 
 --=============================================================================
@@ -448,7 +402,6 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 		return
 	end
 	activeDestination = update.Active and update.Active.Stops[1] or nil
-	refreshDestinationSigns(activeDestination)
 end)
 
 local entries = nil
@@ -480,7 +433,7 @@ local function build()
 			elseif isSign(descendant) then
 				-- The MODEL's name, not the sign part's - see the section
 				-- header. Warehouse1.Sign reads "Warehouse1".
-				table.insert(destinationSigns, buildDestinationSign(descendant, model.Name))
+				buildDestinationSign(descendant, model.Name)
 			end
 		end
 	end
@@ -501,11 +454,6 @@ task.spawn(function()
 	while not build() do
 		task.wait(2)
 	end
-	-- The depot geometry can finish appearing after a contract is already in
-	-- hand (a slow first load, or a builder dropping the folder in mid-session),
-	-- so the signs are brought into step once rather than waiting for the next
-	-- DeliveryUpdate - which, mid-contract, is the delivery itself.
-	refreshDestinationSigns(activeDestination)
 end)
 
 -- Target colour and visibility are recomputed on a slow tick (a lit space
@@ -592,3 +540,12 @@ RunService.RenderStepped:Connect(function(delta)
 		end
 	end
 end)
+
+-- The screen-space "which way / how close" marker for the active destination
+-- now lives entirely in DeliveryHud.client.luau's own waypoint - it re-targets
+-- the exact drop-off SPACE once the player is near, using this same entries
+-- table's Space parts indirectly (via a lookup on the destination model, not
+-- on this file's state). A second, separate marker used to live here as well,
+-- and the two disagreeing about which one should be a diamond and which an
+-- arrow was exactly the "I can see both at once" bug that got this removed -
+-- one destination, one marker.

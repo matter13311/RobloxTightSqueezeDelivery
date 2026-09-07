@@ -1,10 +1,17 @@
 -- On-screen buttons for the driving actions that otherwise only exist as
--- keybinds (RayCastSuspension.client.luau's bindDrivingControls): exit,
--- handbrake, horn, headlights, turn signals, and the third-person unlock
--- prompt. None of those have a walk-up CustomPrompt to make tappable the way
--- CustomPrompt.luau does for entering the car in the first place - while
--- actually driving there is nothing on screen a touch player can press, so
--- this exists purely to give touch input the same actions the keyboard has.
+-- keybinds (RayCastSuspension.client.luau's bindDrivingControls): exit, gas,
+-- brake, handbrake, horn, headlights, turn signals, and the third-person
+-- unlock prompt. None of those have a walk-up CustomPrompt to make tappable
+-- the way CustomPrompt.luau does for entering the car in the first place -
+-- while actually driving there is nothing on screen a touch player can press,
+-- so this exists purely to give touch input the same actions the keyboard has.
+--
+-- GAS and BRAKE exist alongside Roblox's own default vehicle touch joystick
+-- (still there, still working - see throttleInput in RayCastSuspension) rather
+-- than replacing it, because that joystick blends steering and throttle into
+-- one diagonal drag, which is exactly the kind of imprecise input that makes
+-- a new/young driver stall out or lurch. Two big, clearly-labelled pedals are
+-- the same "make the intent unmistakable" reasoning EXIT already gets.
 --
 -- Built and destroyed once per drive session (see RayCastSuspension's
 -- beginDrive/endDrive), same lifetime as VehicleDashboard/VehicleControlsHint.
@@ -22,6 +29,7 @@ local DIM_TEXT = Color3.fromRGB(120, 130, 148)
 local ACCENT = Color3.fromRGB(86, 200, 128)
 local EXIT_COLOR = Color3.fromRGB(232, 138, 60)
 local ACTIVE_COLOR = Color3.fromRGB(220, 90, 90)
+local BRAKE_COLOR = Color3.fromRGB(224, 178, 84)
 
 local IDLE_TRANSPARENCY = 0.1
 local ACTIVE_TRANSPARENCY = 0
@@ -94,6 +102,8 @@ end
 
 -- `handlers`:
 --   OnExit()                    F - ask to get out
+--   OnGasChanged(active)        W - held
+--   OnBrakeChanged(active)      S - held
 --   OnHandbrakeChanged(active)  Space - held
 --   OnHeadlightsToggle()        L
 --   OnTurnSignal(side)          Q/E - "Left"/"Right"
@@ -127,13 +137,16 @@ function VehicleTouchControls.new(player, handlers)
 		end
 	)
 
-	-- Bottom-right: handbrake, the other held control worth a bigger target
-	-- than a toggle since it gets mashed/held during a drift.
+	-- Bottom-right: three pedals in a row, all big enough to find without
+	-- looking down - GAS closest to the corner since it's the one a thumb
+	-- rests on by default, BRAKE next to it, E-BRAKE furthest in since it's
+	-- reached for less often (mid-drift) than the other two (every second of
+	-- driving).
 	newButton(
 		gui,
 		UDim2.fromOffset(72, 72),
-		UDim2.new(1, -96, 1, -108),
-		"BRAKE",
+		UDim2.new(1, -256, 1, -108),
+		"E-BRAKE",
 		ACTIVE_COLOR,
 		function()
 			handlers.OnHandbrakeChanged(true)
@@ -143,9 +156,37 @@ function VehicleTouchControls.new(player, handlers)
 		end
 	)
 
-	-- A quieter row of secondary toggles above the handbrake - horn, lights,
-	-- blinkers, third person - same "everything else, second" ordering
-	-- VehicleControlsHint.luau uses for the keyboard legend.
+	newButton(
+		gui,
+		UDim2.fromOffset(72, 72),
+		UDim2.new(1, -176, 1, -108),
+		"BRAKE",
+		BRAKE_COLOR,
+		function()
+			handlers.OnBrakeChanged(true)
+		end,
+		function()
+			handlers.OnBrakeChanged(false)
+		end
+	)
+
+	newButton(
+		gui,
+		UDim2.fromOffset(72, 72),
+		UDim2.new(1, -96, 1, -108),
+		"GAS",
+		ACCENT,
+		function()
+			handlers.OnGasChanged(true)
+		end,
+		function()
+			handlers.OnGasChanged(false)
+		end
+	)
+
+	-- A quieter row of secondary toggles above the pedal cluster - horn,
+	-- lights, blinkers, third person - same "everything else, second"
+	-- ordering VehicleControlsHint.luau uses for the keyboard legend.
 	local secondaryRow = Instance.new("Frame")
 	secondaryRow.BackgroundTransparency = 1
 	secondaryRow.AnchorPoint = Vector2.new(1, 1)

@@ -2,6 +2,7 @@ local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContextActionService = game:GetService("ContextActionService")
+local UserInputService = game:GetService("UserInputService")
 
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local Gearbox = require(ReplicatedStorage.Modules.Vehicles.Gearbox)
@@ -67,6 +68,28 @@ local THIRD_PERSON_SHOP_ACTION = "VehicleThirdPersonShop"
 -- analog and still comes from the seat (see steerInput).
 local steerLeftHeld = false
 local steerRightHeld = false
+
+-- Dedicated GAS/BRAKE buttons for touch (VehicleTouchControls), read the same
+-- way steerLeftHeld/steerRightHeld are: an explicit override that wins over
+-- whatever the seat's own ThrottleFloat says, rather than something that has
+-- to fight it. Without this, a touch player's only throttle input is Roblox's
+-- default vehicle joystick, which is not what the two clearly-labelled pedals
+-- on screen are supposed to be driving - see throttleInput below.
+local mobileGasHeld = false
+local mobileBrakeHeld = false
+
+-- Whether the player's last input was touch, tracked live the same way
+-- VehicleTouchControls/CustomPrompt do - a hybrid touchscreen device can
+-- switch between mouse and touch mid-drive. This decides whether the seat's
+-- own ThrottleFloat is even trusted as a throttle FALLBACK (see
+-- throttleInput): Roblox's default touch vehicle control is a single wheel
+-- that blends steer and throttle into one drag, and now that GAS/BRAKE are
+-- dedicated buttons, that blend is worse than nothing - a player trying to
+-- only steer would otherwise still nudge the throttle every time they turn.
+local touchInputActive = UserInputService:GetLastInputType() == Enum.UserInputType.Touch
+UserInputService.LastInputTypeChanged:Connect(function(inputType)
+	touchInputActive = inputType == Enum.UserInputType.Touch
+end)
 
 -- Whether H is currently down. Tracked (rather than just fired and
 -- forgotten) so unbindDrivingControls below can send the matching release for
@@ -290,6 +313,31 @@ local function steerInput(seatPart)
 	return seatPart.SteerFloat
 end
 
+-- Same idea as steerInput, for the mobile GAS/BRAKE buttons. Only overrides
+-- the seat when one of the two is actually held, so keyboard W/S and gamepad
+-- throttle keep working exactly as before for anyone not using the dedicated
+-- buttons. Both held at once cancels out rather than picking a winner, same
+-- as a real car's pedals would.
+--
+-- On touch, the seat's ThrottleFloat is never trusted as a fallback even when
+-- neither button is held - see touchInputActive above. The default touch
+-- wheel still drives SteerFloat (steerInput falls back to it exactly as
+-- before), it just no longer gets a say in the throttle: that job now belongs
+-- entirely to GAS/BRAKE.
+local function throttleInput(seatPart)
+	if mobileGasHeld and not mobileBrakeHeld then
+		return 1
+	elseif mobileBrakeHeld and not mobileGasHeld then
+		return -1
+	elseif mobileGasHeld and mobileBrakeHeld then
+		return 0
+	end
+	if touchInputActive then
+		return 0
+	end
+	return seatPart.ThrottleFloat
+end
+
 -- The driving actions themselves, pulled out of the ContextActionService
 -- callbacks below so the on-screen touch buttons (VehicleTouchControls) can
 -- call the exact same code a keyboard press does - one activation path per
@@ -305,6 +353,17 @@ local function setHandbrake(active)
 	elseif not active and session.Handbrake then
 		session.Handbrake = false
 	end
+end
+
+-- These two just flip the override throttleInput reads - no session needed,
+-- since there's nothing to do to the car itself until next frame's Step call
+-- picks the new value up.
+local function setGas(active)
+	mobileGasHeld = active
+end
+
+local function setBrake(active)
+	mobileBrakeHeld = active
 end
 
 local function toggleHeadlights()
@@ -444,6 +503,10 @@ local function unbindDrivingControls()
 	end
 	steerLeftHeld = false
 	steerRightHeld = false
+	-- A finger still down on GAS/BRAKE when the drive ends (exiting mid-press)
+	-- would otherwise leak into whatever this player sits in next.
+	mobileGasHeld = false
+	mobileBrakeHeld = false
 end
 
 -- `expected` guards against a stale drive loop tearing down the session that
@@ -510,7 +573,9 @@ local function beginDrive(humanoid, seatPart)
 		ControlsHint = VehicleControlsHint.new(player),
 		TouchControls = VehicleTouchControls.new(player, {
 			OnExit = tryExitVehicle,
-			OnHandbrakeChanged = setHandbrake,
+			OnGasChanged = setGas,
+				OnBrakeChanged = setBrake,
+				OnHandbrakeChanged = setHandbrake,
 			OnHeadlightsToggle = toggleHeadlights,
 			OnTurnSignal = toggleTurnSignal,
 			OnHornChanged = setHorn,
@@ -632,7 +697,7 @@ local function beginDrive(humanoid, seatPart)
 		-- Raw key state, nothing more. What W and S actually DO is the
 		-- gearbox's decision, because it depends on which way the car is
 		-- currently pointed - in D, S is the brake; in R, S is the gas.
-		local throttleFloat = seatPart.ThrottleFloat
+		local throttleFloat = throttleInput(seatPart)
 		local forwardKey = throttleFloat > 0.1
 		local backKey = throttleFloat < -0.1
 

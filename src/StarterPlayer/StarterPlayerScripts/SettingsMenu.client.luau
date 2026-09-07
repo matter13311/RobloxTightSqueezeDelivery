@@ -63,6 +63,10 @@ local renderers = {}
 -- Small builders
 -- =========================================================================
 
+local function isTouchInput(inputType)
+	return inputType == Enum.UserInputType.Touch
+end
+
 local function corner(parent, radius)
 	local instance = Instance.new("UICorner")
 	instance.CornerRadius = UDim.new(0, radius)
@@ -481,6 +485,13 @@ end
 -- A persistent corner button, so the menu is discoverable without having to
 -- know the keybind. Its own ScreenGui rather than a child of the menu's, since
 -- it has to stay visible exactly when the menu is NOT.
+--
+-- On touch this moves to the top-right corner, first in the stack above the
+-- money pill and the shop button (see buildMoneyDisplay and
+-- VehicleShopButton.client.luau) - bottom-right is where VehicleTouchControls
+-- now puts the GAS/BRAKE/E-BRAKE pedals while actually driving, and "[M]"
+-- means nothing without a keyboard, so the hint just drops on touch instead
+-- of following the button up.
 local function buildLauncher(onClick)
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "SettingsLauncher"
@@ -489,8 +500,6 @@ local function buildLauncher(onClick)
 	gui.Parent = playerGui
 
 	local holder = Instance.new("Frame")
-	holder.AnchorPoint = Vector2.new(1, 1)
-	holder.Position = UDim2.new(1, -18, 1, -18)
 	holder.Size = UDim2.new(0, 52, 0, 70)
 	holder.BackgroundTransparency = 1
 	holder.Parent = gui
@@ -513,6 +522,25 @@ local function buildLauncher(onClick)
 	key.Size = UDim2.new(1, 0, 0, 14)
 	key.TextXAlignment = Enum.TextXAlignment.Center
 
+	local function layout(touch)
+		if touch then
+			holder.AnchorPoint = Vector2.new(1, 0)
+			holder.Position = UDim2.new(1, -14, 0, 14)
+			holder.Size = UDim2.new(0, 52, 0, 52)
+			key.Visible = false
+		else
+			holder.AnchorPoint = Vector2.new(1, 1)
+			holder.Position = UDim2.new(1, -18, 1, -18)
+			holder.Size = UDim2.new(0, 52, 0, 70)
+			key.Visible = true
+		end
+	end
+
+	layout(isTouchInput(UserInputService:GetLastInputType()))
+	UserInputService.LastInputTypeChanged:Connect(function(inputType)
+		layout(isTouchInput(inputType))
+	end)
+
 	button.Activated:Connect(onClick)
 	return gui
 end
@@ -524,6 +552,11 @@ end
 -- GetPlotData: leaderstats is a plain replicated Value the server already
 -- keeps current (see PlotManager.server.luau's setMoney), so this is just a
 -- Changed listener, no remote needed.
+--
+-- On touch this shrinks and moves to the top-right corner, second in the
+-- stack below the gear button and above the shop button - see buildLauncher
+-- above and VehicleShopButton.client.luau. Same reasoning both times:
+-- bottom-right now belongs to VehicleTouchControls' driving pedals.
 local function buildMoneyDisplay()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "MoneyDisplay"
@@ -532,12 +565,6 @@ local function buildMoneyDisplay()
 	gui.Parent = playerGui
 
 	local pill = Instance.new("Frame")
-	pill.AnchorPoint = Vector2.new(1, 1)
-	-- Raised from the corner (was -36) to leave room underneath for the
-	-- vehicle shop button - see VehicleShopButton.client.luau, which sits
-	-- directly below this in the same column.
-	pill.Position = UDim2.new(1, -82, 1, -64)
-	pill.Size = UDim2.new(0, 130, 0, 40)
 	pill.BackgroundColor3 = COLORS.Panel
 	pill.BackgroundTransparency = 0.25
 	pill.BorderSizePixel = 0
@@ -548,6 +575,28 @@ local function buildMoneyDisplay()
 	moneyText.Size = UDim2.fromScale(1, 1)
 	moneyText.TextXAlignment = Enum.TextXAlignment.Center
 	moneyText.TextYAlignment = Enum.TextYAlignment.Center
+
+	local function layout(touch)
+		if touch then
+			pill.AnchorPoint = Vector2.new(1, 0)
+			pill.Position = UDim2.new(1, -14, 0, 74)
+			pill.Size = UDim2.new(0, 96, 0, 30)
+			moneyText.TextSize = 15
+		else
+			pill.AnchorPoint = Vector2.new(1, 1)
+			-- Raised from the corner (was -36) to leave room underneath for
+			-- the vehicle shop button - see VehicleShopButton.client.luau,
+			-- which sits directly below this in the same column.
+			pill.Position = UDim2.new(1, -82, 1, -64)
+			pill.Size = UDim2.new(0, 130, 0, 40)
+			moneyText.TextSize = 18
+		end
+	end
+
+	layout(isTouchInput(UserInputService:GetLastInputType()))
+	UserInputService.LastInputTypeChanged:Connect(function(inputType)
+		layout(isTouchInput(inputType))
+	end)
 
 	-- Yields until PlotManager.server.luau finishes loading this player's
 	-- save and creates leaderstats (see initPlayerData) - fine at
