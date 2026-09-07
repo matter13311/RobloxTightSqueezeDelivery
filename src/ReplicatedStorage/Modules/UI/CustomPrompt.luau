@@ -48,6 +48,62 @@ CustomPrompt.__index = CustomPrompt
 local activePrompts = {}
 local nextId = 0
 
+-- Mobile activation. First attempt was a transparent GuiButton laid directly
+-- over the billboard's own CanvasGroup - it never worked, because a
+-- BillboardGui rendered in 3D world space does not reliably deliver touch
+-- input to a GuiButton inside it (mouse clicks worked in Studio, which is
+-- exactly what made it look fine until it was tested on an actual touch
+-- device). ContextActionService's own createTouchButton was tried next and
+-- also did not visibly appear in testing. What's known to work is a plain
+-- TextButton in a ScreenGui - the same approach VehicleTouchControls.luau
+-- already uses successfully - so that's what this is: one shared ScreenGui,
+-- with one real screen-space button created per prompt while it's visible,
+-- mirroring the KeyCode bind/unbind lifecycle in _setBound below.
+local function isTouchInput(inputType)
+	return inputType == Enum.UserInputType.Touch
+end
+
+local touchGui = nil
+local touchButtonList = nil
+
+local function ensureTouchGui()
+	if touchGui then
+		return touchButtonList
+	end
+
+	touchGui = Instance.new("ScreenGui")
+	touchGui.Name = "CustomPromptTouchButtons"
+	touchGui.ResetOnSpawn = false
+	touchGui.IgnoreGuiInset = true
+	touchGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	-- Only shown while the player is actively using touch, live - not decided
+	-- once. A keyboard/mouse player standing right next to the same prompt
+	-- never needs this; the billboard and its key badge are already theirs.
+	touchGui.Enabled = isTouchInput(UserInputService:GetLastInputType())
+	touchGui.Parent = player:WaitForChild("PlayerGui")
+
+	touchButtonList = Instance.new("Frame")
+	touchButtonList.Name = "List"
+	touchButtonList.BackgroundTransparency = 1
+	touchButtonList.AnchorPoint = Vector2.new(0.5, 1)
+	touchButtonList.Position = UDim2.new(0.5, 0, 1, -150)
+	touchButtonList.Size = UDim2.fromOffset(260, 300)
+	touchButtonList.Parent = touchGui
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+	layout.Padding = UDim.new(0, 10)
+	layout.Parent = touchButtonList
+
+	UserInputService.LastInputTypeChanged:Connect(function(inputType)
+		touchGui.Enabled = isTouchInput(inputType)
+	end)
+
+	return touchButtonList
+end
+
 -- Minimal custom signal - Triggered is client-only, so it doesn't need
 -- BindableEvent's cross-script replication, just :Connect()/:Fire().
 local function newSignal()
@@ -125,8 +181,11 @@ function CustomPrompt.new(part, config)
 	self._holding = false
 	self._holdElapsed = 0
 	self._holdThread = nil
+	-- Doubles as the touch button's title (see _setBound) - what the mobile
+	-- on-screen button is labelled with, so it reads the same as the panel.
+	self._promptText = config.Text or "Interact"
 
-	self:_buildGui(config.Text or "Interact", config.KeyText or self.KeyCode.Name)
+	self:_buildGui(self._promptText, config.KeyText or self.KeyCode.Name)
 
 	activePrompts[self] = true
 	return self
@@ -149,7 +208,7 @@ function CustomPrompt:_setBound(bound)
 		ContextActionService:BindAction(self._actionName, function(_, inputState)
 			if self.HoldDuration > 0 then
 				if inputState == Enum.UserInputState.Begin then
-					self:_startHold()
+					self:_startHold(true)
 				elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
 					self:_cancelHold()
 				end
@@ -158,8 +217,10 @@ function CustomPrompt:_setBound(bound)
 			end
 			return Enum.ContextActionResult.Sink
 		end, false, self.KeyCode)
+		self:_showTouchButton()
 	else
 		ContextActionService:UnbindAction(self._actionName)
+		self:_hideTouchButton()
 		-- The prompt can go out of range, get disabled, or lose ShouldShow
 		-- mid-hold (see the winner-by-key pass in the Heartbeat loop below) -
 		-- none of those are an End/Cancel input, so the hold has to be
@@ -169,19 +230,108 @@ function CustomPrompt:_setBound(bound)
 	end
 end
 
--- Fraction is 0..1. No-ops if this prompt was built with HoldDuration == 0 -
--- ProgressFill only exists when the GUI was built expecting a hold.
+-- Screen-space equivalent of the billboard, built fresh each time the prompt
+-- becomes bound (see _setBound) and thrown away when it isn't - same
+-- lifetime as the key bind, so there's never a stray button left over for a
+-- prompt the player has walked away from. Hidden (via the shared ScreenGui's
+-- Enabled) unless the player is actually using touch right now.
+function CustomPrompt:_showTouchButton()
+	local list = ensureTouchGui()
+
+	local button = Instance.new("TextButton")
+	button.Name = "TouchPrompt"
+	button.Size = UDim2.fromOffset(240, 56)
+	button.BackgroundColor3 = PANEL
+	button.BackgroundTransparency = 0.05
+	button.AutoButtonColor = false
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 16
+	button.TextWrapped = true
+	button.TextColor3 = BRIGHT_TEXT
+	button.Text = self._promptText
+	button.Parent = list
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = button
+
+	local edge = Instance.new("UIStroke")
+	edge.Color = ACCENT
+	edge.Thickness = 1.5
+	edge.Parent = button
+
+	if self.HoldDuration > 0 then
+		local track = Instance.new("Frame")
+		track.Name = "ProgressTrack"
+		track.Size = UDim2.new(1, 0, 0, 5)
+		track.Position = UDim2.new(0, 0, 1, -5)
+		track.BackgroundColor3 = KEY_BADGE
+		track.BorderSizePixel = 0
+		track.ZIndex = 2
+		track.Parent = button
+
+		local fill = Instance.new("Frame")
+		fill.Name = "ProgressFill"
+		fill.Size = UDim2.fromScale(0, 1)
+		fill.BackgroundColor3 = ACCENT
+		fill.BorderSizePixel = 0
+		fill.ZIndex = 3
+		fill.Parent = track
+
+		self._touchProgressFill = fill
+
+		-- MouseButton1Down/Up fire for touch too (GuiButton unifies the
+		-- two) - MouseLeave is the safety net for a finger sliding off the
+		-- button without a clean release.
+		button.MouseButton1Down:Connect(function()
+			self:_startHold(false)
+		end)
+		button.MouseButton1Up:Connect(function()
+			self:_cancelHold()
+		end)
+		button.MouseLeave:Connect(function()
+			self:_cancelHold()
+		end)
+	else
+		button.Activated:Connect(function()
+			self.Triggered:Fire(player)
+		end)
+	end
+
+	self._touchButton = button
+end
+
+function CustomPrompt:_hideTouchButton()
+	if self._touchButton then
+		self._touchButton:Destroy()
+		self._touchButton = nil
+	end
+	self._touchProgressFill = nil
+end
+
+-- Fraction is 0..1. No-ops for whichever bar doesn't currently exist -
+-- ProgressFill only exists when the GUI was built expecting a hold, and
+-- _touchProgressFill only while a touch button is actually up.
 function CustomPrompt:_setHoldProgress(fraction)
 	if self.ProgressFill then
 		self.ProgressFill.Size = UDim2.fromScale(fraction, 1)
 	end
+	if self._touchProgressFill then
+		self._touchProgressFill.Size = UDim2.fromScale(fraction, 1)
+	end
 end
 
-function CustomPrompt:_startHold()
+-- `viaKey`: whether this hold should be safety-netted against the physical
+-- key still being down (see below). The touch button (_showTouchButton)
+-- starts a hold the exact same way a keyboard press does, but there is no
+-- KeyCode to poll for a touch hold, so it opts out of that check with
+-- `viaKey = false`.
+function CustomPrompt:_startHold(viaKey)
 	if self._holding or self.HoldDuration <= 0 then
 		return
 	end
 	self._holding = true
+	self._holdViaKey = viaKey ~= false
 	self._holdElapsed = 0
 	self:_setHoldProgress(0)
 
@@ -192,7 +342,9 @@ function CustomPrompt:_startHold()
 			-- (e.g. the window losing focus mid-hold, an End that never
 			-- arrives) - if the key genuinely isn't down any more, treat it
 			-- the same as a normal release rather than leaving the hold stuck.
-			if not self._holding or not UserInputService:IsKeyDown(self.KeyCode) then
+			-- Only meaningful for a keyboard-driven hold; a touch hold is
+			-- released by its own button's Up/Leave events instead.
+			if not self._holding or (self._holdViaKey and not UserInputService:IsKeyDown(self.KeyCode)) then
 				self:_cancelHold()
 				return
 			end

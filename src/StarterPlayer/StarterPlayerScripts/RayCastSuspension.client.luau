@@ -16,6 +16,7 @@ local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
 local VehicleZoom = require(script.Parent.VehicleZoom)
 local VehicleViewMode = require(script.Parent.VehicleViewMode)
 local VehicleThirdPersonShop = require(script.Parent.VehicleThirdPersonShop)
+local VehicleTouchControls = require(script.Parent.VehicleTouchControls)
 -- Temporary instrumentation; see the module header. Remove with the rest of it.
 local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
 
@@ -289,6 +290,56 @@ local function steerInput(seatPart)
 	return seatPart.SteerFloat
 end
 
+-- The driving actions themselves, pulled out of the ContextActionService
+-- callbacks below so the on-screen touch buttons (VehicleTouchControls) can
+-- call the exact same code a keyboard press does - one activation path per
+-- action, no separate "mobile version" that could drift out of sync.
+
+local function setHandbrake(active)
+	if not session then
+		return
+	end
+	if active and not session.Handbrake then
+		session.Handbrake = true
+		playSound(session.HandbrakeSound)
+	elseif not active and session.Handbrake then
+		session.Handbrake = false
+	end
+end
+
+local function toggleHeadlights()
+	if session then
+		VehicleControls.ToggleHeadlights(session.CarModel)
+	end
+end
+
+local function toggleTurnSignal(side)
+	if session then
+		VehicleControls.ToggleTurnSignal(session.CarModel, side)
+	end
+end
+
+local function setHorn(active)
+	if not session then
+		return
+	end
+	if active and not hornHeld then
+		hornHeld = true
+		VehicleControls.SetHorn(session.CarModel, true)
+	elseif not active and hornHeld then
+		hornHeld = false
+		VehicleControls.SetHorn(session.CarModel, false)
+	end
+end
+
+-- Only worth doing anything for a player who doesn't already have the
+-- third-person perk - there is nothing here to open for one who does.
+local function toggleThirdPersonShop()
+	if not VehicleViewMode.HasThirdPersonAccess() then
+		VehicleThirdPersonShop.Toggle()
+	end
+end
+
 local function bindDrivingControls()
 	-- High priority + Sink is what stops Space from reaching the default
 	-- character controls at all, so it never sets Humanoid.Jump and never
@@ -296,14 +347,9 @@ local function bindDrivingControls()
 	-- beginDrive covers the other routes into a jump (mobile button, gamepad).
 	ContextActionService:BindActionAtPriority(HANDBRAKE_ACTION, function(_, inputState)
 		if inputState == Enum.UserInputState.Begin then
-			if session and not session.Handbrake then
-				session.Handbrake = true
-				playSound(session.HandbrakeSound)
-			end
+			setHandbrake(true)
 		elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
-			if session then
-				session.Handbrake = false
-			end
+			setHandbrake(false)
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space)
@@ -330,22 +376,22 @@ local function bindDrivingControls()
 	end, false, Enum.KeyCode.F)
 
 	ContextActionService:BindAction(HEADLIGHT_ACTION, function(_, inputState)
-		if inputState == Enum.UserInputState.Begin and session then
-			VehicleControls.ToggleHeadlights(session.CarModel)
+		if inputState == Enum.UserInputState.Begin then
+			toggleHeadlights()
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.L)
 
 	ContextActionService:BindAction(TURN_SIGNAL_LEFT_ACTION, function(_, inputState)
-		if inputState == Enum.UserInputState.Begin and session then
-			VehicleControls.ToggleTurnSignal(session.CarModel, "Left")
+		if inputState == Enum.UserInputState.Begin then
+			toggleTurnSignal("Left")
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.Q)
 
 	ContextActionService:BindAction(TURN_SIGNAL_RIGHT_ACTION, function(_, inputState)
-		if inputState == Enum.UserInputState.Begin and session then
-			VehicleControls.ToggleTurnSignal(session.CarModel, "Right")
+		if inputState == Enum.UserInputState.Begin then
+			toggleTurnSignal("Right")
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.E)
@@ -356,24 +402,17 @@ local function bindDrivingControls()
 	-- key) is precisely the case where no key-up is ever coming, and letting
 	-- that leave the horn on would strand it until the server's timeout.
 	ContextActionService:BindAction(HORN_ACTION, function(_, inputState)
-		if not session then
-			return Enum.ContextActionResult.Sink
-		end
 		if inputState == Enum.UserInputState.Begin then
-			hornHeld = true
-			VehicleControls.SetHorn(session.CarModel, true)
+			setHorn(true)
 		elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
-			hornHeld = false
-			VehicleControls.SetHorn(session.CarModel, false)
+			setHorn(false)
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.H)
 
-	-- Only worth binding at all for a player who doesn't already have the
-	-- perk - there is nothing here for T to open for one who does.
 	ContextActionService:BindAction(THIRD_PERSON_SHOP_ACTION, function(_, inputState)
-		if inputState == Enum.UserInputState.Begin and not VehicleViewMode.HasThirdPersonAccess() then
-			VehicleThirdPersonShop.Toggle()
+		if inputState == Enum.UserInputState.Begin then
+			toggleThirdPersonShop()
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.T)
@@ -426,6 +465,7 @@ local function endDrive(expected)
 	session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	session.Dashboard:Destroy()
 	session.ControlsHint:Destroy()
+	session.TouchControls:Destroy()
 	if session.ShiftSound then
 		session.ShiftSound:Destroy()
 	end
@@ -468,6 +508,15 @@ local function beginDrive(humanoid, seatPart)
 		Gearbox = Gearbox.new(config),
 		Dashboard = VehicleDashboard.new(player),
 		ControlsHint = VehicleControlsHint.new(player),
+		TouchControls = VehicleTouchControls.new(player, {
+			OnExit = tryExitVehicle,
+			OnHandbrakeChanged = setHandbrake,
+			OnHeadlightsToggle = toggleHeadlights,
+			OnTurnSignal = toggleTurnSignal,
+			OnHornChanged = setHorn,
+			OnThirdPersonShop = toggleThirdPersonShop,
+			ShowThirdPersonButton = not VehicleViewMode.HasThirdPersonAccess(),
+		}),
 		Handbrake = false,
 		DriveThrottle = 0,
 		DriveRpm = config.Transmission.IdleRpm,
