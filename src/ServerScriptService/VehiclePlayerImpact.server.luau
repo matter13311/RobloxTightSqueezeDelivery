@@ -64,6 +64,14 @@ local pedestrianHitRemote = Instance.new("RemoteEvent")
 pedestrianHitRemote.Name = "VehiclePedestrianHit"
 pedestrianHitRemote.Parent = ReplicatedStorage
 
+-- Server -> every client. Fired once per knockdown so nearby players hear it;
+-- see VehicleRunOverSounds for the id list and VehicleCrashDetector's
+-- impactSoundRemote handling for the pattern this copies (the server decides
+-- WHERE, each client picks its own sound and plays it locally, positioned).
+local runOverSoundRemote = Instance.new("RemoteEvent")
+runOverSoundRemote.Name = "VehicleRunOverSound"
+runOverSoundRemote.Parent = ReplicatedStorage
+
 local lastKnockdown = {} -- [Humanoid] = os.clock() of the last knockdown kick
 local recoveryGeneration = {} -- [Humanoid] = number, bumped by every hit so an earlier hit's recovery timer can't stand someone up early
 local reportBuckets = {} -- [Player] = { Count, WindowStart }
@@ -165,6 +173,11 @@ local function knockDown(humanoid, character, vehicleVelocity)
 	RagdollUtility.Start(character) -- no-op if a previous hit already ragdolled them
 	humanoid.PlatformStand = true
 	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if root then
+		runOverSoundRemote:FireAllClients(root.Position)
+	end
 
 	local speed = vehicleVelocity.Magnitude
 	local linearVelocity = vehicleVelocity.Unit * (speed * VehicleCollision.KnockdownSpeedFraction)
