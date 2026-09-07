@@ -181,6 +181,39 @@ local function buildToggle(definition, control)
 	return render
 end
 
+-- A button, for a row that DOES something rather than holding a value (see
+-- GameSettings' ACTIONS note). Returns a no-op render for the same reason the
+-- other two return a real one: the build loop below does not want to know which
+-- kind of control it just made.
+--
+-- Firing one CLOSES THE MENU. Every other row in here changes something you can
+-- see behind the panel while the panel is open - a mirror going off, a render
+-- distance dropping - so staying open is the right answer for them. An action
+-- acts on the game, and leaving the settings panel sitting over the thing the
+-- player just asked to see would make the button look like it did nothing.
+local function buildAction(definition, control, close)
+	local button = Instance.new("TextButton")
+	button.AnchorPoint = Vector2.new(1, 0.5)
+	button.Position = UDim2.new(1, 0, 0.5, 0)
+	button.Size = UDim2.new(1, 0, 0, 34)
+	button.BackgroundColor3 = COLORS.Fill
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 14
+	button.TextColor3 = COLORS.Text
+	button.Text = definition.ButtonText or definition.Label
+	button.Parent = control
+	corner(button, 8)
+
+	button.Activated:Connect(function()
+		if GameSettings.FireAction(definition.Key) then
+			close()
+		end
+	end)
+
+	return function() end
+end
+
 local function buildSlider(definition, control)
 	local readout = label(control, "", 13, COLORS.Muted, true)
 	readout.Position = UDim2.new(0, 0, 0, 0)
@@ -267,6 +300,11 @@ end
 -- Menu construction
 -- =========================================================================
 
+-- Assigned once the open/close machinery below exists. Actions need to be able
+-- to close the menu, and buildMenu runs before setOpen is defined - a forward
+-- declaration is cheaper than reordering the file around one button.
+local setOpen
+
 local function buildMenu()
 	screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "SettingsMenu"
@@ -292,7 +330,9 @@ local function buildMenu()
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.new(0.5, 0, 0.72, 0)
+	-- Wide enough in scale to still read as a real panel on a phone screen -
+	-- see the MinSize note below for why the old 0.5 scale was the actual bug.
+	panel.Size = UDim2.new(0.92, 0, 0.8, 0)
 	panel.BackgroundColor3 = COLORS.Panel
 	panel.BorderSizePixel = 0
 	panel.Active = true
@@ -300,7 +340,12 @@ local function buildMenu()
 	corner(panel, 10)
 
 	local constraint = Instance.new("UISizeConstraint")
-	constraint.MinSize = Vector2.new(420, 320)
+	-- MinSize.X used to be 420 - wider than a typical phone screen (~360-430px
+	-- portrait) outright, so on mobile this panel was clamped to a width that
+	-- overflowed both edges before a single row was drawn, with no way to
+	-- reach whatever fell past them. 300 still reads as a real settings panel
+	-- while actually fitting on the narrowest phones this game runs on.
+	constraint.MinSize = Vector2.new(300, 320)
 	constraint.MaxSize = Vector2.new(620, 560)
 	constraint.Parent = panel
 
@@ -373,9 +418,16 @@ local function buildMenu()
 			if (definition.Category or "General") == category then
 				order += 1
 				local control = buildRow(definition, order)
-				local render = if definition.Type == "Toggle"
-					then buildToggle(definition, control)
-					else buildSlider(definition, control)
+				local render
+				if definition.Type == "Toggle" then
+					render = buildToggle(definition, control)
+				elseif definition.Type == "Action" then
+					render = buildAction(definition, control, function()
+						setOpen(false)
+					end)
+				else
+					render = buildSlider(definition, control)
+				end
 				render()
 				renderers[definition.Key] = render
 			end
@@ -526,7 +578,7 @@ end
 
 local launcherGui
 
-local function setOpen(open)
+setOpen = function(open)
 	if isOpen == open then
 		return
 	end

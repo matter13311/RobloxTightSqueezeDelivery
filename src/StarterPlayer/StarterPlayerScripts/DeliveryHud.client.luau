@@ -30,6 +30,7 @@ local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
+local ResponsiveScale = require(ReplicatedStorage.Modules.UI.ResponsiveScale)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local player = Players.LocalPlayer
@@ -138,6 +139,7 @@ jobFrame.BackgroundTransparency = 0.1
 jobFrame.BorderSizePixel = 0
 jobFrame.Visible = false
 jobFrame.Parent = screenGui
+ResponsiveScale.Fit(jobFrame, { Margin = 12 })
 corner(jobFrame, 8)
 stroke(jobFrame)
 
@@ -166,6 +168,13 @@ jobValue.Size = UDim2.new(1, -24, 0, 16)
 -- than holding a fixed three, and there is now a footer under the list carrying
 -- the pool's state and the refresh button.
 local board = Instance.new("Frame")
+-- NAMED, and the name is load-bearing: TutorialGuide.client.luau finds this
+-- frame by it (through PlayerGui.DeliveryGui) to draw a pulsing outline around
+-- the board during the "pick a job" step, which is the one tutorial step whose
+-- target is a panel rather than a place. That lookup is a FindFirstChild the
+-- tutorial does without if it comes back nil, so renaming this costs the
+-- outline and nothing else - never an error, and never a stuck step.
+board.Name = "ContractBoard"
 board.Size = UDim2.fromOffset(520, 500)
 board.Position = UDim2.fromScale(0.5, 0.5)
 board.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -173,6 +182,11 @@ board.BackgroundColor3 = PANEL
 board.BorderSizePixel = 0
 board.Visible = false
 board.Parent = screenGui
+-- Designed at a fixed 520x500; on a phone screen that overflows both edges
+-- with the cards and the refresh button unreachable past them. See
+-- ResponsiveScale's header for why a uniform shrink beats reworking this
+-- board's whole layout into percentages.
+ResponsiveScale.Fit(board, { Margin = 16 })
 corner(board, 10)
 stroke(board)
 
@@ -201,6 +215,10 @@ corner(closeButton, 6)
 -- panel, and a list that silently clips the jobs a player levelled up to unlock
 -- is worse than no cap increase at all.
 local offerList = Instance.new("ScrollingFrame")
+-- Named, like ContractBoard above and for the same reason: the tutorial dims the
+-- board down to the FIRST card during its "pick a job" step, and it finds that
+-- card as OfferList.Offer1. Cards are named below.
+offerList.Name = "OfferList"
 offerList.Position = UDim2.fromOffset(20, 76)
 offerList.Size = UDim2.new(1, -40, 1, -200)
 offerList.BackgroundTransparency = 1
@@ -329,6 +347,7 @@ summary.BackgroundColor3 = PANEL
 summary.BorderSizePixel = 0
 summary.Visible = false
 summary.Parent = screenGui
+ResponsiveScale.Fit(summary, { Margin = 16 })
 corner(summary, 10)
 -- Kept, because this panel is reused for a cancelled contract as well as a
 -- completed one and the edge recolours to say which (see showCancelled).
@@ -472,6 +491,8 @@ local function makeOfferCard(offer, index)
 	local cargoType = CargoTypes.GetOrDefault(offer.TypeId)
 
 	local card = Instance.new("TextButton")
+	-- Offer1, Offer2, ... in board order - see OfferList above.
+	card.Name = "Offer" .. index
 	card.Size = UDim2.new(1, 0, 0, 96)
 	card.BackgroundColor3 = CARD
 	card.BorderSizePixel = 0
@@ -1101,7 +1122,7 @@ local function truckIsInBay()
 	if not chassis then
 		return false
 	end
-	if chassis.AssemblyLinearVelocity.Magnitude > DeliveryConfig.Parking.StoppedSpeed then
+	if not ParkGrade.IsStopped(chassis) then
 		return false
 	end
 	for _, space in spaces do
@@ -1135,7 +1156,14 @@ end
 -- A second of grace costs nothing, since the truck is stationary and nothing
 -- can have changed, and it makes leaving the bay the only thing that closes the
 -- board.
-local LEAVE_GRACE_SECONDS = 1
+--
+-- The duration comes from DeliveryConfig rather than from a constant here,
+-- because the tutorial has to agree with it about whether the board is open -
+-- see LeaveGraceSeconds for why that agreement is load-bearing. The velocity
+-- half of the flicker described above is fixed properly now, in
+-- ParkGrade.IsStopped; this grace stays for the containment half, which is a
+-- bounding-box corner sitting on the tolerance line as the body rocks.
+local LEAVE_GRACE_SECONDS = DeliveryConfig.Parking.LeaveGraceSeconds
 local outOfBayFor = 0
 
 -- Quarter-second polling, matching the server's own arrival poll. Cheap enough

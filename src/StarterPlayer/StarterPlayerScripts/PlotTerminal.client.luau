@@ -14,6 +14,7 @@ local UserInputService = game:GetService("UserInputService")
 local SoundService = game:GetService("SoundService")
 
 local CustomPrompt = require(ReplicatedStorage.Modules.UI.CustomPrompt)
+local ResponsiveScale = require(ReplicatedStorage.Modules.UI.ResponsiveScale)
 local PlotOwnership = require(ReplicatedStorage.Modules.Plots.PlotOwnership)
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
@@ -117,12 +118,31 @@ screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
+-- NAMED, and load-bearing: TutorialGuide.client.luau finds this panel and the
+-- spawn button inside it (through PlayerGui.PlotTerminalGui) to dim everything
+-- in here except the one control its current step is asking for. That lookup is
+-- a FindFirstChild it does without if it comes back nil, so renaming either
+-- costs the tutorial's spotlight and nothing else.
+main.Name = "TerminalPanel"
 main.Size = UDim2.fromOffset(720, 700)
 main.Position = UDim2.fromScale(0.5, 0.5)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = PANEL
 main.BorderSizePixel = 0
 main.Parent = screenGui
+
+-- Designed at a fixed 720x700 for a desktop screen; on a phone that would
+-- otherwise run off both edges with no way to reach the tabs or the close
+-- button. This shrinks the whole panel - everything in it, uniformly - to
+-- fit whatever viewport it is actually shown on. See ResponsiveScale's
+-- header for why a single UIScale here beats reworking every child below.
+--
+-- MinScale lower than the default: 720 is wide enough that the default floor
+-- (0.55, meant to stop text going illegibly small) would still leave this a
+-- few pixels wider than the narrowest phone screens. Actually fitting matters
+-- more than the last bit of text size for a panel this much bigger than a
+-- phone to begin with.
+ResponsiveScale.Fit(main, { Margin = 16, MinScale = 0.42 })
 
 Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
 local mainEdge = Instance.new("UIStroke", main)
@@ -231,6 +251,7 @@ infoPanel.BackgroundColor3 = PANEL
 infoPanel.BorderSizePixel = 0
 infoPanel.ZIndex = 11
 infoPanel.Parent = infoModal
+ResponsiveScale.Fit(infoPanel, { Margin = 16 })
 Instance.new("UICorner", infoPanel).CornerRadius = UDim.new(0, 12)
 Instance.new("UIStroke", infoPanel).Color = PANEL_EDGE
 
@@ -409,6 +430,7 @@ vehicleNameLabel.Text = "--"
 vehicleNameLabel.Parent = carousel
 
 local spawnButton = Instance.new("TextButton")
+spawnButton.Name = "SpawnVehicleButton" -- see TerminalPanel above
 spawnButton.Size = UDim2.fromOffset(160, 30)
 spawnButton.Position = UDim2.new(0.5, 0, 0, 162)
 spawnButton.AnchorPoint = Vector2.new(0.5, 0)

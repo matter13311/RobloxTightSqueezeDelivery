@@ -21,10 +21,32 @@ local GameSettings = {}
 -- Type is what control the menu draws:
 --   "Toggle"  a checkbox. Default is a boolean.
 --   "Slider"  a dragged bar. Needs Min, Max and Step; Default is a number.
+--   "Action"  a button. Has no value at all - see the ACTIONS note below.
 --
 -- Format is optional and only cosmetic - it turns the raw value into the text
 -- shown beside the control. Without it the number is shown bare.
+--
+-- ACTIONS are the odd one out and worth a paragraph. Everything else in this
+-- file is a VALUE the menu reads and writes; an action is a button that DOES
+-- something, once, somewhere else in the game. It is here rather than
+-- hand-built into SettingsMenu (which is what the admin money button does)
+-- because the menu's whole design rule is that it never names an individual
+-- setting - and the moment a second hand-built row appears, that rule is gone
+-- and the menu is back to being a list of special cases.
+--
+-- An action carries a ButtonText and nothing else. Whoever owns the behaviour
+-- registers it with GameSettings.OnAction(key, handler); the menu just fires
+-- the key. Neither side knows about the other, which is how the tutorial can
+-- own its own replay button without SettingsMenu importing anything from it.
 local DEFINITIONS = {
+	{
+		Category = "Tutorial",
+		Key = "ReplayTutorial",
+		Label = "Replay the tutorial",
+		Description = "Walks you through claiming a garage, picking up cargo at the depot and making a delivery. Handy for showing a friend.",
+		Type = "Action",
+		ButtonText = "Start",
+	},
 	{
 		Category = "Mirrors",
 		Key = "MirrorsEnabled",
@@ -87,16 +109,25 @@ local DEFINITIONS = {
 
 -- Category order in the menu. Anything not listed is appended alphabetically,
 -- so a new category still shows up without being registered here.
-local CATEGORY_ORDER = { "Mirrors" }
+-- Tutorial first: it is the only row here that a lost player is looking for,
+-- and every other category is a comfort option they can find at leisure.
+local CATEGORY_ORDER = { "Tutorial", "Mirrors" }
 
 local values = {}
 local byKey = {}
 for _, definition in DEFINITIONS do
+	-- An Action has no Default, so this leaves no entry for it - which is
+	-- exactly right: Get returns nil for a key that is not a value, and Set
+	-- refuses it below.
 	values[definition.Key] = definition.Default
 	byKey[definition.Key] = definition
 end
 
 local listeners = {}
+-- [key] = handler, for Action definitions. One handler per key, last
+-- registration wins - an action is a single button and two things claiming it
+-- would be a bug, not a feature.
+local actionHandlers = {}
 
 local function clampToDefinition(definition, value)
 	if definition.Type == "Toggle" then
@@ -128,8 +159,8 @@ end
 -- should not break whatever was still reading it.
 function GameSettings.Set(key, value)
 	local definition = byKey[key]
-	if not definition then
-		return
+	if not definition or definition.Type == "Action" then
+		return -- an action is a button, not a value; there is nothing to set
 	end
 	local clamped = clampToDefinition(definition, value)
 	if values[key] == clamped then
@@ -139,6 +170,33 @@ function GameSettings.Set(key, value)
 	for _, listener in listeners do
 		listener(key, clamped)
 	end
+end
+
+-- Registers what an "Action" row's button actually does. Returns a function
+-- that unregisters it.
+--
+-- Deliberately tolerant of an unknown key, like Set is, and for the same
+-- reason: a setting being removed should not break whatever was still wired to
+-- it. The row simply never appears and the handler is never called.
+function GameSettings.OnAction(key, handler)
+	actionHandlers[key] = handler
+	return function()
+		if actionHandlers[key] == handler then
+			actionHandlers[key] = nil
+		end
+	end
+end
+
+-- Called by the menu when an action's button is pressed. Returns whether
+-- anything was actually listening, so the menu can decline to close itself
+-- over a button that did nothing.
+function GameSettings.FireAction(key)
+	local handler = actionHandlers[key]
+	if not handler then
+		return false
+	end
+	handler()
+	return true
 end
 
 -- Returns a function that disconnects. Called as listener(key, value) for

@@ -63,6 +63,28 @@ local function footprintSlack(carModel, spacePart)
 	return worst
 end
 
+-- Is this chassis parked rather than merely slow?
+--
+-- HORIZONTAL AND VERTICAL SPEED ARE JUDGED SEPARATELY, and that is the whole
+-- content of this function - see DeliveryConfig.Parking.StoppedVerticalSpeed
+-- for the long version. Briefly: a loaded car sitting on a raycast suspension
+-- bobs, `AssemblyLinearVelocity.Magnitude` folds that bob into one number, and
+-- every caller below then flickers in time with the springs.
+--
+-- It lives HERE, next to the geometry, for the same reason Evaluate does: the
+-- HUD, the tutorial and the server's payout all have to give the same answer
+-- to "is it parked", and they were each asking it in their own inlined line.
+-- Three copies of a rule is three chances to fix it in two places.
+function ParkGrade.IsStopped(chassis)
+	if not chassis then
+		return false
+	end
+	local velocity = chassis.AssemblyLinearVelocity
+	local parking = DeliveryConfig.Parking
+	local horizontal = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+	return horizontal <= parking.StoppedSpeed and math.abs(velocity.Y) <= parking.StoppedVerticalSpeed
+end
+
 -- 0 when the truck is ApproachStuds or more outside the bay, rising to 1 the
 -- instant it is fully inside. 1 therefore means EXACTLY "Evaluate would say
 -- Inside", which is what makes it safe to drive a go/no-go colour from.

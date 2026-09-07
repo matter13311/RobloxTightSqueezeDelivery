@@ -38,16 +38,55 @@ DeliveryConfig.World = {
 --=============================================================================
 
 DeliveryConfig.Parking = {
-	-- studs/s under which the truck counts as stopped. Matches the spirit of
-	-- VehiclePhysics' StoppedSpeed: above the residual jitter of the low-speed
-	-- brake controller, below anything a player would call moving.
+	-- studs/s under which the vehicle counts as stopped, measured HORIZONTALLY
+	-- ONLY - see ParkGrade.IsStopped, which is the one place this is applied.
+	-- Matches the spirit of VehiclePhysics' StoppedSpeed: above the residual
+	-- jitter of the low-speed brake controller, below anything a player would
+	-- call moving.
 	StoppedSpeed = 1.5,
+
+	-- The same question, on the vertical axis, and deliberately eight times
+	-- more forgiving.
+	--
+	-- A parked car on a raycast suspension does not sit still: it bobs, and it
+	-- bobs HARDER the more cargo is loaded into it, which is exactly the moment
+	-- the game most needs to agree that it is parked. Measured as one speed
+	-- (which is what `AssemblyLinearVelocity.Magnitude` gives you) that bob
+	-- crosses 1.5 studs/s several times a second, and every system that asks
+	-- "is it parked" flickers in step with the springs - the job board opening
+	-- and closing, an accepted contract silently refused on the one frame the
+	-- click landed, and a delivery that never completes because the one-second
+	-- hold below is reset before it can ever elapse.
+	--
+	-- Splitting the axes fixes all of that at once, and is the more correct
+	-- test rather than merely a looser one: "stopped" means the vehicle is not
+	-- GOING anywhere, and bouncing in place is not going anywhere. The vertical
+	-- limit is kept rather than dropped entirely so that a car in free fall -
+	-- which passes a horizontal-only test perfectly - cannot be parked, and it
+	-- sits far above any bob and far below the ~60 studs/s a fall reaches in a
+	-- third of a second.
+	StoppedVerticalSpeed = 12,
+
 	-- ...and for this long. The delay is not padding: the server's copy of a
 	-- client-owned chassis is a lagging echo while it MOVES (see
 	-- VehicleDamage's header), and a truck that has been still for a second is
 	-- the one case where the echo is exactly right. Good feel and correct
 	-- validation happen to want the same thing here.
 	StoppedHoldSeconds = 1,
+
+	-- How long a vehicle that has just failed the parked test still COUNTS as
+	-- parked, for anything that only displays something.
+	--
+	-- Shared rather than left as a private constant in the HUD, because it is
+	-- the number that decides whether two systems agree: the board is shown on
+	-- this grace, so anything else that says "the board is open" - the
+	-- tutorial's step four, today - has to be told the same story or it
+	-- contradicts what the player can see on their own screen. That
+	-- disagreement is precisely the bug this constant was extracted to kill.
+	--
+	-- NOT applied to anything that pays out or loads cargo. Those re-check the
+	-- instant they act, on purpose.
+	LeaveGraceSeconds = 1,
 
 	-- |dot| between the truck's forward and the space's forward, above which
 	-- the truck counts as squarely in the bay one way or the other. 0.85 is
@@ -146,10 +185,18 @@ DeliveryConfig.Guides = {
 	-- ApproachStuds is "how close am I to being parked in it". Without this
 	-- gate every bay in the map glows red the moment you sit in a vehicle,
 	-- which turns the guide from a hint into wallpaper.
-	ShowWithinStuds = 45,
+	--
+	-- Raised from 45, which was tuned before the tutorial existed and turned out
+	-- to be about a second and a half of driving - the posts appeared roughly as
+	-- the player was already braking, which is too late to be aimed at. The gate
+	-- still does its job at this range: only ONE group is ever lit (the depot,
+	-- or the single destination being delivered to), so raising it shows more of
+	-- the bay the player is heading for and not one extra bay anywhere else.
+	ShowWithinStuds = 120,
 	-- The guide fades in across this last stretch of ShowWithinStuds rather
-	-- than popping on at the boundary.
-	FadeBandStuds = 15,
+	-- than popping on at the boundary. Widened with the range above so the fade
+	-- stays a gradual arrival rather than a flash at 120 studs.
+	FadeBandStuds = 40,
 
 	-- THE GUIDE IS FOUR CORNER POSTS AND NOTHING ELSE. It used to draw a bar
 	-- along each edge as well, and the two together read as an upside-down

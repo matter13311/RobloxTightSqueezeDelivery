@@ -101,6 +101,20 @@ local adminGrantMoneyEvent = Instance.new("RemoteEvent")
 adminGrantMoneyEvent.Name = "AdminGrantMoney"
 adminGrantMoneyEvent.Parent = ReplicatedStorage
 
+-- Client -> server, fire and forget: the guided first delivery is over. There
+-- is nothing to validate and nothing to refuse - it sets a flag whose only
+-- effect is that this player is not offered the tutorial again, and a player
+-- who forged it would be opting OUT of help. That is why it is a RemoteEvent
+-- with no reply rather than a RemoteFunction.
+--
+-- The tutorial itself lives entirely on the client (TutorialGuide.client.luau)
+-- for the same reason the depot guides do: it draws one player's private
+-- markers and is an authority on nothing. This flag is the only part of it the
+-- server has any business knowing.
+local tutorialFinishedEvent = Instance.new("RemoteEvent")
+tutorialFinishedEvent.Name = "TutorialFinished"
+tutorialFinishedEvent.Parent = ReplicatedStorage
+
 --============================================================================
 -- Plot discovery + the "who owns this" nameplate
 --============================================================================
@@ -558,6 +572,17 @@ local function flushPlayerData(player)
 		session.ClaimedPlot = nil
 	end
 
+	-- Leaving counts as finishing it, whether or not they got to the end.
+	--
+	-- The alternative - only the completion remote sets this - means a player
+	-- who quits during step three is restarted at step one on their next join,
+	-- and again the join after that, forever, because a player who bounces off
+	-- the tutorial is exactly the player who keeps bouncing off it. The
+	-- tutorial is a first impression, not a gate, and it can always be replayed
+	-- deliberately from the settings menu (see GameSettings' ReplayTutorial
+	-- action).
+	data.TutorialDone = true
+
 	PlayerDataStore.Save(player, data)
 	PlayerDataStore.Release(player)
 end
@@ -771,6 +796,14 @@ adminGrantMoneyEvent.OnServerEvent:Connect(function(player)
 	setMoney(player, data, data.Money + Admin.GrantAmount)
 end)
 
+tutorialFinishedEvent.OnServerEvent:Connect(function(player)
+	local data = playerData[player.UserId]
+	if not data then
+		return
+	end
+	data.TutorialDone = true
+end)
+
 getPlotDataFunction.OnServerInvoke = function(player)
 	local data = playerData[player.UserId]
 	local session = sessionState[player.UserId]
@@ -799,5 +832,11 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		HasSpawnedVehicle = session.SpawnedVehicle ~= nil,
 		UpgradeLevels = upgradeLevels,
 		CarConfigs = carConfigs,
+		-- Carried on the panel's own round trip rather than on a remote of its
+		-- own. The tutorial has to ask this exactly once, at startup, and this
+		-- is already the call every client makes at startup - a second
+		-- RemoteFunction for one boolean would be a second thing to keep in
+		-- step with the save's shape for no gain.
+		TutorialDone = data.TutorialDone and true or false,
 	}
 end

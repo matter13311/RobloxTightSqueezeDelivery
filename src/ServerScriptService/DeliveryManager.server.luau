@@ -197,10 +197,6 @@ end
 -- Accepting
 --=============================================================================
 
-local function isStopped(chassis)
-	return chassis.AssemblyLinearVelocity.Magnitude <= DeliveryConfig.Parking.StoppedSpeed
-end
-
 -- Which of a container's spaces the truck is parked in, plus its grade.
 local function findParkedSpace(carModel, spaces)
 	for _, space in spaces do
@@ -255,7 +251,7 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- destination: a moving, client-owned chassis is a lagging echo on the
 	-- server, and a stationary one is not.
 	local space = findParkedSpace(carModel, Destinations.SpacesIn(loadingBay))
-	if not space or not isStopped(carModel.PrimaryPart) then
+	if not space or not ParkGrade.IsStopped(carModel.PrimaryPart) then
 		return
 	end
 
@@ -408,8 +404,23 @@ RunService.Heartbeat:Connect(function(delta)
 		end
 
 		local space, grade = findParkedSpace(carModel, destination.Spaces)
-		if not space or not isStopped(carModel.PrimaryPart) then
-			stoppedFor[player] = 0
+		if not space or not ParkGrade.IsStopped(carModel.PrimaryPart) then
+			-- DRAINED, not reset to zero. The difference matters because this
+			-- is the one place in the game with no grace period anywhere else
+			-- to hide behind: a single failing poll used to throw away the
+			-- whole accumulated hold, so a vehicle that was parked for 95% of
+			-- frames and jittering for the other 5% could sit in the bay
+			-- forever and never be paid - which is exactly what a loaded car
+			-- bouncing on its suspension does. ParkGrade.IsStopped now ignores
+			-- that bob, but a heavy enough load, a kerb, or another car nudging
+			-- the bumper can still produce the odd bad poll, and losing a
+			-- delivery to one frame is not a rule anybody would guess.
+			--
+			-- Draining at the same rate it fills keeps the rule honest: what is
+			-- required is a NET second of being stopped, so a vehicle rolling
+			-- through the bay fails continuously, drains to zero and is never
+			-- paid, which is the behaviour the hold exists for.
+			stoppedFor[player] = math.max((stoppedFor[player] or 0) - elapsed, 0)
 			continue
 		end
 

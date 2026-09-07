@@ -19,6 +19,7 @@
 --     Contracts = { { Id, Stop, TypeId, UnitsFraction }, ... }, -- the standing job board, see ContractPool
 --     ContractsRegenAt = number,      -- os.time() the next contract slot is granted, or 0 when the board is full
 --     NextContractId = number,        -- so a rejoin can't reissue an id the player is still holding
+--     TutorialDone = boolean,         -- false only for a player who has never been through the guided first delivery
 --   }
 --
 -- Deliveries/Contracts are persisted for one reason: contracts are sold. A
@@ -94,6 +95,14 @@ local function newDefaultData()
 		Contracts = nil,
 		ContractsRegenAt = 0,
 		NextContractId = 0,
+		-- The one field a brand new player is defined by. Everything else here
+		-- starts at a zero that an existing player could legitimately also be
+		-- sitting on; this starts at the value that means "has never played",
+		-- which is what makes the tutorial fire exactly once. See
+		-- PlotManager's flushPlayerData for the other half - it is set on the
+		-- way OUT as well as on completion, so a player who quits halfway
+		-- through is not walked through it again on their next join.
+		TutorialDone = false,
 	}
 end
 
@@ -109,6 +118,21 @@ local function reconcile(data)
 	data.OwnedVehicleIds = type(data.OwnedVehicleIds) == "table" and data.OwnedVehicleIds or {}
 	data.UpgradeLevels = type(data.UpgradeLevels) == "table" and data.UpgradeLevels or {}
 	data.CarConfigs = type(data.CarConfigs) == "table" and data.CarConfigs or {}
+
+	-- Defaults to TRUE for a save that predates the field, not false: an
+	-- existing player already knows how the game works, and dropping every one
+	-- of them into a five-step tutorial the next time they log in is a worse
+	-- failure than a brand new player missing it. `data.Money` above is the
+	-- shape to compare against - a missing field there means zero and zero is
+	-- harmless, where a missing field here means "unknown" and the two possible
+	-- guesses are not equally cheap.
+	--
+	-- Brand new players never reach this branch with a nil: newDefaultData
+	-- writes the explicit false, so they are the only ones who get the
+	-- tutorial.
+	if type(data.TutorialDone) ~= "boolean" then
+		data.TutorialDone = true
+	end
 
 	-- Drop anything the catalog no longer knows about, BEFORE the checks
 	-- below start trusting these ids. A vehicle id is only ever as stable as
@@ -221,10 +245,26 @@ function PlayerDataStore.Load(player)
 		-- fills in the contract board (see ContractPool.Reconcile), and a
 		-- player on fallback defaults still has to be able to take a job. They
 		-- keep it for the session and none of it is ever written back.
-		return reconcile(newDefaultData())
+		local fallback = reconcile(newDefaultData())
+		-- ...but NOT treated as a new player for the tutorial's purposes. This
+		-- branch means "we could not find out", and the odds are overwhelming
+		-- that an unreachable save is an existing one. Walking a returning
+		-- player through the first-delivery tutorial because a DataStore
+		-- request timed out is the more annoying of the two wrong answers.
+		fallback.TutorialDone = true
+		return fallback
 	end
 
 	loadSucceeded[player.UserId] = true
+	-- A nil result is the DataStore saying this player has never saved AT ALL,
+	-- which is a different answer from a save that came back missing a field -
+	-- and reconcile cannot tell the two apart once the table reaches it, since
+	-- both look like an absent key. TutorialDone is the one field where they
+	-- have to mean opposite things (see its branch in reconcile), so the
+	-- distinction is drawn here, where it is still visible.
+	if result == nil then
+		return reconcile(newDefaultData())
+	end
 	return reconcile(result)
 end
 
