@@ -104,7 +104,14 @@ local function SetUpAnimatableWeld(chassis, part, weldName)
 	weld.Name = weldName
 	weld.Part0 = chassis
 	weld.Part1 = part
-	weld.C0 = chassis.CFrame:ToObjectSpace(part.CFrame)
+	-- C1 puts the joint at the part's PivotOffset (its "Set Pivot" point in
+	-- Studio) rather than its raw geometric origin, so the client-side
+	-- rotation trick in VehicleDashboardGauges/RayCastSuspension - which spins
+	-- the part by rotating C0 - swings it around that pivot instead of its
+	-- center. C0 has to fold C1 back in so the resting pose stays exactly
+	-- where the part was left in Studio.
+	weld.C1 = part.PivotOffset
+	weld.C0 = chassis.CFrame:ToObjectSpace(part.CFrame * weld.C1)
 	weld:SetAttribute("BaseC0", weld.C0)
 	weld.Parent = part
 end
