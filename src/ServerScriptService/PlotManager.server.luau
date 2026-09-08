@@ -27,10 +27,12 @@ local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwner
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
+local UpgradePasses = require(ReplicatedStorage.Modules.Vehicles.UpgradePasses)
 local Admin = require(ReplicatedStorage.Modules.Admin)
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
 local ContractPool = require(script.Parent.Modules.ContractPool)
+local PassOwnership = require(script.Parent.Modules.PassOwnership)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -598,7 +600,30 @@ local function flushPlayerData(player)
 	PlayerDataStore.Release(player)
 end
 
+-- The one place that answers "does this player own this car's upgrade pass".
+-- Three callers ask (buy, tune, and the panel's own data fetch) and they must
+-- never disagree, which is also what makes the testing override below a single
+-- edit rather than three.
+local function ownsUpgradePass(player, vehicleId)
+	if UpgradePasses.DebugForceUnowned then
+		return false
+	end
+	return PassOwnership.Owns(player, UpgradePasses.PassIdFor(vehicleId))
+end
+
+-- Warms this player's game-pass answers while they are still walking to a
+-- plot, so the first terminal open does not stall on a web call per gated
+-- stat. Fire-and-forget - PassOwnership.Owns is correct with or without it.
+local function prefetchUpgradePasses(player)
+	local passIds = {}
+	for _, passId in UpgradePasses.PassIdByVehicleId do
+		table.insert(passIds, passId)
+	end
+	PassOwnership.Prefetch(player, passIds)
+end
+
 Players.PlayerAdded:Connect(initPlayerData)
+Players.PlayerAdded:Connect(prefetchUpgradePasses)
 Players.PlayerRemoving:Connect(flushPlayerData)
 
 -- BindToClose blocks server shutdown until this returns, which is what makes
@@ -635,8 +660,13 @@ game:BindToClose(function()
 	done:Destroy()
 end)
 
+-- Anyone who beat this script to the DataModel. Rare in practice (server
+-- scripts run before the first player joins) but free to cover, and skipping
+-- the prefetch here would leave exactly those players paying a web call on
+-- their first terminal open.
 for _, player in Players:GetPlayers() do
 	initPlayerData(player)
+	prefetchUpgradePasses(player)
 end
 
 --============================================================================
@@ -738,6 +768,20 @@ buyUpgradeEvent.OnServerInvoke = function(player, vehicleId, statName)
 		return false
 	end
 
+	-- The Robux half of the wall. The terminal already draws these stats
+	-- padlocked and never fires this for one (see PlotTerminal_V2's locked
+	-- cards), so this only ever catches a forged call - the same relationship
+	-- every other check in this file has with the client's own UI.
+	--
+	-- Deliberately BUY-side only, and deliberately not softened by however many
+	-- levels the player already has: grandfathered levels keep a pre-pass
+	-- player's existing tuning working (see the SetCarConfigValue handler
+	-- below) but they are not a licence to keep climbing a ladder that now
+	-- costs Robux.
+	if not UpgradePasses.CanBuy(statName, ownsUpgradePass(player, vehicleId)) then
+		return false
+	end
+
 	local levels = data.UpgradeLevels[vehicleId]
 	if not levels then
 		levels = {}
@@ -778,6 +822,14 @@ setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statNam
 	-- just the nearest notch, full stop) is what stops a forged remote call
 	-- from setting a stat past what's been paid for.
 	local unlockedLevel = (data.UpgradeLevels[vehicleId] or {})[statName] or 0
+
+	-- Tuning a gated stat needs the pass OR levels already bought in it. The
+	-- second half is what keeps a player who upgraded before the pass existed
+	-- able to use what they paid in-game money for - see UpgradePasses.CanTune.
+	if not UpgradePasses.CanTune(statName, ownsUpgradePass(player, vehicleId), unlockedLevel) then
+		return
+	end
+
 	local snapped = VehicleUpgrades.NearestUnlockedValue(spec, unlockedLevel, value)
 
 	local configValues = data.CarConfigs[vehicleId]
@@ -826,10 +878,25 @@ getPlotDataFunction.OnServerInvoke = function(player)
 	local ownedVehicleIds = {}
 	local upgradeLevels = {}
 	local carConfigs = {}
+	local upgradePassOwned = {}
 	for id in data.OwnedVehicleIds do
 		table.insert(ownedVehicleIds, id)
 		upgradeLevels[id] = data.UpgradeLevels[id] or {}
 		carConfigs[id] = data.CarConfigs[id] or {}
+	end
+
+	-- A SECOND pass, deliberately not folded into the loop above: Owns yields
+	-- on a cold cache, and yielding partway through iterating OwnedVehicleIds
+	-- means a BuyVehicle that lands during the yield can insert a key into the
+	-- table this is walking - which in Lua is undefined and can throw
+	-- "invalid key to 'next'". Iterating the flat array this already built
+	-- instead has nothing to invalidate.
+	--
+	-- prefetchUpgradePasses warms the cache at join precisely so this is a
+	-- table lookup per owned car rather than a web call per owned car on the
+	-- critical path of the panel opening.
+	for _, id in ownedVehicleIds do
+		upgradePassOwned[id] = ownsUpgradePass(player, id)
 	end
 
 	return {
@@ -850,5 +917,12 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		-- RemoteFunction for one boolean would be a second thing to keep in
 		-- step with the save's shape for no gain.
 		TutorialDone = data.TutorialDone and true or false,
+		-- Keyed by VEHICLE id, not by pass id, because that is the question the
+		-- terminal actually asks ("is this car's tuning unlocked") and because a
+		-- numeric pass id as a table key is a shape the client would have to
+		-- re-derive from UpgradePasses anyway. Carried on this round trip for
+		-- the same reason TutorialDone is: the panel already makes this call
+		-- every time it opens.
+		UpgradePassOwned = upgradePassOwned,
 	}
 end

@@ -1,0 +1,12 @@
+-- Which garage terminal is live. TEMPORARY - delete this file, and the losing
+-- terminal script, once one of the two designs has been picked.
+--
+-- Both PlotTerminal.client.luau (the original) and PlotTerminal_V2.client.luau
+-- (the kid-facing redesign) are LocalScripts that build a ScreenGui named
+-- PlotTerminalGui and attach an "Open Terminal" prompt to every plot. Left to
+-- themselves they would both do it: two overlapping panels and two prompts on
+-- the same screen. Each one reads this number and returns immediately if it is
+-- not the chosen one, so exactly one is ever running.
+--
+-- Set to 1 for the original, 2 for the redesign.
+return 2

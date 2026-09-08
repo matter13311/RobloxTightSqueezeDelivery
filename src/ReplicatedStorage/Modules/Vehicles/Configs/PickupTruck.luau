@@ -46,6 +46,8 @@ return {
 		-- that decides what a delivery pays (see CargoManager.ApplyImpact).
 		-- Driving carefully is still the only thing that protects the payout.
 		BodyStrength = {
+			DisplayName = "Armor",
+			IconId = "rbxassetid://92533250100635",
 			Max = 2.5,
 			Step = 0.25,
 			BaseCost = 180,
@@ -53,6 +55,8 @@ return {
 			Description = "How much punishment the bodywork takes before panels start falling off. Higher Body Strength means more scrapes and knocks before your car starts looking wrecked. It won't protect what's in the back, though - only careful driving does that.",
 		},
 		Torque = {
+			DisplayName = "Power",
+			IconId = "rbxassetid://135577056253416",
 			Max = 25,
 			Step = 2.5,
 			BaseCost = 150,
@@ -60,6 +64,8 @@ return {
 			Description = "How hard the engine pulls when you hit the gas. Higher Torque means quicker acceleration and an easier time powering up over kerbs and ramps.",
 		},
 		MaxSpeed = {
+			DisplayName = "Top Speed",
+			IconId = "rbxassetid://103985131551349",
 			Max = 125,
 			Step = 5,
 			BaseCost = 200,
@@ -67,6 +73,8 @@ return {
 			Description = "The truck's top speed in a straight line. Higher Max Speed lets you go faster once you're up to full speed, but doesn't change how quickly you get there.",
 		},
 		SteerAngle = {
+			DisplayName = "Turning",
+			IconId = "rbxassetid://77987850174545",
 			Max = 52,
 			Step = 4,
 			BaseCost = 100,
@@ -74,6 +82,8 @@ return {
 			Description = "How sharply the front wheels can turn. Higher Steer Angle gives you a tighter turning circle, which helps a lot for threading tight gaps and parking.",
 		},
 		Stiffness = {
+			DisplayName = "Springs",
+			IconId = "rbxassetid://81458577246421",
 			Max = 110,
 			Step = 10,
 			BaseCost = 120,
@@ -85,6 +95,8 @@ return {
 		-- VehiclePhysics.Defaults). Do not raise it without re-testing for
 		-- the car shivering left-to-right at rest or after a landing.
 		Damper = {
+			DisplayName = "Smooth Ride",
+			IconId = "rbxassetid://113834210436142",
 			Max = 9,
 			Step = 1,
 			BaseCost = 130,
@@ -92,6 +104,8 @@ return {
 			Description = "How quickly the suspension settles after a bump. Higher Damper stops the truck bouncing for as long after landing a jump or hitting a pothole.",
 		},
 		SuspensionMaxLength = {
+			DisplayName = "Suspension",
+			IconId = "rbxassetid://89709264264758",
 			Max = 4.5,
 			Step = 0.25,
 			BaseCost = 110,
@@ -99,6 +113,8 @@ return {
 			Description = "How much travel the suspension has to work with. More Suspension Length soaks up bigger bumps and landings before the truck bottoms out.",
 		},
 		TractionSlipThreshold = {
+			DisplayName = "Grip",
+			IconId = "rbxassetid://108082344305577",
 			Max = 8.5,
 			Step = 0.5,
 			BaseCost = 90,
@@ -106,6 +122,8 @@ return {
 			Description = "How much a tire can slide before it's treated as slipping. Higher Wheel Traction lets you push harder into corners before the tires break loose.",
 		},
 		BrakeFriction = {
+			DisplayName = "Brakes",
+			IconId = "rbxassetid://91273321942687",
 			Max = 0.45,
 			Step = 0.05,
 			BaseCost = 100,
@@ -123,6 +141,8 @@ return {
 		-- deliberately light IS occasionally right - a Glassware run over bad
 		-- ground pays better half-empty and intact than full and smashed.
 		CargoCapacity = {
+			DisplayName = "Cargo Space",
+			IconId = "rbxassetid://133569717590420",
 			Max = 10,
 			Step = 1,
 			BaseCost = 250,

@@ -22,6 +22,15 @@ local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
 
+local TerminalVersion = require(ReplicatedStorage.Modules.UI.TerminalVersion)
+
+-- TEMPORARY, while the V2 redesign is being compared against this one. Both
+-- scripts build a ScreenGui called PlotTerminalGui and a prompt on every plot,
+-- so only the chosen one may run. See TerminalVersion.luau.
+if TerminalVersion ~= 1 then
+	return
+end
+
 local player = Players.LocalPlayer
 
 -- WaitForChild, not direct indexing: Workspace isn't guaranteed to have
