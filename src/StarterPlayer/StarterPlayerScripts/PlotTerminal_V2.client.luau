@@ -41,7 +41,7 @@
 --   The tutorial's banner is bottom-anchored, up to 580x106, and it is DRAWN
 --   OVER this panel, so the panel's bottom edge is not a safe place for
 --   anything the tutorial needs the player to press. The spawn button's bottom
---   edge sits at 324/612 of the panel - just past the halfway line - which survives
+--   edge sits at 324/624 of the panel - just past the halfway line - which survives
 --   scaling because ResponsiveScale scales the panel uniformly and so preserves
 --   that fraction exactly. Worst case is a landscape phone (the panel scales to
 --   ~0.59 there and the banner eats the bottom 126px of the screen), where the
@@ -167,6 +167,16 @@ local function label(parent, props)
 	return l
 end
 
+-- Set by TutorialGuide.client.luau for exactly as long as the tutorial is on
+-- screen. A FindFirstChild-style soft dependency: if that script never runs the
+-- attribute is simply nil, this reads false, and the terminal behaves as it does
+-- for any player who is not in the tutorial.
+local TUTORIAL_ACTIVE_ATTRIBUTE = "TutorialActive"
+
+local function isTutorialActive()
+	return player:GetAttribute(TUTORIAL_ACTIVE_ATTRIBUTE) == true
+end
+
 local function localPlayerOwnsAnyPlot()
 	for _, plotModel in VehiclePlotsFolder:GetChildren() do
 		if PlotOwnership.GetOwnerUserId(plotModel) == player.UserId then
@@ -191,7 +201,7 @@ screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
 main.Name = "TerminalPanel" -- see the tutorial note in this file's header
-main.Size = UDim2.fromOffset(720, 612)
+main.Size = UDim2.fromOffset(720, 624)
 main.Position = UDim2.fromScale(0.5, 0.5)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = PANEL
@@ -200,7 +210,7 @@ main.Parent = screenGui
 corner(main, 14)
 stroke(main, PANEL_EDGE)
 
--- Designed at a fixed 720x612. The HEIGHT is derived, not chosen: it is
+-- Designed at a fixed 720x624. The HEIGHT is derived, not chosen: it is
 -- exactly tall enough to show the car, the four free upgrade cards and the gold
 -- pass banner, and not one row more (see UPGRADE_VIEWPORT_HEIGHT). Making the
 -- panel taller would pull the first row of locked cards up into view and undo
@@ -630,15 +640,25 @@ local function padScroll(scrollingFrame)
 	padding.Parent = scrollingFrame
 end
 
-local UPGRADE_VIEWPORT_HEIGHT = CARD_HEIGHT + 12 + 64 + 4
+-- The sliver of the first locked row left showing under the banner. Without it
+-- the banner sits flush on the bottom edge with nothing past it, and there is
+-- no cue anywhere that the panel scrolls at all - so the six cards the pass
+-- actually sells are invisible to a player who never thinks to drag. Small
+-- enough to read as "there is more below" rather than as another row competing
+-- with the free upgrades, which is what a full peeking row did before.
+local PAID_ROW_PEEK = 16
+
+local UPGRADE_VIEWPORT_HEIGHT = CARD_HEIGHT + 12 + 64 + PAID_ROW_PEEK
 
 local upgradesScroll = Instance.new("ScrollingFrame")
 upgradesScroll.Size = UDim2.fromOffset(680, UPGRADE_VIEWPORT_HEIGHT)
 upgradesScroll.Position = UDim2.fromOffset(0, CAROUSEL_HEIGHT + 6)
 upgradesScroll.BackgroundTransparency = 1
 upgradesScroll.BorderSizePixel = 0
-upgradesScroll.ScrollBarThickness = 6
-upgradesScroll.ScrollBarImageColor3 = PANEL_EDGE
+upgradesScroll.ScrollBarThickness = 8
+-- Brighter than PANEL_EDGE, which at 52,58,70 on a 28,31,38 card is nearly
+-- invisible - and this is the panel's only other hint that it scrolls.
+upgradesScroll.ScrollBarImageColor3 = OWNED_SEGMENT
 upgradesScroll.CanvasSize = UDim2.fromScale(0, 0) -- grown by the UIListLayout below
 upgradesScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 upgradesScroll.Parent = garagePage
@@ -1166,7 +1186,16 @@ local function renderGarageForVehicle(data, vehicleId)
 	-- the opening is: spawn a car, drive it, earn money, and only THEN come back
 	-- wondering what the money is for. A child who meets ten upgrade cards
 	-- before their first delivery skips the whole thing.
-	local tutorialActive = data.TutorialDone == false
+	--
+	-- Read off the attribute TutorialGuide publishes, NOT off data.TutorialDone.
+	-- The save flag answers "has this player ever finished it", which is a
+	-- different question and wrong in both directions: replaying from the
+	-- settings menu runs the tutorial with the flag already true, and
+	-- flushPlayerData sets the flag on every disconnect, so from a player's
+	-- second session on it is true forever. Keying off it meant the upgrades
+	-- showed straight through the tutorial for everybody except a genuine
+	-- first-timer. See TUTORIAL_ACTIVE_ATTRIBUTE in TutorialGuide.client.luau.
+	local tutorialActive = isTutorialActive()
 	upgradesScroll.Visible = not tutorialActive
 	if tutorialActive then
 		return
@@ -1417,6 +1446,17 @@ refreshTerminalData = function()
 
 	renderShop(data)
 end
+
+-- The tutorial just started or ended while the panel was open. Redrawing rather
+-- than only toggling upgradesScroll.Visible because the render is what decides
+-- whether the cards exist at all - and this way the upgrades appear the instant
+-- the tutorial's last step is satisfied, rather than the next time the player
+-- happens to reopen the terminal.
+player:GetAttributeChangedSignal(TUTORIAL_ACTIVE_ATTRIBUTE):Connect(function()
+	if screenGui.Enabled then
+		refreshTerminalData()
+	end
+end)
 
 -- The pass just got bought. BOTH this client and the server hear this event and
 -- nothing orders them, so a redraw fired on the same frame can beat the server's

@@ -727,6 +727,31 @@ end
 
 local stop -- forward declaration; start() and the skip button both call it
 
+-- IS THE TUTORIAL ON SCREEN RIGHT NOW. Mirrored onto the local Player as an
+-- attribute because another script needs the answer and there is no honest way
+-- for it to work the answer out for itself.
+--
+-- The garage terminal hides its upgrade section while this is running: a
+-- first-time player is being told to press one button, and ten upgrade cards
+-- next to that instruction are noise the tutorial's own banner is partly
+-- sitting on top of anyway. It originally asked the SAVE for this - the
+-- TutorialDone field off GetPlotData - which is a different question and gets
+-- the wrong answer twice over. Replaying from the settings menu runs the
+-- tutorial with the flag already true, and flushPlayerData sets the flag on
+-- every disconnect, so from a player's second session onward it is permanently
+-- true while the tutorial may well be running. "Saved as completed" and
+-- "happening right now" are not the same fact, and only this one is live.
+--
+-- Client-only and deliberately not replicated: an attribute a LocalScript sets
+-- on its own Player stays on this client, which is right - it describes what is
+-- on this screen, and the server has no use for it.
+local TUTORIAL_ACTIVE_ATTRIBUTE = "TutorialActive"
+
+local function setRunning(value)
+	running = value
+	player:SetAttribute(TUTORIAL_ACTIVE_ATTRIBUTE, value)
+end
+
 -- Everything torn down, the banner hidden, and the server told. Called on
 -- finish, on skip, and on a restart before the new run begins - so there is
 -- exactly one path that takes the tutorial off the screen.
@@ -735,7 +760,7 @@ local stop -- forward declaration; start() and the skip button both call it
 -- replay is only ever offered to somebody it has been set for) and firing the
 -- remote again would be a round trip that changes nothing.
 stop = function(tellServer)
-	running = false
+	setRunning(false)
 	stepIndex = 0
 	lastRenderedText = nil
 	finishToken += 1
@@ -775,7 +800,7 @@ local function finish()
 		spaceMarker:Destroy()
 		spaceMarker = nil
 	end
-	running = false
+	setRunning(false)
 	stepIndex = 0
 
 	renderBanner("DONE", TutorialConfig.Finish.Title, TutorialConfig.Finish.Body)
@@ -886,7 +911,7 @@ local function start()
 	stop(false)
 
 	deliveredDuringRun = false
-	running = true
+	setRunning(true)
 	stepIndex = 1
 	skipButton.Text = "Skip"
 	screenGui.Enabled = true
