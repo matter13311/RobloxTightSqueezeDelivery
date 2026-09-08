@@ -769,7 +769,7 @@ buyUpgradeEvent.OnServerInvoke = function(player, vehicleId, statName)
 	end
 
 	-- The Robux half of the wall. The terminal already draws these stats
-	-- padlocked and never fires this for one (see PlotTerminal_V2's locked
+	-- padlocked and never fires this for one (see PlotTerminal's locked
 	-- cards), so this only ever catches a forged call - the same relationship
 	-- every other check in this file has with the client's own UI.
 	--
