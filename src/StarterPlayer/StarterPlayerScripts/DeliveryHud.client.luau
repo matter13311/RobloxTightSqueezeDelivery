@@ -133,7 +133,12 @@ local jobFrame = Instance.new("Frame")
 -- costs about eighty pixels of the line.
 jobFrame.Size = UDim2.fromOffset(300, 92)
 jobFrame.AnchorPoint = Vector2.new(0.5, 0)
-jobFrame.Position = UDim2.new(0.5, 0, 0, 12)
+-- Below VehicleControlsHint's panel (top-centre, y=12, 26 tall - see that
+-- script), not level with it: both are anchored top-centre, and level would
+-- put this frame's card square over the "F exit / Space handbrake ..." strip
+-- the instant a player is in a vehicle and first person. 46 clears that
+-- panel's bottom edge (12 + 26 = 38) with an 8px gap.
+jobFrame.Position = UDim2.new(0.5, 0, 0, 46)
 jobFrame.BackgroundColor3 = PANEL
 jobFrame.BackgroundTransparency = 0.1
 jobFrame.BorderSizePixel = 0
