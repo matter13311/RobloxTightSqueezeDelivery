@@ -111,6 +111,58 @@ end
 -- render distance the settings menu allows, not the default one.
 local MAX_QUERY_PARTS = 3000
 
+-- The query sphere is pushed BACKWARD off the chassis rather than centred on
+-- it, and shrunk to match. Both numbers are fractions of MirrorRenderDistance.
+--
+-- Why: every mirror here aims rearward through a MIRROR_FOV cone, so a sphere
+-- centred on the car spends most of MAX_QUERY_PARTS on geometry in FRONT of
+-- the truck - which insideFrustum then throws away without drawing one pixel
+-- of it. In a dense street that wasted majority is what pushes the part count
+-- past the cap, and past the cap GetPartBoundsInRadius stops returning a
+-- stable set: it returns an arbitrary subset that differs every tick, so the
+-- pool diff in refreshScene has nothing steady to diff against and churns
+-- clones in and out continuously. That is the driving chop, and it is also
+-- why whole roads could go missing - a road slab that misses the arbitrary
+-- slice is never a candidate, however well it would have ranked. (The same
+-- cap did exactly this to the car's own panels, which is why they are pinned
+-- out of the query entirely - see refreshScene.)
+--
+-- The geometry, with the values below: the sphere reaches 0.35 + 0.65 = 1.0
+-- render distances BEHIND the car, so the setting keeps its documented
+-- meaning exactly; 0.65 - 0.35 = 0.30 ahead, which still covers the truck and
+-- the ground under its nose; and sqrt(0.65^2 - 0.35^2) = 0.55 out to each
+-- side at the chassis, comfortably wider than the door mirrors' yaw. It holds
+-- about 0.65^3 = 27% of the volume it used to, so roughly three quarters of
+-- the parts stop competing for the cap without the mirrors losing anything
+-- they were actually able to show.
+local QUERY_REAR_BIAS = 0.35
+local QUERY_RADIUS_SCALE = 0.65
+
+-- TEMPORARY instrumentation, to be deleted once the mirrors are tuned. Two
+-- outputs, and the split between them is the whole point:
+--
+--   MicroProfiler bars (MirrorQuery / MirrorRefresh / MirrorUpdate), so the
+--   mirror's cost is separable from everything else in the frame.
+--
+--   A once-a-second console line reporting the WORST frame in that second,
+--   not the average - a spike is what is felt, and an average hides it.
+--
+-- "frame" is the steady per-frame cost paid on EVERY frame (placing clones,
+-- moving cameras); "refresh" is the burst paid only on a refresh tick. Which
+-- of the two is large tells you whether to cut object count or query size,
+-- and they need opposite fixes. CAPPED means the query hit MAX_QUERY_PARTS
+-- and is returning an arbitrary subset rather than a stable one.
+local DEBUG_MIRROR_PROFILE = true
+local debugStats = {
+	FrameMs = 0,
+	RefreshMs = 0,
+	Nearby = 0,
+	Candidates = 0,
+	Pool = 0,
+	Capped = false,
+	NextReport = 0,
+}
+
 -- How many clones a single refresh tick may CREATE. See the note in
 -- refreshScene: this is the guard that stops a render-distance change or a
 -- dense street from stalling a frame, which the suspension would turn into a
@@ -515,6 +567,10 @@ local function buildRig(mirrorPart, aim)
 		FovScale = glass:GetAttribute("MirrorFovScale") or mirrorPart:GetAttribute("MirrorFovScale") or FOV_SCALE,
 		Yaw = glass:GetAttribute("MirrorYaw") or mirrorPart:GetAttribute("MirrorYaw") or aim.Yaw or 0,
 		Pitch = glass:GetAttribute("MirrorPitch") or mirrorPart:GetAttribute("MirrorPitch") or aim.Pitch or 0,
+		-- How far, in studs, to push the camera's origin out along the glass's
+		-- own outward normal - see the Standoff note on DEFAULT_MIRRORS in
+		-- VehiclePhysics. Only read in "Camera" mode; see updateMirror.
+		Standoff = glass:GetAttribute("MirrorStandoff") or mirrorPart:GetAttribute("MirrorStandoff") or aim.Standoff or 0,
 		-- [sourcePart] = { Clone = ..., LastSeen = t }. Entries stay here
 		-- after leaving view; only Parent is cleared.
 		Pool = {},
@@ -588,8 +644,16 @@ local function queryNearby(state)
 	params.MaxParts = MAX_QUERY_PARTS
 	params.RespectCanCollide = false
 
+	-- The same "back" the Rearward aim uses in updateMirror, taken off the
+	-- SMOOTHED chassis frame so the sphere does not shuffle with the suspension
+	-- tremor and hand back a slightly different set each tick. Falls back to the
+	-- live CFrame for the first frame, before smoothing has a value to give.
+	local chassisCF = state.SmoothChassisCF or chassis.CFrame
+	local radius = sceneRadius()
+	local origin = chassisCF.Position - chassisCF.LookVector * (radius * QUERY_REAR_BIAS)
+
 	local ok, parts = pcall(function()
-		return workspace:GetPartBoundsInRadius(chassis.Position, sceneRadius(), params)
+		return workspace:GetPartBoundsInRadius(origin, radius * QUERY_RADIUS_SCALE, params)
 	end)
 	if not ok then
 		return nil
@@ -719,6 +783,10 @@ end
 local candidates = {}
 local pinned = {}
 local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, transform, view)
+	local debugStart = if DEBUG_MIRROR_PROFILE then os.clock() else 0
+	if DEBUG_MIRROR_PROFILE then
+		debug.profilebegin("MirrorRefresh")
+	end
 	table.clear(candidates)
 	table.clear(pinned)
 
@@ -917,6 +985,19 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 			mirror.ActiveWorld[source] = nil
 		end
 	end
+
+	if DEBUG_MIRROR_PROFILE then
+		debug.profileend()
+		local pooled = 0
+		for _ in mirror.Pool do
+			pooled += 1
+		end
+		debugStats.RefreshMs = math.max(debugStats.RefreshMs, (os.clock() - debugStart) * 1000)
+		debugStats.Nearby = math.max(debugStats.Nearby, #nearby)
+		debugStats.Candidates = math.max(debugStats.Candidates, #candidates)
+		debugStats.Pool = math.max(debugStats.Pool, pooled)
+		debugStats.Capped = debugStats.Capped or #nearby >= MAX_QUERY_PARTS
+	end
 end
 
 -- =========================================================================
@@ -1034,7 +1115,11 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 		else
 			outDir = reflectVector((surfacePos - eye).Unit, normal)
 		end
-		camPos = surfacePos + normal * 0.05
+		-- 0.05 is the fixed near-clip nudge off the glass; Standoff on top of
+		-- it is the tunable "how far the mirror sticks out" - raise it if the
+		-- mirror shows a sliver of the door/cab instead of the road (see the
+		-- Standoff note on DEFAULT_MIRRORS in VehiclePhysics).
+		camPos = surfacePos + normal * (0.05 + mirror.Standoff)
 		worldViewCF = CFrame.lookAt(camPos, camPos + outDir, up)
 		-- The car is deliberately NOT excluded any more. It used to be, because
 		-- with a centre-point plane test the dashboard landed on the lens; the
@@ -1156,6 +1241,7 @@ local function onRenderStep(dt)
 	if not state then
 		return
 	end
+	local debugFrameStart = if DEBUG_MIRROR_PROFILE then os.clock() else 0
 
 	-- Switched off in the settings menu. The rigs are left standing rather
 	-- than torn down: turning them back on is then a property write, with the
@@ -1214,7 +1300,13 @@ local function onRenderStep(dt)
 		state.NextQuery = now + 1 / (refreshHz() * #state.Mirrors)
 		state.RefreshCursor = (state.RefreshCursor % #state.Mirrors) + 1
 		refreshIndex = state.RefreshCursor
+		if DEBUG_MIRROR_PROFILE then
+			debug.profilebegin("MirrorQuery")
+		end
 		nearby = queryNearby(state)
+		if DEBUG_MIRROR_PROFILE then
+			debug.profileend()
+		end
 	end
 
 	-- The driver's HEAD, not workspace.CurrentCamera. In first person the two
@@ -1225,8 +1317,41 @@ local function onRenderStep(dt)
 	-- actually is, it is stable, and it makes the mirror correct for the person
 	-- driving no matter where the player has zoomed to.
 	local eye = state.Head and state.Head.Parent and state.Head.Position or camera.CFrame.Position
+	if DEBUG_MIRROR_PROFILE then
+		debug.profilebegin("MirrorUpdate")
+	end
 	for index, mirror in state.Mirrors do
 		updateMirror(mirror, if index == refreshIndex then nearby else nil, camera, eye, now)
+	end
+	if DEBUG_MIRROR_PROFILE then
+		debug.profileend()
+
+		-- Total minus the refresh burst, so this reads as the cost paid on a
+		-- plain frame. A refresh tick's own frame is reported separately.
+		local total = (os.clock() - debugFrameStart) * 1000
+		local steady = if refreshIndex then total - debugStats.RefreshMs else total
+		debugStats.FrameMs = math.max(debugStats.FrameMs, steady)
+
+		if now >= debugStats.NextReport then
+			debugStats.NextReport = now + 1
+			print(string.format(
+				"[Mirrors] frame %.2fms | refresh %.2fms | nearby %d%s | cand %d | pool %d | dist %d detail %d",
+				debugStats.FrameMs,
+				debugStats.RefreshMs,
+				debugStats.Nearby,
+				if debugStats.Capped then " CAPPED" else "",
+				debugStats.Candidates,
+				debugStats.Pool,
+				sceneRadius(),
+				maxSceneParts()
+			))
+			debugStats.FrameMs = 0
+			debugStats.RefreshMs = 0
+			debugStats.Nearby = 0
+			debugStats.Candidates = 0
+			debugStats.Pool = 0
+			debugStats.Capped = false
+		end
 	end
 end
 

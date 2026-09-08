@@ -712,6 +712,13 @@ local OPTIONAL_STRING_KEYS = { "WheelModelName", "CargoBedAttachmentName" }
 --          PickupTruck the left mirror is negative and the right positive.
 --   Pitch  tilt DOWN from the horizon, positive is downward. Bigger = more
 --          road and less sky, which is what helps for kerbs and tight gaps.
+--   Standoff  push the camera's ORIGIN further from the glass, in studs,
+--          along the glass's own outward face normal. Bigger = the mirror
+--          "sticks out" further from the car body, which is what to raise if
+--          the mirror view shows a sliver of the door/cab interior instead of
+--          the road - that happens because the camera starts almost exactly
+--          at the glass, which usually sits nearly flush with the body.
+--          0 is the old, flush-with-the-glass behaviour.
 --
 -- Only used when VehicleMirrorViews is in AIM_MODE "Rearward" (its default),
 -- which ignores how the mirror mesh happens to be rotated. In "Physical" mode
@@ -720,9 +727,9 @@ local OPTIONAL_STRING_KEYS = { "WheelModelName", "CargoBedAttachmentName" }
 -- These values are the ones tuned by eye on the PickupTruck; they are a
 -- reasonable starting point for any car, not a physical constant.
 local DEFAULT_MIRRORS = {
-	LeftMirror = { Yaw = -15, Pitch = 15 },
-	RightMirror = { Yaw = 15, Pitch = 15 },
-	RearViewMirror = { Yaw = 0, Pitch = 4 },
+	LeftMirror = { Yaw = -15, Pitch = 15, Standoff = 0 },
+	RightMirror = { Yaw = 15, Pitch = 15, Standoff = 0 },
+	RearViewMirror = { Yaw = 0, Pitch = 4, Standoff = 0 },
 }
 
 -- Precedence, highest first: an Attribute set directly on this Chassis

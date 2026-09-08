@@ -202,9 +202,14 @@ return {
 	-- Yaw swings the view outward from straight-back; the sign that means
 	-- "outward" depends on the chassis' forward axis, and on this car that
 	-- works out to negative on the left and positive on the right. Pitch tilts
-	-- it down toward the road. Tuned by eye from the driver's seat: enough yaw
-	-- to get the car's own flank out of the way, enough pitch to see kerbs
-	-- rather than sky.
+	-- it down toward the road. Standoff pushes the camera further out along
+	-- the glass's own outward normal, in studs - raised above the default 0
+	-- here because at 0 the camera sits almost exactly at the glass, which on
+	-- this cab is close enough to the door that you can see a sliver of its
+	-- inside instead of just the road. Tuned by eye from the driver's seat:
+	-- enough yaw to get the car's own flank out of the way, enough pitch to
+	-- see kerbs rather than sky, enough standoff that the door stops leaking
+	-- into frame.
 	-- Multiplier on incoming crash/scrape damage to the bodywork: 1 is the
 	-- baseline every part's health is written against (see
 	-- VehicleCollision.DefaultPartHealth), 2 means panels take twice the
@@ -230,8 +235,8 @@ return {
 	HonkSoundId = "rbxassetid://127513531122725",
 
 	Mirrors = {
-		LeftMirror = { Yaw = -20, Pitch = 20 },
-		RightMirror = { Yaw = 20, Pitch = 20 },
+		LeftMirror = { Yaw = -20, Pitch = 30, Standoff = -0.75 },
+		RightMirror = { Yaw = 20, Pitch = 30, Standoff = -0.75 },
 		RearViewMirror = { Yaw = 0, Pitch = 4 },
 	},
 

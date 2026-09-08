@@ -64,7 +64,7 @@ local DEFINITIONS = {
 		Min = 80,
 		Max = 600,
 		Step = 20,
-		Default = 320,
+		Default = 80,
 		Format = function(value)
 			return string.format("%d studs", value)
 		end,
