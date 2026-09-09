@@ -20,11 +20,10 @@
 -- to lose - the button is free - and that is also the view the mirrors are
 -- actually read from.
 
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
-local player = Players.LocalPlayer
+local VehicleViewMode = require(script.Parent.VehicleViewMode)
 
 local VehicleZoom = {}
 
@@ -88,24 +87,12 @@ local function inputMatches(input)
 	return ZOOM_INPUTS[input.UserInputType] or ZOOM_INPUTS[input.KeyCode] or false
 end
 
--- Roblox exposes no "am I in first person" flag, so this measures it: in first
--- person the camera sits on the head, in any third person view it is at least
--- the zoom distance away. The threshold is generous enough to cover the small
--- offset the camera keeps from the head, and far below the closest third
--- person zoom the default controller allows.
-local FIRST_PERSON_DISTANCE = 1.5
-
+-- Was a hand-copied duplicate of VehicleViewMode's check, back when both
+-- measured the camera against the head. That stopped being the right question
+-- once the camera got pinned to the car's own eye point (VehicleEyePoint), and
+-- two copies of a check meant two places to remember - so there is one now.
 local function inFirstPerson()
-	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
-		return true
-	end
-	local camera = workspace.CurrentCamera
-	local character = player.Character
-	local head = character and character:FindFirstChild("Head")
-	if not camera or not head then
-		return false
-	end
-	return (camera.CFrame.Position - head.Position).Magnitude <= FIRST_PERSON_DISTANCE
+	return VehicleViewMode.IsFirstPerson()
 end
 
 local function onRenderStep(dt)

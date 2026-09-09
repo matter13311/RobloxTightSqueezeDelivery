@@ -34,6 +34,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local GameSettings = require(script.Parent.GameSettings)
+local VehicleEyePoint = require(script.Parent.VehicleEyePoint)
 
 local VehicleMirrorViews = {}
 
@@ -1309,14 +1310,19 @@ local function onRenderStep(dt)
 		end
 	end
 
-	-- The driver's HEAD, not workspace.CurrentCamera. In first person the two
+	-- The driver's EYE, not workspace.CurrentCamera. In first person the two
 	-- are the same place, but in third person the camera sits twenty studs
 	-- behind the truck - and every piece of geometry here is derived from the
 	-- eye, so from out there the mirror is computed for a viewpoint that has
-	-- the whole cab between it and the glass. The head is where a driver's eye
-	-- actually is, it is stable, and it makes the mirror correct for the person
-	-- driving no matter where the player has zoomed to.
-	local eye = state.Head and state.Head.Parent and state.Head.Position or camera.CFrame.Position
+	-- the whole cab between it and the glass.
+	--
+	-- The eye comes from VehicleEyePoint rather than from the head, so it is
+	-- the same point the camera itself is pinned to - the seat's configured
+	-- eye, identical for every avatar. Taking it from the head instead would
+	-- put a short player's mirrors a stud below where they are actually
+	-- looking, which in a game about reversing into gaps is a worse error than
+	-- it sounds.
+	local eye = VehicleEyePoint.GetViewOrigin() or camera.CFrame.Position
 	if DEBUG_MIRROR_PROFILE then
 		debug.profilebegin("MirrorUpdate")
 	end
@@ -1430,7 +1436,6 @@ function VehicleMirrorViews.Start(carModel, config)
 			params.FilterDescendantsInstances = { carModel, player.Character }
 			return params
 		end)(),
-		Head = player.Character and player.Character:FindFirstChild("Head"),
 		NextQuery = 0,
 		RefreshCursor = 0,
 		Enabled = true,

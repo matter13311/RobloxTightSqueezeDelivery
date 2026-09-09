@@ -13,31 +13,26 @@
 
 local Players = game:GetService("Players")
 
+local VehicleEyePoint = require(script.Parent.VehicleEyePoint)
+
 local player = Players.LocalPlayer
 
 local VehicleViewMode = {}
 
--- Roblox exposes no "am I in first person" flag: in first person the camera
--- sits on the head, in any third person view it is at least the zoom
--- distance away. Threshold generous enough to cover the small offset the
--- camera keeps from the head, far below the closest third person zoom the
--- default controller allows. Matches the check VehicleZoom already uses.
-local FIRST_PERSON_DISTANCE = 1.5
-
+-- The measurement itself lives in VehicleEyePoint, because the point being
+-- measured against is that module's business: while seated the camera is
+-- pinned to the car's configured eye rather than to the head, so a
+-- first-person driver in a short-torso avatar sits a stud or more from their
+-- own head and a head-based check would call that third person. It also has
+-- to be there because VehicleEyePoint needs the answer itself, to decide
+-- whether to hide the character, and cannot require this module back.
+--
+-- This stays the front door: it is what the rest of the game calls, and one
+-- of the two questions the module answers (the other being whether third
+-- person is allowed at all). VehicleZoom used to carry a hand-copied third
+-- copy of the measurement.
 function VehicleViewMode.IsFirstPerson()
-	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
-		return true
-	end
-	local camera = workspace.CurrentCamera
-	local character = player.Character
-	local head = character and character:FindFirstChild("Head")
-	if not camera or not head then
-		-- No camera or head to measure from - default to the locked-down
-		-- state (HUD hidden, effectively first person) rather than assuming
-		-- the more permissive one.
-		return true
-	end
-	return (camera.CFrame.Position - head.Position).Magnitude <= FIRST_PERSON_DISTANCE
+	return VehicleEyePoint.IsFirstPerson()
 end
 
 -- Set server-side (an Attribute replicates automatically) to a Unix

@@ -384,6 +384,35 @@ local DEFAULTS = {
 	SelectorSoundVolume = 0.5,
 	HandbrakeSoundVolume = 0.6,
 
+	-- Where the driver's eyes are, in studs above the seat's own centre,
+	-- measured along the SEAT's up axis so it leans and pitches with the car.
+	-- Consumed on the client by VehicleEyePoint.luau, which pins the camera
+	-- there for every occupant.
+	--
+	-- The point of it is that this is a property of the CAB, not of whoever is
+	-- sitting in it. Roblox's camera sits on the avatar's head, so an avatar a
+	-- stud shorter than average is a driver who cannot see over the dashboard,
+	-- and one a stud taller is a driver looking through the roof lining - in a
+	-- game scored on judging gaps, that is the same car being harder or easier
+	-- depending on a bundle somebody bought. Pinning the eye per vehicle makes
+	-- the view out of a given truck the same for everybody, and is the reason
+	-- avatar height does not need forcing to a fixed number (which would only
+	-- move the problem: bundles differ in proportion, so equal total height
+	-- still means unequal head height - and a taller rig is heavier, which is
+	-- the seated-mass problem in VehicleDoors.server.luau made worse).
+	--
+	-- 3.5 is where a DEFAULT R15 rig's head already sits: the seat weld lands
+	-- its HumanoidRootPart about 2 studs above the seat centre and the head
+	-- about 1.5 above that. So the default changes nothing for a default
+	-- avatar, and everybody else is brought to meet it.
+	--
+	-- TUNING: raise it until you can see the road over the bonnet without
+	-- losing the top of the windshield. A seat may also carry an Attachment
+	-- named EyePoint, which overrides this outright and lets the point be
+	-- placed by eye in Studio (forward/back as well as up) - see
+	-- VehicleEyePoint.SeatEyeCFrame.
+	SeatEyeHeight = 3.5,
+
 	-- Crash damage. A multiplier on how much punishment the bodywork takes
 	-- before panels detach, applied in VehicleDamage.server.luau: 1 is the
 	-- baseline every part's health is written against (see

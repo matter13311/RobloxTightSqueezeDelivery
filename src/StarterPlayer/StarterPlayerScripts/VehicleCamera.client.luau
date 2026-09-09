@@ -12,6 +12,8 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
+local VehicleEyePoint = require(script.Parent.VehicleEyePoint)
+
 local player = Players.LocalPlayer
 
 -- Flip to true when the game goes first-person-only. That single property is
@@ -40,14 +42,18 @@ local trueMaxZoom = player.CameraMaxZoomDistance
 local trackedZoom = nil
 local overriding = false
 
+-- Measured from the eye the camera is actually orbiting, not from the head.
+-- While seated those are different places (see VehicleEyePoint), and reading
+-- the head there would sample the eye offset as if it were zoom - so a short
+-- avatar getting out of a car would be "restored" to a third-person zoom they
+-- never chose.
 local function currentZoom()
 	local camera = workspace.CurrentCamera
-	local character = player.Character
-	local head = character and character:FindFirstChild("Head")
-	if not (camera and head) then
+	local viewOrigin = VehicleEyePoint.GetViewOrigin()
+	if not (camera and viewOrigin) then
 		return nil
 	end
-	return (camera.CFrame.Position - head.Position).Magnitude
+	return (camera.CFrame.Position - viewOrigin).Magnitude
 end
 
 -- Roblox exposes no "set the zoom to X" API. The supported lever is the

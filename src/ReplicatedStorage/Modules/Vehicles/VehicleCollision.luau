@@ -84,6 +84,7 @@ VehicleCollision.Groups = {
 	Attached = "VehicleAttached", -- doors, mirrors, seats, frame, steering wheel, wheels: collide with the world, never with vehicle geometry
 	Debris = "VehicleDebris", -- knocked-off panels: bounce on the ground, never shove a car
 	ExitGrace = "VehicleExitGrace", -- a character in the instant after leaving a seat - see VehicleDoors.server.luau
+	Seated = "VehicleSeated", -- a character while it is welded into a car - see the seated-occupant section of VehicleDoors.server.luau
 }
 
 --=============================================================================

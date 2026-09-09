@@ -118,6 +118,129 @@ for _, group in { VehicleCollision.Groups.Vehicle, VehicleCollision.Groups.Attac
 	PhysicsService:CollisionGroupSetCollidable(EXIT_GRACE_GROUP, group, false)
 end
 
+--=============================================================================
+-- A seated character is part of the car, and must not weigh or catch on anything
+--=============================================================================
+--
+-- Seat:Sit() welds the occupant's HumanoidRootPart to the seat, and a weld
+-- makes ONE assembly. From that moment the character is not somebody the car
+-- is carrying - it is bodywork. Every limb and every accessory Handle is part
+-- of the same rigid body as the chassis, with two consequences that both land
+-- squarely on the suspension:
+--
+--   MASS   The character's mass is added to the car's, AT THE SEAT, which is
+--          off the centreline. VehiclePhysics.Step divides its impulses by
+--          `carPrim.AssemblyMass / 4` - one corner's share, on the assumption
+--          that the four corners share the load evenly. A body bolted to one
+--          side breaks that in both directions at once: the car is heavier
+--          than the Stiffness/Damper numbers were tuned against, AND the extra
+--          weight is all on one side, so that side rides low and its two
+--          wheels carry a grip load the other two don't. That is the "the car
+--          leans towards the driver and won't pull away" report, and it scales
+--          with the CUBE of avatar height - a tall bundle is several times the
+--          mass of a default rig, hung off one corner.
+--
+--   SHAPE  A character's parts collide with the world independently of the
+--          hulls. The car's real shape is meant to be the Collision folder and
+--          nothing else (see VehicleCollision's header); a head poking through
+--          the cab roof gives the car a second, invisible shape that catches
+--          on things the hulls were built to clear, which in a game about
+--          threading gaps is the difference between a route working and not.
+--          It also lets one player's elbow shove another player standing
+--          beside the truck.
+--
+-- Both are fixed here, for the same reason: how a car drives is a property of
+-- the CAR. Two players in the same truck get the same handling and the same
+-- clearances whatever avatar they turned up in - which is also why the eye
+-- height they drive from is configured per vehicle rather than taken from
+-- their head (see VehicleEyePoint.luau on the client). If driver weight is
+-- ever wanted as a mechanic it belongs in a config number like
+-- CargoMassFractionPerUnit, chosen on purpose, not inherited from whatever
+-- bundle somebody is wearing.
+--
+-- Applied off the Occupant signal in setupCar rather than inside tryEnter
+-- because Roblox seats and unseats characters without this script's say-so (a
+-- passenger pressing Jump), and that signal catches every path in and out -
+-- exactly the reason the exit grace above hangs off it too.
+local SEATED_GROUP = VehicleCollision.Groups.Seated
+
+-- [character] = { [part] = that part's own Massless before we touched it }, so
+-- release puts back what was there instead of assuming false. Only populated
+-- between sitting down and standing up.
+--
+-- Weak-keyed: destroying a character clears Seat.Occupant, so the release path
+-- normally empties this on its own - but a car despawned out from under an
+-- occupant is a route where that is not guaranteed, and a strong key here
+-- would pin a dead character (and every part of it) in memory for the life of
+-- the server.
+local seatedMassless = setmetatable({}, { __mode = "k" })
+
+local function applySeatedPhysics(character)
+	if not character or not character.Parent or seatedMassless[character] then
+		return
+	end
+
+	local previous = {}
+	for _, part in character:GetDescendants() do
+		if part:IsA("BasePart") then
+			previous[part] = part.Massless
+			part.Massless = true
+			-- Only Default is claimed, for the same reason the exit grace
+			-- above only claims Default: a character that is mid-grace or
+			-- ragdolled has its group owned by that feature, and taking it
+			-- here would leave that feature restoring a group we have since
+			-- released out from under it.
+			if part.CollisionGroup == "Default" then
+				part.CollisionGroup = SEATED_GROUP
+			end
+		end
+	end
+	seatedMassless[character] = previous
+end
+
+local function releaseSeatedPhysics(character)
+	local previous = seatedMassless[character]
+	if not previous then
+		return
+	end
+	seatedMassless[character] = nil
+	if not character.Parent then
+		return
+	end
+
+	for _, part in character:GetDescendants() do
+		if part:IsA("BasePart") then
+			-- Parts added while seated (an accessory equipped mid-drive) are
+			-- absent from `previous` and get the ordinary standing default,
+			-- which is what they would have had anyway.
+			part.Massless = previous[part] or false
+			if part.CollisionGroup == SEATED_GROUP then
+				part.CollisionGroup = "Default"
+			end
+		end
+	end
+end
+
+ensureGroup(SEATED_GROUP)
+-- Collides with nothing that exists in this game, by design - see SHAPE above.
+-- Default is in that list because Default is what the WORLD is: the buildings
+-- and kerbs a seated body must not catch on, and the pedestrians it must not
+-- shove. The one pairing deliberately left at a new group's default of
+-- "collides" is PlotBarrier, whose walls are meant to stop a car - and an
+-- occupant riding in it - at the mouth of somebody else's plot.
+for _, group in {
+	VehicleCollision.Groups.Vehicle,
+	VehicleCollision.Groups.Attached,
+	VehicleCollision.Groups.Cosmetic,
+	VehicleCollision.Groups.Debris,
+	EXIT_GRACE_GROUP,
+	SEATED_GROUP,
+	"Default",
+} do
+	ensureGroup(group) -- may not exist yet; the scripts that own these run in no guaranteed order
+	PhysicsService:CollisionGroupSetCollidable(SEATED_GROUP, group, false)
+end
+
 -- [character] = generation number, so a character that jumps out, gets back
 -- in, and jumps out again doesn't have an earlier grace period's timer put
 -- its collision back to Default out from under the newer one.
@@ -334,16 +457,21 @@ local function setupCar(carModel)
 		seat.Disabled = true
 		seats[seat] = { Seat = seat, IsDriverSeat = seat == driverSeat, Busy = false }
 
-		-- Catches every way a seat empties out, not just our own tryExit -
-		-- most importantly, a passenger hitting Jump, which Roblox unseats on
-		-- its own without ever going through this script. See the collision
-		-- grace section above for why that needs handling at all.
+		-- Catches every way a seat FILLS and every way it empties out, not
+		-- just our own tryEnter/tryExit - most importantly, a passenger
+		-- hitting Jump, which Roblox unseats on its own without ever going
+		-- through this script. See the two collision sections above for why
+		-- each end needs handling at all.
 		local lastCharacter = nil
 		seat:GetPropertyChangedSignal("Occupant"):Connect(function()
 			local occupant = seat.Occupant
 			if occupant then
 				lastCharacter = occupant.Parent
+				applySeatedPhysics(lastCharacter)
 			elseif lastCharacter then
+				-- Order matters: the release puts these parts back to Default,
+				-- and Default is the only group the exit grace will claim.
+				releaseSeatedPhysics(lastCharacter)
 				applyExitCollisionGrace(lastCharacter)
 				lastCharacter = nil
 			end
