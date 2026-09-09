@@ -409,8 +409,7 @@ local DEFAULTS = {
 	-- TUNING: raise it until you can see the road over the bonnet without
 	-- losing the top of the windshield. A seat may also carry an Attachment
 	-- named EyePoint, which overrides this outright and lets the point be
-	-- placed by eye in Studio (forward/back as well as up) - see
-	-- VehicleEyePoint.SeatEyeCFrame.
+	-- placed by eye in Studio (forward/back as well as up).
 	SeatEyeHeight = 3.5,
 
 	-- Crash damage. A multiplier on how much punishment the bodywork takes

@@ -130,38 +130,126 @@ DeliveryConfig.Payout = {
 }
 
 --=============================================================================
+-- Loading the crates on
+--=============================================================================
+
+-- Cargo does not appear on the truck all at once - the crates are placed one
+-- at a time, each with its own thud, and the weight goes on with them.
+--
+-- WHY, since the end state is identical: a player at the dock is looking
+-- FORWARD, out of the windscreen, and the bed is behind them. A load that
+-- lands in a single frame is a truck that silently starts handling worse for
+-- no reason they ever saw. Placed one crate at a time it is a truck that
+-- audibly and visibly sags, six times, in their peripheral vision - the
+-- suspension spring is not mass-scaled (see CargoLoad's header), so every
+-- crate makes the whole vehicle dip on its springs for free. That dip is the
+-- clearest statement the game can make about weight, and it costs nothing but
+-- the delay below.
+DeliveryConfig.Loading = {
+	-- Gap between crates.
+	--
+	-- TUNED SLOW ON PURPOSE, and slower than it first looks like it should be.
+	-- The first pass ran at 0.35 and playtested badly: an adult reads it fine,
+	-- but a child cannot process six separate events in two seconds - the
+	-- thuds blur into one rumble, the individual suspension dips merge into a
+	-- single sag, and the counter on the overlay is finished before they have
+	-- worked out what it is counting. At 0.8 each crate is unmistakably its
+	-- own arrival: thud, dip, one more box on the pile, and time to look at it
+	-- before the next one.
+	--
+	-- If this is ever tuned again, tune it DOWNWARDS from something too slow
+	-- rather than upwards from something too fast. The failure mode of too
+	-- slow is boredom, which is visible in a playtest; the failure mode of too
+	-- fast is a child who never learns their truck got heavy, which is not.
+	SecondsPerCrate = 0.8,
+
+	-- ...but a whole load never takes longer than this, no matter how many
+	-- crates. CargoCapacity is an upgrade, so the crate count grows over the
+	-- life of an account and a fixed per-crate gap would quietly turn into a
+	-- twenty-second wait on the biggest truck in the game. The interval
+	-- shrinks to fit instead, which keeps the sequence feeling like a reward
+	-- for having a big bed rather than a tax on it.
+	--
+	-- At the numbers above this only starts biting past ten crates, so an
+	-- ordinary load runs at the full, deliberate 0.8 per crate and only a
+	-- genuinely enormous bed gets compressed.
+	MaxTotalSeconds = 8,
+
+	-- Picked at random per crate, so a six-crate load is six different thuds
+	-- rather than the same sample stuttering. One entry today; add more ids
+	-- here and nothing else has to change.
+	SoundIds = {
+		"rbxassetid://9113527923",
+	},
+	-- The load stays "in progress" for a beat after the last crate lands, so
+	-- the overlay gets to say "Cargo Added!" instead of vanishing on the same
+	-- frame it fills up. The truck stays held for that beat too, which is the
+	-- one moment the player is guaranteed to be reading the screen - and so
+	-- the only place worth putting "brake early, it's heavy now".
+	--
+	-- Long enough to READ, which is the whole job: two short lines at a
+	-- child's reading speed, not an acknowledgement flash. Held rather than
+	-- dismissable because a player who could skip it would, every single run,
+	-- and this is the sentence the game most needs them to have seen once.
+	CompleteHoldSeconds = 2,
+
+	SoundVolume = 0.7,
+	-- Heard from outside the truck too - a depot with someone loading in it
+	-- should sound like one. Roughly the length of the bay.
+	SoundRollOffMaxDistance = 90,
+}
+
+--=============================================================================
 -- Weight banding
 --=============================================================================
 
--- How the board describes a load's heft. The number banded here is the mass
--- the load ADDS as a fraction of the truck's own empty mass - so 0.5 means
--- "half the truck again" - which is the one measure that means the same thing
--- on every vehicle in the catalog. An absolute figure in mass units would
--- read as "heavy" on the starter van and "light" on something twice its size,
--- which is exactly backwards from how it would drive.
+-- How the board describes a load's heft. The number banded here is the load's
+-- mass as a MULTIPLE OF A FULL BED OF PLAIN PARCELS in the truck being quoted
+-- (CargoLoad.FullBedMassFraction) - so 1 means "as heavy as this truck's own
+-- full ordinary load" and 2 means twice that.
+--
+-- Measured against the truck rather than in absolute mass fractions because
+-- CargoCapacity is an upgrade: the mass a load can reach scales with the bed,
+-- so fixed thresholds relabel the whole catalog every time the player buys a
+-- crate slot. See CargoLoad.WeightBand's header for the full argument.
 --
 -- Banded rather than shown as a raw number because the player is choosing
 -- between three jobs in a moving truck, not reading a spec sheet.
 DeliveryConfig.Weight = {
 	-- Below ModerateAbove is Light, above HeavyAbove is Heavy, between is
-	-- Moderate. With the catalog's default CargoMassFractionPerUnit of 0.10 and
-	-- a capacity of 4, full loads of the four cargo types land at:
+	-- Moderate. All three are multiples of a full bed of Parcels.
 	--
-	--     Parcels     0.40   Moderate
-	--     Produce     0.46   Moderate
-	--     Glassware   0.56   Heavy
-	--     Sand&Gravel 0.84   Heavy
+	-- The old thresholds had a reporting bug worth recording. They were
+	-- absolute mass fractions (0.25 / 0.55), and at the then-current
+	-- CargoMassFractionPerUnit of 0.10 on the base capacity of 4, the range a
+	-- player could actually be offered ran 0.20 to 0.84. That sliced so that
+	-- "Light" needed a 2-crate load of one of the two lightest types - about
+	-- one board in eight - and players reported, correctly, that Light did not
+	-- exist. A band nobody ever sees is not a band; it is a word in a table.
 	--
-	-- which is the spread these thresholds are set to separate. Glassware only
-	-- moved into Heavy when its MassMultiplier was raised to make pay track
-	-- weight (see CargoTypes' pricing rule); it sits just over the line, which
-	-- is right for a load that is both awkward and breakable.
-	ModerateAbove = 0.25,
-	HeavyAbove = 0.55,
-	-- What a completely full bar means. Above this the bar simply pins - the
-	-- difference between "doubles the truck" and "triples it" is not something
-	-- a 90-pixel bar can usefully show.
-	BarFullAt = 1,
+	-- Since the load is now sized against the truck's own full bed, where these
+	-- land does not move when CargoCapacity is upgraded. Contract offers run
+	-- from half a bed to a full one (DeliveryConfig.Contracts.MinUnitsFraction),
+	-- so the reachable range is 0.5 to 2.1 - a half bed of Parcels to a full bed
+	-- of Sand & Gravel - and the catalog falls out as:
+	--
+	--                   half   3/4   full
+	--     Parcels       0.50L  0.75L  1.00M
+	--     Produce       0.58L  0.86M  1.15M
+	--     Glassware     0.70L  1.05M  1.40H
+	--     Sand&Gravel   1.05M  1.58H  2.10H
+	--
+	-- Every band is reachable on every vehicle, a beginner's Parcels run reads
+	-- Light most of the time (which it is), and Heavy means a big load of the
+	-- genuinely heavy goods rather than "you have upgraded your bed".
+	ModerateAbove = 0.8,
+	HeavyAbove = 1.3,
+	-- What a completely full bar means. Above this the bar simply pins.
+	--
+	-- The heaviest thing that can be offered is a full bed of Sand & Gravel at
+	-- exactly 2.1, so the bar uses very nearly its whole length across the real
+	-- range of jobs rather than spending half of it on loads that cannot exist.
+	BarFullAt = 2,
 }
 
 --=============================================================================

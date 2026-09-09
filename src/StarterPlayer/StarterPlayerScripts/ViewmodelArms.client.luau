@@ -2,7 +2,9 @@
 -- camera) so they stay gripping the wheel no matter how the player rotates
 -- the camera - the camera has nothing to do with where these arms sit.
 -- WeldConstraint does the actual work: set once on entry, physics keeps it
--- attached from then on, no RenderStepped cost.
+-- attached from then on, so nothing here costs a frame to POSITION them. What
+-- the per-frame connections below do is pose them (steering) and decide
+-- whether they belong on screen at all (first person only - see setArmsHidden).
 --
 -- Client-only: nobody else needs to see your own driving hands, same as an
 -- FPS game never replicates its viewmodel to other players.
@@ -12,6 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+local VehicleViewMode = require(script.Parent.VehicleViewMode)
 
 local player = Players.LocalPlayer
 local template = ReplicatedStorage:WaitForChild("ViewmodelArms")
@@ -33,16 +36,51 @@ local SEAT_OFFSET = CFrame.new(0, 0, 0)
 
 local currentArms = nil
 local currentSteerConnection = nil
+local currentVisibilityConnection = nil
+local armsHidden = false
+
+-- These are a VIEWMODEL: a prop that only makes sense from inside the driver's
+-- head. From any third person view they are a second pair of hands floating at
+-- the wheel next to the real avatar's, which is exactly what the player sees
+-- when they zoom out - two bodies driving one truck.
+--
+-- Hidden rather than destroyed, because the player can zoom back in at any
+-- moment and rebuilding the rig (clone, weld, reload the animation) on every
+-- flick of the scroll wheel would be far more work than a few transparency
+-- writes.
+--
+-- LocalTransparencyModifier layers on top of each part's own Transparency
+-- instead of replacing it, so restoring means writing 0 rather than
+-- remembering what every part was built with - which matters here because the
+-- rig's Torso is deliberately built fully transparent and must STAY invisible
+-- when the arms come back.
+local function setArmsHidden(hidden)
+	if not currentArms then
+		return
+	end
+	local modifier = if hidden then 1 else 0
+	for _, part in currentArms:GetDescendants() do
+		if part:IsA("BasePart") or part:IsA("Decal") then
+			part.LocalTransparencyModifier = modifier
+		end
+	end
+	armsHidden = hidden
+end
 
 local function removeArms()
 	if currentSteerConnection then
 		currentSteerConnection:Disconnect()
 		currentSteerConnection = nil
 	end
+	if currentVisibilityConnection then
+		currentVisibilityConnection:Disconnect()
+		currentVisibilityConnection = nil
+	end
 	if currentArms then
 		currentArms:Destroy()
 		currentArms = nil
 	end
+	armsHidden = false
 end
 
 local function attachArms(carModel)
@@ -112,6 +150,17 @@ local function attachArms(carModel)
 
 	arms.Parent = workspace
 	currentArms = arms
+
+	-- Its own connection rather than a few lines inside the steering one
+	-- below, which only exists when the grip animation loaded. Whether the
+	-- hands should be on screen at all does not depend on whether they are
+	-- posed correctly.
+	currentVisibilityConnection = RunService.RenderStepped:Connect(function()
+		local hide = not VehicleViewMode.IsFirstPerson()
+		if hide ~= armsHidden then
+			setArmsHidden(hide)
+		end
+	end)
 
 	local animationController = arms:FindFirstChildOfClass("AnimationController")
 	local animator = animationController and animationController:FindFirstChildOfClass("Animator")

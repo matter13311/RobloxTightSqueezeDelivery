@@ -54,7 +54,38 @@ CargoLoad.Attributes = {
 	-- and cached (see CargoManager) because you cannot measure it again once
 	-- the ballast is in the assembly.
 	EmptyMass = "CargoEmptyMass",
+	-- number, or ABSENT. How many crates of an in-progress load have been
+	-- placed so far - 0 the moment loading starts, and removed entirely the
+	-- moment it finishes.
+	--
+	-- Absence is the signal, not a sentinel value: "is this truck loading
+	-- right now" is exactly `GetAttribute(...) ~= nil`, which is one read with
+	-- no comparison to get wrong, and a truck that is destroyed mid-load takes
+	-- the flag with it rather than leaving something stuck on. Units is set to
+	-- the FINAL count up front, so a HUD showing progress is placed/Units.
+	LoadingPlaced = "CargoLoadingPlaced",
+	-- number, server-internal. Bumped by every Load and every Unload; a
+	-- running load sequence carries the value it started with and stops the
+	-- moment the two disagree. See CargoManager.bumpSequence for why the
+	-- cancellation token lives on the Model instead of in a table.
+	--
+	-- Listed here rather than kept private to CargoManager only so that every
+	-- attribute this system writes to a vehicle is documented in one place.
+	-- Nothing outside CargoManager should read it.
+	LoadSequence = "CargoLoadSequence",
 }
+
+-- Whether crates are still being placed on this truck right now.
+--
+-- Shared because three unrelated places ask it and must agree: the driving
+-- client immobilises the truck while it is true, the loading HUD is shown
+-- while it is true, and CargoManager ignores impacts while it is true.
+function CargoLoad.IsLoading(carModel)
+	if not carModel then
+		return false
+	end
+	return carModel:GetAttribute(CargoLoad.Attributes.LoadingPlaced) ~= nil
+end
 
 --=============================================================================
 -- Load
@@ -114,21 +145,52 @@ function CargoLoad.MassFraction(config, units, typeId)
 	return math.max(0, math.floor(units or 0)) * perUnit
 end
 
--- A mass fraction turned into the two things a UI needs: a word and a 0-1 bar
--- fill. Both come from here rather than from the HUD so that a second screen
--- showing weight (a garage comparison, a van-buying preview) cannot band the
--- same load differently.
+-- What a FULL bed of the baseline cargo adds to this vehicle, as a fraction of
+-- its empty mass. The yardstick every weight band is measured against - see
+-- WeightBand.
+function CargoLoad.FullBedMassFraction(config)
+	return CargoLoad.Capacity(config) * math.max(0, config.CargoMassFractionPerUnit or 0)
+end
+
+-- A load turned into the two things a UI needs: a word and a 0-1 bar fill. Both
+-- come from here rather than from the HUD so that a second screen showing
+-- weight (a garage comparison, a van-buying preview) cannot band the same load
+-- differently.
+--
+-- BANDED AGAINST THE TRUCK, NOT ABSOLUTELY. `reference` is what a full bed of
+-- plain Parcels weighs in the vehicle being quoted (FullBedMassFraction above),
+-- and the bands are multiples of that: "Heavy" means heavier than a full
+-- ordinary load of whatever this truck can hold.
+--
+-- The first version compared massFraction against fixed thresholds, and that
+-- quietly broke on the one axis the player controls. CargoCapacity is an
+-- upgrade, so the mass a load CAN reach scales with it - the same job that read
+-- Moderate on the stock bed of 4 read Heavy on an upgraded bed of 10, and past
+-- about capacity 8 essentially every job on the board read Heavy. A band that
+-- says the same word about every offer has stopped being information, which is
+-- the exact complaint that got the bands re-tuned in the first place; fixed
+-- thresholds would simply have moved it from the low end to the high end.
+--
+-- Against the truck's own full bed, the ratio is capacity-invariant by
+-- construction: units/capacity times the type's MassMultiplier. Three-quarters
+-- of a bed of gravel reads the same on every vehicle in the game, which is what
+-- the player is actually comparing when they look at two cards side by side.
 --
 -- Returns an Id alongside the label so a caller can pick its own colour
 -- without string-matching on display text.
-function CargoLoad.WeightBand(massFraction)
+function CargoLoad.WeightBand(massFraction, reference)
 	local weight = DeliveryConfig.Weight
 	local fraction = math.max(0, massFraction or 0)
+	-- A vehicle with no cargo config at all (capacity 0, or a model nobody has
+	-- prepared) has no full bed to compare against. Everything it is quoted is
+	-- Light, which is both harmless and true: it cannot carry anything.
+	local full = math.max(0, reference or 0)
+	local ratio = if full > 0 then fraction / full else 0
 
 	local id, label
-	if fraction > weight.HeavyAbove then
+	if ratio > weight.HeavyAbove then
 		id, label = "Heavy", "Heavy"
-	elseif fraction > weight.ModerateAbove then
+	elseif ratio > weight.ModerateAbove then
 		id, label = "Moderate", "Moderate"
 	else
 		id, label = "Light", "Light"
@@ -137,9 +199,13 @@ function CargoLoad.WeightBand(massFraction)
 	return {
 		Id = id,
 		Label = label,
+		-- The absolute figure is still handed back: it is the physically
+		-- meaningful one (this much more mass in the assembly), and a caller
+		-- wanting to print a number wants that rather than the ratio.
 		Fraction = fraction,
+		Ratio = ratio,
 		-- Pins at 1 rather than overflowing the bar; see BarFullAt.
-		Fill = math.clamp(fraction / math.max(weight.BarFullAt, 0.001), 0, 1),
+		Fill = math.clamp(ratio / math.max(weight.BarFullAt, 0.001), 0, 1),
 	}
 end
 

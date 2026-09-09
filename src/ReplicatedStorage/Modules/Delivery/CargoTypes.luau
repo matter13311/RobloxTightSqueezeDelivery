@@ -31,11 +31,14 @@
 -- event: it buys Glassware a real risk margin without letting a feather-light
 -- load out-earn a full bed of gravel.
 --
--- Where the current four land, per crate:
+-- Where the current seven land, per crate, sorted by mass:
 --
 --     type        mass   fragility   rule says   pays
+--     Balloons    0.50   2.00           16         16   feather-light, pops if you look at it
+--     Furniture   0.85   1.20           27         28
 --     Parcels     1.00   1.00           32         32   the baseline both scales are set from
 --     Produce     1.15   1.60           44         44
+--     Paint       1.25   2.00           54         54
 --     Glassware   1.40   3.20           77         74   heavy AND fragile - the hard one
 --     Aggregate   2.10   0.25           71         80   heaviest, so it pays most
 --
@@ -43,8 +46,19 @@
 -- purpose. Left at 77 and 71 the fragility premium would have carried Glassware
 -- past Aggregate, and "the lighter load pays more" is the exact thing this
 -- pricing exists to stop - so the two were pushed apart until pay rose with
--- mass across all four. THAT is the property to preserve when adding a type or
+-- mass across all seven. THAT is the property to preserve when adding a type or
 -- re-tuning one; the formula is just how to get close before checking it.
+--
+-- WHY THERE ARE SEVEN AND NOT FOUR. Cargo types are unlocked on lifetime
+-- deliveries (ProgressionConfig.Cargo), and with only four types a new player
+-- had exactly ONE - so a board of three jobs was three identical brown stacks
+-- of Parcels. Three types at zero deliveries is the minimum that makes a
+-- starting board look like a choice, and ContractPool then avoids repeating a
+-- type within one board on top of that.
+--
+-- The three added ones are all at or below Parcels' weight or just above it, on
+-- purpose: the heavy end of the catalog was already well covered, and weight is
+-- the thing a beginner is least equipped to handle.
 
 local CargoTypes = {}
 
@@ -53,6 +67,46 @@ local CargoTypes = {}
 -- has no sensible fallback (what should an unstated ValuePerUnit be?) and a
 -- silently-zero-value crate would be a long debugging session.
 CargoTypes.Types = {
+	-- Bright, weightless and fragile: the beginner's "drive smoothly" lesson
+	-- with none of the weight lesson attached, and the most visually distinct
+	-- thing on a starting board. A full bed of them barely touches the truck.
+	Balloons = {
+		Id = "Balloons",
+		DisplayName = "Party Balloons",
+		ValuePerUnit = 16,
+		Fragility = 2,
+		MassMultiplier = 0.5,
+		CrateSize = Vector3.new(2.6, 2.6, 2.6),
+		Color = Color3.fromRGB(226, 96, 140),
+		Material = Enum.Material.SmoothPlastic,
+		Palette = {
+			Color3.fromRGB(226, 96, 140),
+			Color3.fromRGB(240, 176, 72),
+			Color3.fromRGB(96, 168, 224),
+			Color3.fromRGB(148, 208, 108),
+		},
+	},
+
+	Furniture = {
+		Id = "Furniture",
+		DisplayName = "Flat-Pack Furniture",
+		ValuePerUnit = 28,
+		-- Chipboard: it survives a knock and dies in a real hit.
+		Fragility = 1.2,
+		MassMultiplier = 0.85,
+		-- Wide and flat, so a stack of it reads differently from a stack of
+		-- anything else at a glance - shape is doing as much work here as
+		-- colour.
+		CrateSize = Vector3.new(3, 1.4, 2.8),
+		Color = Color3.fromRGB(196, 158, 108),
+		Material = Enum.Material.Wood,
+		Palette = {
+			Color3.fromRGB(196, 158, 108),
+			Color3.fromRGB(150, 112, 76),
+			Color3.fromRGB(214, 186, 150),
+		},
+	},
+
 	Parcels = {
 		Id = "Parcels",
 		DisplayName = "Parcels",
@@ -68,6 +122,20 @@ CargoTypes.Types = {
 		CrateSize = Vector3.new(2.6, 2.4, 2.6),
 		Color = Color3.fromRGB(174, 133, 86),
 		Material = Enum.Material.Cardboard,
+		-- OPTIONAL, and the reason a stack of Parcels stopped looking like one
+		-- brown slab: crate N takes entry (N mod #Palette) + 1 rather than the
+		-- flat Color above. Indexed rather than random so the contract board's
+		-- ViewportFrame preview and the real crates on the bed agree crate for
+		-- crate - see CargoTypes.CrateColor.
+		--
+		-- Three shades of the same cardboard, not three different colours: the
+		-- job is to break up a solid block so the boxes read as separate
+		-- objects, not to turn the load into something it is not.
+		Palette = {
+			Color3.fromRGB(174, 133, 86),
+			Color3.fromRGB(196, 160, 116),
+			Color3.fromRGB(146, 108, 70),
+		},
 	},
 
 	Produce = {
@@ -79,6 +147,33 @@ CargoTypes.Types = {
 		CrateSize = Vector3.new(2.8, 2.0, 2.8),
 		Color = Color3.fromRGB(126, 156, 86),
 		Material = Enum.Material.WoodPlanks,
+		Palette = {
+			Color3.fromRGB(126, 156, 86),
+			Color3.fromRGB(168, 176, 84),
+			Color3.fromRGB(196, 140, 72),
+		},
+	},
+
+	Paint = {
+		Id = "Paint",
+		DisplayName = "Paint Cans",
+		ValuePerUnit = 54,
+		-- It does not shatter, it SPILLS - which is the same thing as far as
+		-- the customer is concerned, and lets a mid-weight load teach the
+		-- careful-driving lesson before Glassware charges properly for it.
+		Fragility = 2,
+		MassMultiplier = 1.25,
+		CrateSize = Vector3.new(2.4, 2.4, 2.4),
+		Color = Color3.fromRGB(72, 132, 204),
+		Material = Enum.Material.Metal,
+		-- The loudest palette in the catalog, and appropriate: a pallet of
+		-- paint really is a stack of different colours.
+		Palette = {
+			Color3.fromRGB(72, 132, 204),
+			Color3.fromRGB(206, 84, 76),
+			Color3.fromRGB(238, 204, 92),
+			Color3.fromRGB(96, 176, 132),
+		},
 	},
 
 	Glassware = {
@@ -94,6 +189,11 @@ CargoTypes.Types = {
 		CrateSize = Vector3.new(2.4, 2.6, 2.4),
 		Color = Color3.fromRGB(196, 216, 224),
 		Material = Enum.Material.Glass,
+		Palette = {
+			Color3.fromRGB(196, 216, 224),
+			Color3.fromRGB(168, 202, 214),
+			Color3.fromRGB(214, 230, 236),
+		},
 	},
 
 	Aggregate = {
@@ -110,14 +210,39 @@ CargoTypes.Types = {
 		CrateSize = Vector3.new(2.8, 1.8, 2.8),
 		Color = Color3.fromRGB(120, 116, 108),
 		Material = Enum.Material.Slate,
+		Palette = {
+			Color3.fromRGB(120, 116, 108),
+			Color3.fromRGB(146, 138, 124),
+			Color3.fromRGB(100, 98, 94),
+		},
 	},
 }
 
 -- Stable display order (table iteration order is unspecified in Lua) - same
--- reason VehicleCatalog.Order exists.
-CargoTypes.Order = { "Parcels", "Produce", "Glassware", "Aggregate" }
+-- reason VehicleCatalog.Order exists. Sorted by mass, which is also the order
+-- ProgressionConfig unlocks them in and the order they get harder to drive.
+CargoTypes.Order = { "Balloons", "Furniture", "Parcels", "Produce", "Paint", "Glassware", "Aggregate" }
 
 CargoTypes.DefaultTypeId = "Parcels"
+
+-- The colour of crate number `index` (0-based) in a stack of this type.
+--
+-- A FUNCTION OF THE INDEX, not a random roll, and that is the whole point.
+-- The contract board draws a ViewportFrame preview of the load out of the same
+-- CargoLoad.CrateOffset grid the real crates use, and a preview that does not
+-- match what appears on the bed is the exact class of lie that grid exists to
+-- prevent. Two callers computing the same colour from the same index need no
+-- shared seed and cannot drift.
+--
+-- Types with no Palette fall back to their flat Color, so a type is not
+-- required to have one.
+function CargoTypes.CrateColor(cargoType, index)
+	local palette = cargoType.Palette
+	if not palette or #palette == 0 then
+		return cargoType.Color
+	end
+	return palette[(math.max(0, math.floor(index or 0)) % #palette) + 1]
+end
 
 function CargoTypes.Get(typeId)
 	return CargoTypes.Types[typeId]

@@ -463,7 +463,10 @@ local function makeCratePreview(parent, cargoType, units)
 	for index = 0, shown - 1 do
 		local crate = Instance.new("Part")
 		crate.Size = crateSize
-		crate.Color = cargoType.Color
+		-- Same index-to-colour rule CargoManager.buildCrate uses, which is why
+		-- it lives in CargoTypes rather than in either of them: this preview
+		-- and the real stack on the bed have to agree crate for crate.
+		crate.Color = CargoTypes.CrateColor(cargoType, index)
 		crate.Material = cargoType.Material
 		-- Anchored purely so nothing tries to simulate them; a ViewportFrame
 		-- runs no physics either way.
@@ -561,7 +564,7 @@ local function makeOfferCard(offer, index)
 	-- Weight: a word AND a bar. The word is what a player reads at a glance in
 	-- a moving truck; the bar is what lets them compare two Moderate jobs
 	-- against each other without doing arithmetic. Neither alone does both.
-	local band = CargoLoad.WeightBand(offer.MassFraction)
+	local band = CargoLoad.WeightBand(offer.MassFraction, offer.FullBedMassFraction)
 	local bandColor = WEIGHT_COLORS[band.Id] or DIM_TEXT
 
 	local weightLabel = label(card, band.Label, 13, bandColor, true)
@@ -704,30 +707,55 @@ local function updateFooter()
 		timerFill.Size = UDim2.fromScale(1, 1)
 	end
 
-	-- Second line: how to make the board bigger. A player looking at a board
-	-- smaller than they would like is the exact audience for that, and this is
-	-- the only place the progression explains itself at all. Both halves are in
-	-- deliveries - the count they have done and the count the next slot wants -
-	-- so there is no second unit to learn and nothing to convert.
+	-- Second line: what the next delivery milestone actually buys. A player
+	-- looking at a board smaller or duller than they would like is the exact
+	-- audience for that, and this is the only place the progression explains
+	-- itself at all. Everything here is in deliveries - the count they have
+	-- done and the count the next unlock wants - so there is no second unit to
+	-- learn and nothing to convert.
+	--
+	-- TWO ladders feed this line now: the board's size, and which cargo types
+	-- the board will offer (see ProgressionConfig.Cargo). Only the NEARER of
+	-- the two is shown. One line was already the space available, and the near
+	-- one is the one the player can act on - a target 45 deliveries out sitting
+	-- next to one 3 deliveries out makes both read as far away.
 	local deliveries = state.Deliveries or 0
-	local milestone = state.NextCapMilestone
+	local capMilestone = state.NextCapMilestone
+	local cargoMilestone = state.NextCargoMilestone
 
-	if milestone then
+	local milestone, text
+	if capMilestone and cargoMilestone then
+		milestone = if cargoMilestone.Deliveries <= capMilestone.Deliveries then cargoMilestone else capMilestone
+	else
+		milestone = capMilestone or cargoMilestone
+	end
+
+	if milestone == cargoMilestone and cargoMilestone then
+		-- Named, not teased. "A new cargo type" is a reward the player cannot
+		-- picture and therefore cannot want; "Sand & Gravel" is one they can.
+		text = string.format(
+			"%s completed  -  %s more to unlock %s",
+			ProgressionConfig.DeliveryCountText(deliveries),
+			ProgressionConfig.DeliveryCountText(math.max(0, cargoMilestone.Deliveries - deliveries)),
+			CargoTypes.GetOrDefault(cargoMilestone.TypeId).DisplayName
+		)
+	elseif milestone then
 		-- "a 4th job" was ambiguous in the worst way - it reads as one more job
 		-- appearing now, rather than as the board's ceiling going up. Naming the
 		-- new ceiling says what actually changes.
-		poolProgress.Text = string.format(
+		text = string.format(
 			"%s completed  -  %s more for %d maximum jobs",
 			ProgressionConfig.DeliveryCountText(deliveries),
 			ProgressionConfig.DeliveryCountText(math.max(0, milestone.Deliveries - deliveries)),
 			milestone.Cap
 		)
 	else
-		poolProgress.Text = string.format(
+		text = string.format(
 			"%s completed  -  you have the maximum jobs",
 			ProgressionConfig.DeliveryCountText(deliveries)
 		)
 	end
+	poolProgress.Text = text
 end
 
 local function updateRefreshButton()

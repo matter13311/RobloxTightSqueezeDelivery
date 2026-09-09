@@ -20,6 +20,7 @@ local VehicleThirdPersonShop = require(script.Parent.VehicleThirdPersonShop)
 local VehicleTouchControls = require(script.Parent.VehicleTouchControls)
 -- Temporary instrumentation; see the module header. Remove with the rest of it.
 local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
+local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 
 local player = Players.LocalPlayer
 
@@ -694,10 +695,27 @@ local function beginDrive(humanoid, seatPart)
 			chassis.AssemblyAngularVelocity = Vector3.zero
 		end
 
+		-- Crates are still going on the back. The truck is held still for the
+		-- few seconds that takes, so the player watches (and hears, and feels
+		-- through the springs) the load arrive instead of pulling away
+		-- half-loaded and never noticing it happened.
+		--
+		-- Done by taking the pedals away and pulling the handbrake rather than
+		-- by anchoring the chassis: the truck is still a live physics body, so
+		-- it still dips on its suspension as each crate lands - which is the
+		-- entire point of loading them one at a time. Anchoring would freeze
+		-- exactly the motion we are trying to show.
+		--
+		-- Not a security boundary, and does not need to be. The server has
+		-- already committed the load and taken the contract; a client that
+		-- ignored this would just drive off and have its crates appear around
+		-- it on schedule. This is feel, not enforcement.
+		local cargoLoading = CargoLoad.IsLoading(carModel)
+
 		-- Raw key state, nothing more. What W and S actually DO is the
 		-- gearbox's decision, because it depends on which way the car is
 		-- currently pointed - in D, S is the brake; in R, S is the gas.
-		local throttleFloat = throttleInput(seatPart)
+		local throttleFloat = if cargoLoading then 0 else throttleInput(seatPart)
 		local forwardKey = throttleFloat > 0.1
 		local backKey = throttleFloat < -0.1
 
@@ -747,9 +765,17 @@ local function beginDrive(humanoid, seatPart)
 
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
-			Steer = steerInput(seatPart),
+			-- Steering is frozen along with the throttle, so the wheels are not
+			-- being scrubbed sideways under a load that is still landing.
+			Steer = if cargoLoading then 0 else steerInput(seatPart),
 			Brake = drive.Brake,
-			Handbrake = mySession.Handbrake,
+			-- Held on for the duration of a load, but NOT written back into
+			-- mySession.Handbrake: that field is the player's own switch
+			-- position, and it drives the handbrake sound, the dashboard light
+			-- and the burnout test. Overriding it here would sound the
+			-- handbrake at every dock and leave it showing as engaged after
+			-- the load finished.
+			Handbrake = mySession.Handbrake or cargoLoading,
 			TorqueMultiplier = drive.TorqueMultiplier,
 			GearMaxSpeed = drive.GearMaxSpeed,
 			Rpm = drive.Rpm,

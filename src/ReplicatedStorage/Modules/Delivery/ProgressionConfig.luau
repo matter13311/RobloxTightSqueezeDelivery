@@ -14,6 +14,7 @@
 -- What deliveries gate:
 --   * How many contracts the depot board holds at once (ContractCapFor).
 --   * Which vehicles the shop will sell (VehicleCatalog's RequiredDeliveries).
+--   * Which cargo types the board will offer at all (CargoTypesFor).
 
 local ProgressionConfig = {}
 
@@ -70,6 +71,74 @@ ProgressionConfig.Contracts = {
 	MaxRegenStepsPerCall = 64,
 }
 
+--=============================================================================
+-- Which cargo the board will offer
+--=============================================================================
+
+-- WHY CARGO TYPES ARE GATED AT ALL. Weight is this game's difficulty, and
+-- every type carries a different amount of it - a bed of Sand & Gravel is
+-- three times the weight of the same bed of Parcels. Left ungated, a player's
+-- very first board could offer nothing but gravel, and a brand new driver in a
+-- stock vehicle with a full gravel load can barely pull out of the bay. That
+-- is not a difficulty spike the player chose; it is one the random number
+-- generator chose for them, on the one run where they know least about how the
+-- game drives.
+--
+-- The alternative fix was to make every cargo type lighter until the worst
+-- case was survivable, which flattens the whole catalog to protect the first
+-- ten minutes of it. Gating keeps gravel exactly as heavy as it should be and
+-- simply does not offer it to somebody with no upgrades and no practice.
+--
+-- It also turns three of the four types into something to unlock, which the
+-- game had none of between "buy a bigger bed" and "buy a second vehicle".
+--
+-- ORDERED, lowest first, and the first entry MUST be at 0 deliveries - it is
+-- the only cargo a brand new player can be offered, and therefore what the
+-- tutorial's forced first contract is guaranteed to be. That guarantee is the
+-- entire reason the tutorial does not need a special case of its own.
+--
+-- Ids are strings rather than CargoTypes entries on purpose: this module is
+-- required by both the client and the server and stays dependency-free, the
+-- same way it states vehicle gates without requiring VehicleCatalog.
+-- ContractPool validates the ids against CargoTypes when it uses them.
+ProgressionConfig.Cargo = {
+	-- THREE TYPES AT ZERO, not one. A starting board holds three jobs, and with
+	-- a single unlocked type it drew three identical brown stacks of Parcels -
+	-- a board that is not a choice and does not look like one. Three types is
+	-- the least that fixes it, and they are deliberately the three that differ
+	-- most on sight: pink balloons, flat pale timber, brown boxes.
+	--
+	-- All three are at or below Parcels' weight, which matters as much as the
+	-- colour. The heavy end of the catalog was already well covered; weight is
+	-- the thing a beginner is least equipped to handle, so variety early is
+	-- bought at the LIGHT end.
+	UnlockMilestones = {
+		-- Light, cheap, unbreakable. The whole game's baseline.
+		{ Deliveries = 0, TypeId = "Parcels" },
+		-- Half the weight of Parcels and the brightest thing in the catalog.
+		-- Fragile, so it teaches "drive smoothly" while the truck is still
+		-- completely easy to drive - the lesson with none of the weight
+		-- attached, which is the right order to learn them in.
+		{ Deliveries = 0, TypeId = "Balloons" },
+		-- Wide and flat, so a stack of it reads differently from everything
+		-- else even before the colour registers. Slightly under Parcels.
+		{ Deliveries = 0, TypeId = "Furniture" },
+		-- Barely heavier than Parcels, but it bruises.
+		{ Deliveries = 5, TypeId = "Produce" },
+		-- The first genuinely mid-weight load, and fragile with it: the
+		-- careful-driving lesson repeated at a weight that can actually punish
+		-- it, before Glassware charges properly for the same mistake.
+		{ Deliveries = 12, TypeId = "Paint" },
+		-- Heavy AND fragile, so it wants both lessons at once. Deliberately
+		-- after the Pickup Truck unlocks at 20: by here the player has had a
+		-- real choice of vehicle and a reason to have spent money on it.
+		{ Deliveries = 25, TypeId = "Glassware" },
+		-- The heaviest thing in the game by a wide margin, and the one that
+		-- was making new players' cars refuse to move. Last, and not close.
+		{ Deliveries = 50, TypeId = "Aggregate" },
+	},
+}
+
 local function sanitizeDeliveries(deliveries)
 	if type(deliveries) ~= "number" or deliveries ~= deliveries or deliveries < 0 then
 		return 0
@@ -99,6 +168,44 @@ end
 function ProgressionConfig.NextCapMilestone(deliveries)
 	deliveries = sanitizeDeliveries(deliveries)
 	for _, milestone in ProgressionConfig.Contracts.CapMilestones do
+		if deliveries < milestone.Deliveries then
+			return milestone
+		end
+	end
+	return nil
+end
+
+-- Every cargo type id this player's board is allowed to offer, in unlock
+-- order. Never empty: the first milestone is at 0 deliveries, so there is
+-- always at least one - and today there are three.
+--
+-- Several milestones may share a Deliveries figure; the loop below simply
+-- takes them all. NextCargoMilestone names only the first of a tie, which is
+-- why no two entries above 0 share a number.
+--
+-- The gate is on GENERATION only. A contract already sitting in a player's
+-- pool is never revoked by this - taking back something a player can already
+-- see is a far worse experience than the rare case it would tidy up (a save
+-- from before this existed, holding a job its owner has not yet earned).
+function ProgressionConfig.CargoTypesFor(deliveries)
+	deliveries = sanitizeDeliveries(deliveries)
+	local unlocked = {}
+	for _, milestone in ProgressionConfig.Cargo.UnlockMilestones do
+		if deliveries >= milestone.Deliveries then
+			table.insert(unlocked, milestone.TypeId)
+		else
+			break -- ordered, so the first one out of reach ends it
+		end
+	end
+	return unlocked
+end
+
+-- The next cargo type to unlock as { Deliveries, TypeId }, or nil once they
+-- are all available. Same shape and same reason as NextCapMilestone: a gate
+-- the player cannot see is not one they are working toward.
+function ProgressionConfig.NextCargoMilestone(deliveries)
+	deliveries = sanitizeDeliveries(deliveries)
+	for _, milestone in ProgressionConfig.Cargo.UnlockMilestones do
 		if deliveries < milestone.Deliveries then
 			return milestone
 		end

@@ -46,16 +46,16 @@ TutorialConfig.Steps = {
 	},
 	{
 		Id = "SpawnVehicle",
-		Title = "Get your car out",
+		Title = "Spawn your car",
 		Body = "Press F at your terminal, then click SPAWN VEHICLE.",
 	},
 	{
 		Id = "DriveToDepot",
-		Title = "Drive to the depot",
+		Title = "Drive and Park at the depot",
 		-- The sentence this whole tutorial was written for. It leads with the
 		-- consequence, not the instruction, because the instruction alone
 		-- ("drive to the depot") is what playtesters ignored.
-		Body = "Drive to the DEPOT and park in the bay.\nNo cargo, no money - this is where the jobs are.",
+		Body = "Park at the depot",
 		Hint = "Press F by the door to get into your car.",
 	},
 	{

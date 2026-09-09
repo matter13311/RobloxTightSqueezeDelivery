@@ -24,6 +24,23 @@ alley and the long wide road pay the same; the alley just pays *sooner*.
 Cargo load is the risk dial the player pulls themselves every single run: more
 crates means more money and a worse-handling truck.
 
+How hard that dial bites is one number, `CargoMassFractionPerUnit`, on each
+vehicle config. It is **0.07** — lowered from 0.10, which had been tuned against
+a fully-upgraded capacity of 10 and was therefore punishing on the capacity-4 bed
+every new player actually drives. Section 5.1 has the unlock order that keeps the
+heaviest cargo away from a beginner entirely.
+
+**Weight bands are measured against the truck, not absolutely.** `Light` /
+`Moderate` / `Heavy` are multiples of *a full bed of plain Parcels in the vehicle
+being quoted* (`CargoLoad.FullBedMassFraction`), so the ratio is
+`units / capacity × the type's MassMultiplier` and does not move when the player
+upgrades their bed. The first version banded absolute mass fractions, which
+broke on the one axis the player controls: `CargoCapacity` is an upgrade, so the
+mass a load *can* reach scales with it, and past about capacity 8 every job on
+the board read "Heavy". Fixed thresholds do not fail safely here — they just move
+the "every band says the same word" bug from one end of the upgrade path to the
+other.
+
 ---
 
 ## 2. What the existing physics does and does not give us
@@ -147,6 +164,69 @@ In first person with a loaded bed blocking the rear window, `VehicleMirrorViews`
 stops being decoration and becomes a required tool. That is the mirrors paying
 off.
 
+### 3.6 Crates go on ONE AT A TIME, and the truck is held still while they do
+
+The problem this solves: the player is sitting at the dock looking **forward**,
+out of the windscreen. The bed is behind them and they will not turn around to
+look at it. A load applied in a single frame is therefore a truck that silently
+starts handling worse for no reason the player ever saw — from their seat, the
+car just got mysteriously heavy.
+
+So `CargoManager.Load` places one crate every `SecondsPerCrate`, and brings the
+ballast up with each one. What that buys, in order of how much work it does:
+
+| Channel | Why it lands | Cost |
+|---|---|---|
+| **The truck dips on its springs, once per crate** | The suspension spring is NOT mass-scaled (section 2), so every increment of ballast makes the whole vehicle visibly sag. Six crates is six dips, each deeper than the last | free — it is the physics already there |
+| **A thud per crate** | Needs no eyeballs at all, which is the entire point for a player facing the wrong way. Randomised from `SoundIds` so a big load is not one sample stuttering | one `Sound`, played server-side so bystanders hear the dock working |
+| **The overlay** | Names what is happening and counts it down, for a child who would otherwise read a frozen truck as a broken game, then turns green and says "Cargo Added!" | `CargoLoadingHud.client.luau` |
+
+**Ordered deliberately.** The overlay is the caption, not the event: delete it
+and the mechanic still communicates. The dip and the thud are the message.
+
+**Why the truck is held still.** The driving client zeroes throttle and steer
+and holds the handbrake while `CargoLoad.IsLoading` is true. It is *not*
+anchored — anchoring would freeze the suspension dip, which is the one thing
+worth showing. It is also not a security boundary and does not need to be: the
+server has already committed the load and taken the contract, so a client that
+ignored the hold would simply drive off and have its crates appear around it on
+schedule.
+
+**Pace it SLOW.** `SecondsPerCrate` is 0.8, not the 0.35 the first pass used.
+An adult reads 0.35 fine; a child cannot process six separate events in two
+seconds — the thuds blur into one rumble, the individual dips merge into a
+single sag, and the counter finishes before they have worked out what it is
+counting. If it is retuned, tune *down* from something too slow rather than up
+from something too fast: the failure mode of too slow is boredom, which shows up
+in a playtest, and the failure mode of too fast is a child who never learns
+their truck got heavy, which does not.
+
+**The beat at the end.** `CompleteHoldSeconds` (2s) keeps the load "in progress"
+after the last crate lands, and the truck stays held for it. The overlay turns
+green and says **"Cargo Added!"** over "your truck is heavy now — brake early and
+take corners slow". That beat is the only point in a run where the player is
+stopped, has nothing to do, and is definitely looking at the screen, so it is
+where the one sentence they actually need goes. It is not skippable, because a
+player who could skip it would, every run.
+
+**`Load` still does not yield.** Everything a caller can observe — the return
+value, `Units`, `TypeId`, `Condition` — is committed before it returns; only the
+placing runs on its own thread. `DeliveryManager` depends on that (it loads,
+then takes the contract off the board, and nothing may slip in between).
+
+Three consequences worth knowing:
+
+- **`CargoUnits` is the final count from the first frame**, not a running total.
+  The count that climbs is `CargoLoadingPlaced`, which is absent entirely when
+  no load is running — absence is the "am I loading" test.
+- **The ballast is created once and then re-densified**, rather than destroyed
+  and re-welded per crate. Rebuilding a massive welded part six times in two
+  seconds tears the assembly apart and puts it back together on each step, which
+  a client-owned chassis on a raycast suspension feels as a lurch.
+- **Impacts are ignored while loading.** The truck is immobilised in the bay, so
+  any impact arriving then is somebody else driving into a parked vehicle, and
+  that should not cost its driver a penny.
+
 ---
 
 ## 4. What has to exist in Studio
@@ -235,6 +315,7 @@ Optional attributes on a space Part:
 | `ServerScriptService/Modules/CargoManager.luau` | Authoritative load state; builds crates + ballast; turns validated impacts into ruined goods |
 | `ServerScriptService/DeliveryManager.server.luau` | Contracts, arrival detection, payout |
 | `StarterPlayer/StarterPlayerScripts/DeliveryHud.client.luau` | Contract board at the dock, running-job display, payout summary |
+| `StarterPlayer/StarterPlayerScripts/CargoLoadingHud.client.luau` | The "Loading Cargo" overlay while crates are being placed. Pure caption — see section 3.6 |
 | `ServerScriptService/CargoTestCommands.server.luau` | **Temporary.** Admin `/cargo` commands for tuning before the dock exists — delete once the loop is proven |
 
 There is no separate loading-dock script: the contract board is part of
@@ -247,7 +328,8 @@ the depot's bay — the same test the server re-runs before it loads anything.
    jobs currently in your pool, each sized to your truck's current
    `CargoCapacity`. It is the SAME pool every time — see section 5.1.
 2. Accept one. The server re-checks you are in the bay, in your own truck, at
-   rest, then loads the crates and the ballast.
+   rest, then loads the crates and the ballast — one crate at a time, over
+   several seconds, with the truck held still. See section 3.6.
 3. Drive to the named destination and park in one of its spaces.
 4. Stop for `StoppedHoldSeconds`. The server grades the park, pays out, and
    empties the bed.
@@ -282,6 +364,86 @@ stated and displayed in deliveries. Board sizes live in
 | 75 | 5 jobs |
 | 200 | 6 jobs |
 | 450 | 7 jobs |
+
+Deliveries gate **which cargo types the board will offer**, too
+(`ProgressionConfig.Cargo.UnlockMilestones`):
+
+| Lifetime deliveries | Unlocks | Mass | Why there |
+|---|---|---|---|
+| 0 | Parcels | 1.00 | Light, cheap, unbreakable — the baseline everything else is priced and banded against |
+| 0 | Party Balloons | 0.50 | Half the weight of Parcels and the brightest thing in the catalog. Fragile, so it teaches "drive smoothly" with none of the weight lesson attached |
+| 0 | Flat-Pack Furniture | 0.85 | Wide and flat, so a stack of it reads differently from everything else before the colour even registers |
+| 5 | Fresh Produce | 1.15 | Barely heavier than Parcels, but it bruises |
+| 12 | Paint Cans | 1.25 | The first genuinely mid-weight load, and fragile with it — the careful-driving lesson at a weight that can punish it, before Glassware charges properly for the same mistake |
+| 25 | Glassware | 1.40 | Heavy *and* fragile, so it wants both lessons at once. Deliberately after the Pickup Truck at 20 |
+| 50 | Sand & Gravel | 2.10 | Three times the weight of Parcels. Last, and not close |
+
+**Three types at zero, not one.** A starting board holds three jobs, and with a
+single unlocked type it drew three identical brown stacks — a board that is not
+a choice and does not look like one. All three starters are at or below Parcels'
+weight, which matters as much as the colour: the heavy end was already well
+covered, and weight is what a beginner is least equipped to handle, so variety
+early is bought at the *light* end.
+
+**Why gate them.** Weight is this game's difficulty, and the types carry wildly
+different amounts of it. Ungated, a brand new player's first board could be
+nothing but gravel — and a stock vehicle under a full gravel load could barely
+pull out of the bay. That is not a difficulty spike the player chose; the random
+number generator chose it for them, on the one run where they know least about
+how the game drives.
+
+The alternative was to make every type lighter until the worst case was
+survivable, which flattens the whole catalog to protect its first ten minutes.
+Gating leaves gravel exactly as heavy as it should be and simply does not offer
+it yet. It also turns four of the seven types into something to unlock, which
+the game had none of between "buy a bigger bed" and "buy a second vehicle".
+
+Two consequences worth knowing:
+
+- **The tutorial needs no special case.** Its forced first contract is whatever
+  the board offers a 0-delivery player, and by construction that is one of the
+  three lightest types in the game.
+- **The gate is on GENERATION only.** A contract already in a player's pool is
+  never revoked — taking back a job somebody can already see is worse than the
+  rare save that holds one its owner has not yet earned.
+
+The depot footer shows whichever of the two ladders — board size or next cargo
+type — is *nearer*, by name ("12 more deliveries to unlock Glassware"). One line
+was the space available, and the near target is the one a player can act on.
+
+### 5.2 Why the board does not draw uniformly at random
+
+`ContractPool.generate` picks both the destination and the cargo type
+**preferring one not already on the board**, falling back to the full set once
+everything is represented.
+
+Uniform random clumps visibly at the size a board actually is. With three
+destinations, better than one board in ten is three copies of the same place;
+with three cargo types, the same again. Both were reported as bugs, and that is
+the correct reaction — a board of three identical jobs is not a choice, however
+defensible the dice were.
+
+It is a preference, not a rule, so a map with two destinations and a board of
+five still generates.
+
+**If one destination is all you ever see**, check the server log at startup:
+`Destinations.Build` now prints the list it found (`Destinations: 3 built —
+Warehouse1, Warehouse2, ...`). Contract generation can only offer names on that
+list, and the usual reason a building is missing from it is that it has no
+`Space*` part, which `Build` skips with a warning nobody is looking for.
+
+### 5.3 Crate colour
+
+A crate's colour is `CargoTypes.CrateColor(type, index)` — entry
+`(index mod #Palette) + 1` of the type's optional `Palette`, falling back to its
+flat `Color`. A full bed used to be one solid slab of a single colour; three or
+four shades break it into countable boxes.
+
+**Indexed, not random.** The contract board draws its ViewportFrame preview from
+the same `CargoLoad.CrateOffset` grid the real crates use, so two callers
+computing the same colour from the same index need no shared seed and cannot
+drift — the preview matches the bed crate for crate, which is the whole reason
+that grid is shared in the first place.
 
 Leaderstats are **Money** and **Deliveries**. Deliberately no third column: a
 level would have been the delivery count looked up in a table, so the player

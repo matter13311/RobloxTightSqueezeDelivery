@@ -154,12 +154,26 @@ return {
 	-- Cargo. See docs/CargoDesign.md; CargoLoad.luau explains why the two
 	-- multipliers below have to exist at all when we are also adding real mass.
 	CargoCapacity = 4, -- MUST equal the Upgrades entry's Min above
-	-- At capacity 10 and this fraction, a full load of ordinary Parcels very
-	-- nearly doubles the truck's mass. That is the number to move if loaded
-	-- driving feels too tame or too punishing overall - the two multipliers
-	-- below only shape braking and cornering, while this one drives the sag,
-	-- the sluggishness off the line and how hard it shoves in a collision.
-	CargoMassFractionPerUnit = 0.10,
+	-- THE master weight dial. It is the number to move if loaded driving feels
+	-- too tame or too punishing overall - the two multipliers below only shape
+	-- braking and cornering, while this one drives the sag, the sluggishness
+	-- off the line and how hard the truck shoves in a collision.
+	--
+	-- Lowered from 0.10, which was tuned against a CAPACITY OF 10 - "a full
+	-- load of Parcels nearly doubles the mass" was true, and irrelevant to the
+	-- player it mattered to. Base capacity is 4, and that is the bed every new
+	-- player drives for their whole first session. At 0.10 a base-capacity load
+	-- of Sand & Gravel added 0.84 of the truck's own mass, and since drive force
+	-- is NOT mass-scaled (see CargoLoad's header) that is acceleration cut to
+	-- 54%: a beginner in a stock truck who picked the wrong job could barely pull
+	-- out of the bay.
+	--
+	-- At 0.07 the same load costs 63% of the truck's acceleration instead - still
+	-- clearly heavy, still a real decision, but drivable. A fully upgraded bed
+	-- of gravel is 1.47x the empty mass, which is where the genuinely punishing
+	-- end of the range now lives: earned, rather than handed to a new player on
+	-- their first board.
+	CargoMassFractionPerUnit = 0.07,
 	-- Deceleration is BrakeFriction * gravity, so 0.7 turns this truck's
 	-- 102-stud stop from 100 studs/s into a 146-stud one when fully laden.
 	-- That is the single biggest reason to slow down before a tight turn.

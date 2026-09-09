@@ -63,17 +63,79 @@ local function randomUnitsFraction()
 	return minFraction + math.random() * (1 - minFraction)
 end
 
+-- What this player has earned the right to be offered, filtered to types that
+-- still exist. Both halves matter: ProgressionConfig states its gates as bare
+-- strings so it can stay dependency-free (see its header), which means an id
+-- retired from CargoTypes would otherwise reach the board as a contract that
+-- isUsableContract then throws away on the next save load.
+--
+-- Never returns an empty list: the 0-delivery milestone guarantees one entry,
+-- and if even that has been renamed out from under us the default type is a
+-- better answer than a board that silently stops generating.
+local function unlockedTypeIds(data)
+	local allowed = {}
+	for _, typeId in ProgressionConfig.CargoTypesFor(data.Deliveries or 0) do
+		if CargoTypes.Get(typeId) then
+			table.insert(allowed, typeId)
+		end
+	end
+	if #allowed == 0 then
+		warn("ContractPool: no unlocked cargo type exists in CargoTypes - check ProgressionConfig.Cargo ids")
+		table.insert(allowed, CargoTypes.DefaultTypeId)
+	end
+	return allowed
+end
+
+-- Picks one of `candidates`, PREFERRING one that is not already on the board.
+--
+-- Uniform random over a small catalog produces visible clumping at the size a
+-- board actually is: with three destinations, better than one board in ten is
+-- three copies of the same place, and with three cargo types the same again.
+-- Both were reported as bugs, which is the correct reaction - a board of three
+-- identical jobs is not a choice, however defensible the dice were.
+--
+-- A preference and not a rule: once every candidate is already represented it
+-- falls back to the full set rather than refusing to generate. That is what
+-- keeps a map with two destinations and a board of five working at all.
+local function pickPreferringUnused(candidates, used)
+	local unused = {}
+	for _, candidate in candidates do
+		if not used[candidate] then
+			table.insert(unused, candidate)
+		end
+	end
+	local pool = if #unused > 0 then unused else candidates
+	return pool[math.random(#pool)]
+end
+
 -- nil when the map has no destinations built yet, which every caller treats as
 -- "the board stays as it is" rather than as an error.
+--
+-- The cargo type is drawn from what this player has UNLOCKED rather than from
+-- the whole catalog - see ProgressionConfig.Cargo for why. The unlock order is
+-- already the difficulty curve, so nothing inside the unlocked set is weighted;
+-- the only steer is away from repeating what is on the board already.
+--
+-- Reads data.Contracts as it stands RIGHT NOW, which is what makes the
+-- anti-repeat work identically for every caller: Reconcile and Refresh both
+-- append to that list as they fill it, so each successive job is generated
+-- against the ones already placed.
 local function generate(data)
-	local stop = Destinations.RandomName()
-	if not stop then
+	local names = Destinations.Names()
+	if #names == 0 then
 		return nil
 	end
+
+	local usedStops, usedTypes = {}, {}
+	for _, contract in data.Contracts or {} do
+		usedStops[contract.Stop] = true
+		usedTypes[contract.TypeId] = true
+	end
+
 	return {
 		Id = nextId(data),
-		Stop = stop,
-		TypeId = CargoTypes.Order[math.random(#CargoTypes.Order)],
+		Stop = pickPreferringUnused(names, usedStops),
+		TypeId = pickPreferringUnused(unlockedTypeIds(data), usedTypes),
 		UnitsFraction = randomUnitsFraction(),
 	}
 end
@@ -328,6 +390,13 @@ local function draw(contract, config, capacity)
 		-- mass. Computed here rather than on the client because the client has
 		-- no business deciding what a vehicle's config says.
 		MassFraction = CargoLoad.MassFraction(config, units, contract.TypeId),
+		-- ...and what a full bed of plain Parcels would add to the SAME truck,
+		-- which is the yardstick CargoLoad.WeightBand measures the above
+		-- against. Sent per offer rather than once per board because it comes
+		-- from the same vehicle snapshot the rest of the card does, and a card
+		-- that has to reach outside itself to be drawn is one that can be drawn
+		-- against the wrong truck.
+		FullBedMassFraction = CargoLoad.FullBedMassFraction(config),
 	}
 end
 
@@ -362,6 +431,11 @@ function ContractPool.Board(data, config, capacity, now)
 		-- top. Sent whole rather than as a pre-formatted sentence so the client
 		-- can phrase it for whichever panel it is drawing.
 		NextCapMilestone = ProgressionConfig.NextCapMilestone(deliveries),
+		-- { Deliveries, TypeId } for the next cargo type to unlock, or nil once
+		-- they are all available. Sent as the id rather than as a display name
+		-- for the same reason the milestone above is sent whole: the client
+		-- owns how it phrases things, and it already has CargoTypes.
+		NextCargoMilestone = ProgressionConfig.NextCargoMilestone(deliveries),
 		SecondsUntilNext = if #offers < cap and type(regenAt) == "number" and regenAt > 0
 			then math.max(0, regenAt - now)
 			else nil,

@@ -41,25 +41,47 @@
 -- studs with no effect whatsoever. It moves the camera in third person only,
 -- which is the view that did not need fixing.
 --
--- So the eye is a real point in the world instead: a tiny invisible part held
+-- So the eye is a real point in the world instead: a tiny invisible seat held
 -- at the configured spot in the cab, made the camera's CameraSubject. Roblox
 -- follows a BasePart subject exactly - no rig-derived head offset of its own -
 -- so the eye lands precisely where the config says, for every avatar.
 --
--- The part is ANCHORED and its CFrame written each frame from the seat, rather
--- than welded to the seat. A weld would put it in the car's physics assembly,
--- which means mass to account for and an assembly the client does not own when
--- the player is a passenger rather than the driver. Anchored, it is in no
--- assembly at all: it just gets told where to be, immediately before the
--- camera reads it.
+-- WHY THE EYE IS A VehicleSeat AND NOT A PLAIN PART
+--
+-- Because sitting in a VehicleSeat is what turns Roblox's camera with the
+-- vehicle, and it decides that from the CameraSubject's CLASS. Roblox sets the
+-- subject to the VehicleSeat you sit in, and its vehicle camera - the thing
+-- that keeps your view pointing where the truck is pointing as you steer -
+-- runs only while the subject is one. An earlier version of this module
+-- pointed the subject at a plain Part, which silently switched that off and
+-- turned driving into a two-handed job: steer with one hand, drag the mouse
+-- back towards the windshield with the other. It fails SILENTLY and it fails
+-- at a distance from its cause, so if the camera ever stops turning with the
+-- car again, this is the first thing to check.
+--
+-- Making the eye a (disabled, unoccupiable, invisible) VehicleSeat satisfies
+-- both requirements at once: Roblox reads its CLASS and turns the camera with
+-- the car, and reads its POSITION and puts the eye exactly where the config
+-- says. Nobody can sit in it - Disabled is set - and with no occupant it
+-- applies no forces of its own.
+--
+-- It is WELDED to the real seat rather than anchored and moved each frame,
+-- because Roblox's vehicle camera reads the subject's assembly motion to work
+-- out how the vehicle is turning. An anchored part reports no motion at all,
+-- which is the same as telling that camera the truck never turns. Welded it
+-- reports the car's, because it IS the car's - and Massless, so a camera prop
+-- cannot change what the suspension is holding up. Exactly the arrangement
+-- ViewmodelArms.client.luau already uses for the driving hands.
 --
 -- THE PRICE, AND IT IS PAID BELOW
 --
 -- Roblox's first-person character hiding (TransparencyController) works out
--- whose body to hide from the CameraSubject, and only understands a Humanoid
--- or a VehicleSeat. Handed a plain part it hides nothing, and the driver ends
--- up looking at the inside of their own head. So this module hides the local
--- character itself while the eye is pinned - see updateCharacterVisibility.
+-- whose body to hide from the CameraSubject: for a VehicleSeat it hides the
+-- seat's OCCUPANT, and the eye seat deliberately has none. So it hides nothing
+-- and the driver ends up looking at the inside of their own head. This module
+-- hides the local character itself instead - see updateCharacterVisibility.
+-- (Making the eye seat occupied is not an option; it would mean unseating the
+-- player from the seat that actually drives the car.)
 --
 -- One consequence worth knowing: the arms and the eye now agree with each
 -- other for everybody. ViewmodelArms.client.luau always welded the driving
@@ -87,31 +109,32 @@ local VehicleEyePoint = {}
 local EYE_ATTACHMENT_NAME = "EyePoint"
 
 -- Just BEFORE the default camera's own update (which runs at
--- RenderPriority.Camera), so the camera always reads an eye placed from this
--- frame's seat CFrame rather than from last frame's.
+-- RenderPriority.Camera), so a CameraSubject put back this frame is in place
+-- by the time that camera reads it. The eye's POSITION needs nothing here -
+-- it is welded to the seat, so physics carries it.
 local RENDER_NAME = "VehicleEyePoint"
 local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value - 1
 
--- Roblox exposes no "am I in first person" flag: in first person the camera
--- sits on the eye, in any third person view it is at least the zoom distance
--- away. Generous enough to cover the small standoff the camera keeps, far
--- below the closest third person zoom the default controller allows.
+-- Roblox exposes no "am I in first person" flag, so it is measured as the
+-- distance between the camera and what it is looking at - the zoom distance.
+-- Generous enough to cover the small standoff the camera keeps in first
+-- person, far below the closest third person zoom the default controller
+-- allows.
 local FIRST_PERSON_DISTANCE = 1.5
 
 local activeSeat = nil
-local activeEyeOffset = nil -- SeatEyeOffset for activeSeat, resolved once on entry
 local eyePart = nil
 local characterHidden = false
 
--- Where the eye belongs, as a transform in the SEAT's own space - so it is a
--- constant for the whole time somebody is sitting there, and resolving it
--- (which reads the car's config) happens once on entry rather than on every
--- frame of the drive.
+-- Where the eye belongs, as a transform in the SEAT's own space. Resolved once
+-- on entry, which is all that is needed: the eye seat is welded to the real
+-- one, so this offset is what the weld freezes and nothing has to recompute it
+-- per frame.
 --
 -- An EyePoint Attachment's CFrame is already relative to the seat it is
--- parented to, so both routes come out in the same space and the per-frame
--- code has only one case to handle.
-function VehicleEyePoint.SeatEyeOffset(seat)
+-- parented to, so both routes come out in the same space and the caller has
+-- only one case to handle.
+local function seatEyeOffset(seat)
 	local attachment = seat:FindFirstChild(EYE_ATTACHMENT_NAME)
 	if attachment and attachment:IsA("Attachment") then
 		return attachment.CFrame
@@ -130,12 +153,6 @@ function VehicleEyePoint.SeatEyeOffset(seat)
 	-- Up the SEAT's own axis, not the world's, so the eye rolls and pitches
 	-- with the car exactly as a real driver's head would.
 	return CFrame.new(0, height, 0)
-end
-
--- The same point in world space. Public so a car's placement can be checked
--- from the command bar without sitting in it.
-function VehicleEyePoint.SeatEyeCFrame(seat)
-	return seat.CFrame * VehicleEyePoint.SeatEyeOffset(seat)
 end
 
 -- The point the player is actually looking FROM, whatever they are doing: the
@@ -164,19 +181,33 @@ function VehicleEyePoint.IsFirstPerson()
 		return true
 	end
 	local camera = workspace.CurrentCamera
-	local viewOrigin = VehicleEyePoint.GetViewOrigin()
-	if not camera or not viewOrigin then
-		-- Nothing to measure from - assume the locked-down state rather than
-		-- the more permissive one.
+	if not camera then
+		-- Nothing to measure - assume the locked-down state rather than the
+		-- more permissive one.
 		return true
 	end
-	return (camera.CFrame.Position - viewOrigin).Magnitude <= FIRST_PERSON_DISTANCE
+
+	-- Camera against its own Focus, NOT against the eye, and this is load
+	-- bearing. CFrame and Focus are written by the same camera update, so they
+	-- are always a matched pair however stale the pair itself is. Measuring the
+	-- camera against the eye instead mixes two different instants: this runs
+	-- before the camera has updated, so the camera position is a frame old
+	-- while the eye - welded to the car, moved by physics - is current. A truck
+	-- at 60 studs/s covers a stud between frames, which was enough to push a
+	-- genuinely first-person driver over the threshold on any given frame and
+	-- flash their own avatar across the screen.
+	--
+	-- It is also what Roblox's own TransparencyController measures, for the
+	-- same reason.
+	return (camera.CFrame.Position - camera.Focus.Position).Magnitude <= FIRST_PERSON_DISTANCE
 end
 
 -- Roblox's own first-person hiding is out of action while the CameraSubject is
--- a plain part (see the header), so it is done here instead. Decals as well as
--- parts: a face is a Decal, and a Decal on a fully transparent part still
--- renders - which would leave a pair of eyes hanging in front of the camera.
+-- the unoccupied eye seat (see the header - it hides a VehicleSeat's OCCUPANT,
+-- and this one deliberately has none), so it is done here instead. Decals as
+-- well as parts: a face is a Decal, and a Decal on a fully transparent part
+-- still renders, which would leave a pair of eyes hanging in front of the
+-- camera.
 --
 -- LocalTransparencyModifier rather than Transparency, for the same reason
 -- Roblox uses it: it is client-only and non-replicating, and it layers on top
@@ -209,10 +240,22 @@ local function updateCharacterVisibility()
 end
 
 local function step()
-	if not eyePart or not activeSeat or not activeSeat.Parent or not activeEyeOffset then
+	if not eyePart or not activeSeat or not activeSeat.Parent then
 		return
 	end
-	eyePart.CFrame = activeSeat.CFrame * activeEyeOffset
+
+	-- Re-asserted rather than set once: Roblox assigns the CameraSubject
+	-- itself when a humanoid sits in a VehicleSeat, and that can land after
+	-- this module has already attached (entering is a scripted sequence, not
+	-- one atomic moment - see tryEnter in VehicleDoors.server.luau). Losing
+	-- the subject means silently losing the eye height, with nothing to show
+	-- for it but a driver who cannot see out, so it is checked every frame -
+	-- a property comparison, and a write only on the frame it actually moved.
+	local camera = workspace.CurrentCamera
+	if camera and camera.CameraSubject ~= eyePart then
+		camera.CameraSubject = eyePart
+	end
+
 	updateCharacterVisibility()
 end
 
@@ -230,7 +273,6 @@ function VehicleEyePoint.Detach()
 		eyePart = nil
 	end
 	activeSeat = nil
-	activeEyeOffset = nil
 
 	-- Back to the Humanoid, which is what Roblox sets on spawn and what every
 	-- on-foot camera behaviour expects - including the first-person hiding this
@@ -255,23 +297,36 @@ function VehicleEyePoint.Attach(seat)
 	end
 
 	activeSeat = seat
-	activeEyeOffset = VehicleEyePoint.SeatEyeOffset(seat)
 
-	local part = Instance.new("Part")
+	-- A VehicleSeat, not a Part - see the header. Everything below exists to
+	-- make it a camera reference and nothing else.
+	local part = Instance.new("VehicleSeat")
 	part.Name = "VehicleEyePoint"
 	part.Size = Vector3.one * 0.1 -- it only has to be a BasePart to be a CameraSubject; the size is never seen
 	part.Transparency = 1
-	part.Anchored = true -- see the header: deliberately NOT welded into the car
 	part.CanCollide = false
 	part.CanTouch = false
 	part.CanQuery = false -- so it can never be what a mirror's occlusion ray or an exit clearance check hits
 	part.Locked = true
-	part.CFrame = seat.CFrame * activeEyeOffset
+	part.Massless = true -- welded into the car's assembly; a camera prop must not change what the suspension holds up
+	part.Disabled = true -- nobody can sit in it, so it can never steal the driver off the seat that drives the car
+	part.HeadsUpDisplay = false -- it would never have an occupant to draw one for, but this is the same call Raycast.server.luau makes on the real seat
 
 	-- Parented to workspace rather than into the car, so nothing that walks a
 	-- car's descendants (damage, lights, the mirror renderer) has to learn to
 	-- skip it. Client-only, like the viewmodel arms - the server never sees it.
+	--
+	-- Placed AFTER parenting and welded immediately afterwards, in that order:
+	-- a WeldConstraint freezes whatever relative CFrame the two parts have when
+	-- it activates, so the position has to be the current one rather than one
+	-- read before the car had a chance to move.
 	part.Parent = workspace
+	part.CFrame = seat.CFrame * seatEyeOffset(seat)
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = seat
+	weld.Part1 = part
+	weld.Parent = part
 
 	eyePart = part
 	camera.CameraSubject = part

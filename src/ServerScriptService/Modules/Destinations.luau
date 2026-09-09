@@ -124,6 +124,41 @@ function Destinations.Build()
 	end
 
 	table.sort(Destinations.Order)
+
+	-- Printed once, at build time, because "why do I keep getting the same
+	-- destination" is otherwise unanswerable from inside the game. Contract
+	-- generation picks uniformly from this exact list, so if it holds one name
+	-- the board can only ever offer one place - and the usual cause is a model
+	-- that got skipped above for having no Space part, which is a warning
+	-- somebody has to already be looking for to notice.
+	--
+	-- A print rather than a warn: on a correctly built map this is information,
+	-- not a problem.
+	print(
+		string.format(
+			"Destinations: %d built - %s",
+			#Destinations.Order,
+			if #Destinations.Order > 0 then table.concat(Destinations.Order, ", ") else "(none)"
+		)
+	)
+end
+
+-- Every destination name, in sorted order.
+--
+-- NAMES rather than the entries themselves because a name is what a persisted
+-- contract stores: a saved contract has to survive its destination being
+-- renamed or removed between sessions, and a dangling name is something
+-- ContractPool can detect and drop, where a dangling Instance reference could
+-- not even have been saved.
+--
+-- Read-only: this is the live table, not a copy. The only callers are server
+-- modules picking from it, and a defensive copy per contract generated would be
+-- pure garbage. (It replaced a RandomName() that picked one uniformly - the
+-- choice moved to ContractPool once it needed to steer away from destinations
+-- already on the board, which is a decision only the caller can make.)
+function Destinations.Names()
+	Destinations.Build()
+	return Destinations.Order
 end
 
 function Destinations.Get(name)
@@ -134,19 +169,6 @@ end
 function Destinations.Count()
 	Destinations.Build()
 	return #Destinations.Order
-end
-
--- A random destination NAME, or nil if the map has none built. Name rather
--- than the entry itself because that is what a persisted contract stores: a
--- saved contract has to survive the destination being renamed or removed
--- between sessions, and a dangling name is something ContractPool can detect
--- and drop, where a dangling Instance reference could not even be saved.
-function Destinations.RandomName()
-	Destinations.Build()
-	if #Destinations.Order == 0 then
-		return nil
-	end
-	return Destinations.Order[math.random(#Destinations.Order)]
 end
 
 return Destinations

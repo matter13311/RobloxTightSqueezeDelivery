@@ -26,6 +26,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
+local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 
 local CargoManager = {}
@@ -120,11 +121,14 @@ end
 -- Crates are built from CargoTypes numbers rather than cloned from a Studio
 -- model so that cargo works with nothing placed by hand. Give a type a
 -- TemplateName and clone that here instead once real models exist.
-local function buildCrate(cargoType, chassis)
+local function buildCrate(cargoType, chassis, index)
 	local crate = Instance.new("Part")
 	crate.Name = "Crate"
 	crate.Size = cargoType.CrateSize
-	crate.Color = cargoType.Color
+	-- Per-crate rather than the type's flat Color, so a full bed does not read
+	-- as one solid slab. Derived from the index so the board's preview matches
+	-- crate for crate - see CargoTypes.CrateColor.
+	crate.Color = CargoTypes.CrateColor(cargoType, index)
 	crate.Material = cargoType.Material
 	crate.Anchored = false
 	crate.CanCollide = CRATES_COLLIDE
@@ -147,12 +151,25 @@ local function weldTo(part, chassis)
 	return weld
 end
 
+-- Sets the load's weight, creating the ballast on first use and afterwards
+-- only re-solving its density.
+--
+-- REUSED RATHER THAN REBUILT, because crates now go on one at a time and this
+-- is called once per crate. Destroying and re-welding a massive part six times
+-- in two seconds would break the assembly apart and put it back together on
+-- each step, which a client-owned chassis sitting on a raycast suspension
+-- feels as a lurch. Changing CustomPhysicalProperties on a part that is
+-- already welded updates AssemblyMass in place and moves nothing.
+--
+-- Its CFrame is therefore set exactly once, when it is created. That is also
+-- why it must not be moved later: it is welded, so writing its CFrame would
+-- drag the whole truck with it.
 local function applyBallast(carModel, chassis, folder, bedCFrame, mass)
 	local existing = folder:FindFirstChild(BALLAST_NAME)
-	if existing then
-		existing:Destroy()
-	end
 	if mass <= 0 then
+		if existing then
+			existing:Destroy()
+		end
 		return
 	end
 
@@ -170,6 +187,11 @@ local function applyBallast(carModel, chassis, folder, bedCFrame, mass)
 			)
 		)
 		density = BALLAST_MAX_DENSITY
+	end
+
+	if existing then
+		existing.CustomPhysicalProperties = PhysicalProperties.new(density, 0, 0, 1, 100)
+		return
 	end
 
 	local ballast = Instance.new("Part")
@@ -224,6 +246,79 @@ local function getEmptyMass(carModel, chassis)
 	return mass
 end
 
+-- Loading takes TIME now (see DeliveryConfig.Loading for why), so there has to
+-- be a way to cancel a sequence that is still running - a second Load, an
+-- Unload, or the truck being despawned underneath it.
+--
+-- A counter on the Model rather than a table in this module, for the reason in
+-- this file's header: a token that lives on the instance cannot outlive it, so
+-- there is no cleanup to forget and no way to leak one. Every Load and every
+-- Unload bumps it; a running sequence carries the value it started with and
+-- stops the moment the two stop matching.
+local function bumpSequence(carModel)
+	local current = carModel:GetAttribute(CargoLoad.Attributes.LoadSequence)
+	local nextValue = (type(current) == "number" and current or 0) + 1
+	carModel:SetAttribute(CargoLoad.Attributes.LoadSequence, nextValue)
+	return nextValue
+end
+
+-- One crate landing. Parented to the crate itself so it is positioned at the
+-- bed - a player standing outside hears the load going on where it is going
+-- on - and handed to Debris so a Sound instance never outlives its noise.
+--
+-- Played on the SERVER, like the horn (see VehicleControls' header): the
+-- driver is not the only one who should hear this, and doing it here means one
+-- implementation rather than one for the driver and another for everyone else.
+local function playCrateSound(crate)
+	local loading = DeliveryConfig.Loading
+	local ids = loading.SoundIds
+	if #ids == 0 then
+		return
+	end
+
+	local sound = Instance.new("Sound")
+	sound.Name = "CrateLoadSound"
+	-- Random per crate, so a six-crate load is six thuds rather than the same
+	-- sample stuttering. With one id in the list this is simply that id.
+	sound.SoundId = ids[math.random(#ids)]
+	sound.Volume = loading.SoundVolume
+	sound.RollOffMaxDistance = loading.SoundRollOffMaxDistance
+	sound.RollOffMode = Enum.RollOffMode.InverseTapered
+	sound.Parent = crate
+	sound:Play()
+	Debris:AddItem(sound, 10)
+end
+
+-- Places crate number `index` (0-based) and brings the truck's weight up to
+-- what `index + 1` crates are worth.
+--
+-- The bed CFrame is re-read per crate rather than captured once: the truck is
+-- immobilised while this runs, but it still bobs on its springs - by design,
+-- since each crate landing is meant to make it dip - and a stale frame would
+-- weld the later crates in mid-air relative to the bed.
+local function placeCrate(carModel, chassis, folder, config, cargoType, emptyMass, index)
+	local bedCFrame = getBedCFrame(carModel, chassis, config)
+
+	local crate = buildCrate(cargoType, chassis, index)
+	crate.CFrame = bedCFrame * CFrame.new(CargoLoad.CrateOffset(index, cargoType.CrateSize))
+	crate.Parent = folder
+	weldTo(crate, chassis)
+	playCrateSound(crate)
+
+	local placed = index + 1
+	applyBallast(carModel, chassis, folder, bedCFrame, CargoLoad.AddedMass(config, emptyMass, placed, cargoType.Id))
+
+	-- Set LAST, and after the ballast, for the same reason it used to be
+	-- written last for the load as a whole: it is what the driving client's
+	-- physics loop reads, so writing it once the mass is already in the
+	-- assembly means there is no frame where the truck handles like it is
+	-- laden but weighs nothing. Now it simply walks up one step per crate, and
+	-- VehiclePhysics lerps toward it per frame, so the handling penalty
+	-- arrives with the weight rather than ahead of it.
+	carModel:SetAttribute(CargoLoad.Attributes.LoadFraction, CargoLoad.LoadFraction(config, placed))
+	carModel:SetAttribute(CargoLoad.Attributes.LoadingPlaced, placed)
+end
+
 -- Replaces whatever is aboard with `units` crates of `typeId`. Returns the
 -- number of crates actually loaded, which is `units` clamped to the vehicle's
 -- capacity - callers should show that number rather than what they asked for.
@@ -231,6 +326,13 @@ end
 -- Loading always resets condition to pristine: a load is a fresh set of goods,
 -- and carrying over the damage from the last run would punish a player twice
 -- for one crash.
+--
+-- THIS FUNCTION STILL DOES NOT YIELD. The crates go on over the next couple of
+-- seconds, but everything a caller can observe - the return value, Units,
+-- TypeId, Condition - is committed before it returns, and the placing runs on
+-- its own thread. DeliveryManager depends on exactly that: it loads and then
+-- takes the contract off the board, and its comment there says in as many
+-- words that nothing may slip in between the two.
 function CargoManager.Load(carModel, typeId, units)
 	local chassis = carModel.PrimaryPart
 	if not chassis then
@@ -242,38 +344,63 @@ function CargoManager.Load(carModel, typeId, units)
 	local cargoType = CargoTypes.GetOrDefault(typeId)
 	local loadedUnits = CargoLoad.ClampUnits(config, units)
 
+	-- Also cancels any sequence still running on this truck.
 	CargoManager.Unload(carModel)
 	if loadedUnits <= 0 then
 		return 0
 	end
 
+	-- Measured before any ballast exists, which is the only time it can be.
 	local emptyMass = getEmptyMass(carModel, chassis)
 	local folder = getCargoFolder(carModel, true)
-	local bedCFrame = getBedCFrame(carModel, chassis, config)
-
-	for index = 0, loadedUnits - 1 do
-		local crate = buildCrate(cargoType, chassis)
-		crate.CFrame = bedCFrame * CFrame.new(CargoLoad.CrateOffset(index, cargoType.CrateSize))
-		crate.Parent = folder
-		weldTo(crate, chassis)
-	end
-
-	applyBallast(
-		carModel,
-		chassis,
-		folder,
-		bedCFrame,
-		CargoLoad.AddedMass(config, emptyMass, loadedUnits, cargoType.Id)
-	)
 
 	local attributes = CargoLoad.Attributes
+	-- Units is the FINAL count, written up front rather than counted up as
+	-- crates arrive: it is the contract the player accepted, and every consumer
+	-- of it - the payout, the HUD's "6 x Parcels", the total the loading
+	-- overlay draws progress against - wants the load that is coming, not the
+	-- part of it that has landed so far. LoadingPlaced is the one that counts.
 	carModel:SetAttribute(attributes.TypeId, cargoType.Id)
 	carModel:SetAttribute(attributes.Units, loadedUnits)
 	carModel:SetAttribute(attributes.Condition, 1)
-	-- Set LAST, because it is the one the driving client's physics loop reads:
-	-- writing it after the mass is already in the assembly means there is no
-	-- frame where the truck handles like it is laden but weighs nothing.
-	carModel:SetAttribute(attributes.LoadFraction, CargoLoad.LoadFraction(config, loadedUnits))
+	carModel:SetAttribute(attributes.LoadFraction, 0)
+	carModel:SetAttribute(attributes.LoadingPlaced, 0)
+
+	local sequence = bumpSequence(carModel)
+	local loading = DeliveryConfig.Loading
+	local interval = math.min(loading.SecondsPerCrate, loading.MaxTotalSeconds / loadedUnits)
+
+	task.spawn(function()
+		for index = 0, loadedUnits - 1 do
+			task.wait(interval)
+			-- Re-checked every step rather than once: between two crates the
+			-- truck can have been unloaded, reloaded with something else, or
+			-- destroyed outright, and any of those makes the rest of this
+			-- sequence wrong to finish.
+			if
+				carModel:GetAttribute(attributes.LoadSequence) ~= sequence
+				or carModel.Parent == nil
+				or chassis.Parent == nil
+			then
+				return
+			end
+			placeCrate(carModel, chassis, folder, config, cargoType, emptyMass, index)
+		end
+
+		-- Deliberately NOT cleared on the same frame the last crate lands: see
+		-- CompleteHoldSeconds. The truck is fully loaded and fully weighted by
+		-- now - this beat costs the player nothing and buys the overlay a
+		-- moment to say so.
+		task.wait(loading.CompleteHoldSeconds)
+		if carModel:GetAttribute(attributes.LoadSequence) ~= sequence or carModel.Parent == nil then
+			return
+		end
+
+		-- Removed, not set to false: absence is what CargoLoad.IsLoading tests,
+		-- and it is what releases the driving client's immobiliser and closes
+		-- the loading overlay.
+		carModel:SetAttribute(attributes.LoadingPlaced, nil)
+	end)
 
 	return loadedUnits
 end
@@ -289,6 +416,10 @@ function CargoManager.Unload(carModel)
 	end
 
 	local attributes = CargoLoad.Attributes
+	-- Before anything else: this is what stops a load sequence that is still
+	-- placing crates from carrying on into a bed we are about to empty.
+	bumpSequence(carModel)
+	carModel:SetAttribute(attributes.LoadingPlaced, nil)
 	-- LoadFraction first, for the mirror of the reason it is written last in
 	-- Load: the weight is about to disappear, so the handling penalty should
 	-- go first rather than linger for a frame on an empty truck.
@@ -348,6 +479,15 @@ end
 -- the condition factor, so a player is never charged twice for one crash. That
 -- is also why the Units attribute is not decremented when a crate flies off.
 function CargoManager.ApplyImpact(carModel, severity)
+	-- Nothing lands on a load that is still being put on. The truck is
+	-- immobilised in the bay while this is true, so any impact reaching us here
+	-- was somebody else driving into a parked vehicle - which should not cost
+	-- its driver a penny - and the eject-crates half below cannot work anyway
+	-- while the crate count is still climbing.
+	if CargoLoad.IsLoading(carModel) then
+		return
+	end
+
 	local load = CargoManager.GetLoad(carModel)
 	if load.Units <= 0 then
 		return
