@@ -1487,6 +1487,15 @@ local function applyMouseState()
 end
 
 local function openTerminal()
+	-- The "Open Garage" prompt's ShouldShow only checks ownership, not whether
+	-- the terminal is already open, so it can still be triggered again while
+	-- this is up. Without this guard that re-binds MOUSE_STEP a second time
+	-- under the same name, which is what produced the
+	-- "UnbindFromRenderStep removed different functions with same reference
+	-- name" warning on close.
+	if screenGui.Enabled then
+		return
+	end
 	refreshTerminalData()
 	screenGui.Enabled = true
 	RunService:BindToRenderStep(MOUSE_STEP, Enum.RenderPriority.Last.Value, applyMouseState)
