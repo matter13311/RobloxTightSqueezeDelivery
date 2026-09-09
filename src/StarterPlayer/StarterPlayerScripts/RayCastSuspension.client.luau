@@ -967,6 +967,13 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				smoothSteer = vehicle:GetAttribute("NetSteer") or 0
 			end
 
+			-- Purely local (never replicated - SetAttribute from a client
+			-- never leaves it), so anything else on THIS client wanting the
+			-- driver's own frame-perfect steer - e.g. ViewmodelArms scrubbing
+			-- a grip animation - can read it with none of NetSteer's network
+			-- round-trip lag, same reasoning as the comment above.
+			vehicle:SetAttribute("LocalSmoothSteer", smoothSteer)
+
 			VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, wheelRotationState[vehicle], {
 				SmoothSteer = smoothSteer,
 				Throttle = throttle,

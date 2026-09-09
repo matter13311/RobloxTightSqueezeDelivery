@@ -152,7 +152,7 @@ local QUERY_RADIUS_SCALE = 0.65
 -- of the two is large tells you whether to cut object count or query size,
 -- and they need opposite fixes. CAPPED means the query hit MAX_QUERY_PARTS
 -- and is returning an arbitrary subset rather than a stable one.
-local DEBUG_MIRROR_PROFILE = true
+local DEBUG_MIRROR_PROFILE = false
 local debugStats = {
 	FrameMs = 0,
 	RefreshMs = 0,

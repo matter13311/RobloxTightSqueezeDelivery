@@ -18,7 +18,7 @@ local RunService = game:GetService("RunService")
 local VehicleEntryDebug = {}
 
 -- The one switch. Set false (or delete the module) when done.
-VehicleEntryDebug.Enabled = true
+VehicleEntryDebug.Enabled = false
 
 -- How long after sitting down to keep recording, and a hard row cap so a
 -- forgotten flag can't eat memory on a 240fps machine.
