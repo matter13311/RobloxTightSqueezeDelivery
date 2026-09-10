@@ -268,8 +268,11 @@ return {
 	HonkSoundId = "rbxassetid://127513531122725",
 
 	Mirrors = {
-		LeftMirror = { Yaw = -15, Pitch = 15 },
-		RightMirror = { Yaw = 15, Pitch = 15 },
+		-- Pitch 20 (5 more than the Pickup's) and Outboard 1: the box body is
+		-- tall and wide, so the mirror looks from a stud further out and a bit
+		-- further down to show road rather than the truck's own flank.
+		LeftMirror = { Yaw = -15, Pitch = 20, Outboard = 1 },
+		RightMirror = { Yaw = 15, Pitch = 20, Outboard = 1 },
 		RearViewMirror = { Yaw = 0, Pitch = 4 },
 	},
 

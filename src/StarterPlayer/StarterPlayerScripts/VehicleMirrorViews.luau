@@ -219,6 +219,19 @@ local AIM_SNAP_DISTANCE = 25
 -- small either way, since there are only ever three of these. Erring toward
 -- doing the work is the right trade.
 local OFFSCREEN_HZ = 12
+
+-- How many times a second the mirrors actually move what they show, whatever
+-- the frame rate. A ViewportFrame redraws EVERYTHING in it whenever anything
+-- in it changes, and placing the clones changes them, so updating every frame
+-- meant redrawing both mirrors in full every frame. On frames in between,
+-- nothing inside the mirrors is touched at all, so they are not redrawn.
+--
+-- 30 is smooth enough that a mirror - a small, peripheral image - does not
+-- read as choppy, and at 60fps it halves the mirrors' render cost. Lower it
+-- for more headroom; raise it (or set it above the frame rate) for smoother.
+-- The chassis smoothing below still runs every frame, so the view does not
+-- lag or step - each update just lands on the up-to-date smoothed pose.
+local MIRROR_UPDATE_HZ = 30
 -- Slack on the frustum test, as a fraction of the viewport.
 local VIEW_MARGIN = 0.5
 
@@ -572,6 +585,10 @@ local function buildRig(mirrorPart, aim)
 		-- own outward normal - see the Standoff note on DEFAULT_MIRRORS in
 		-- VehiclePhysics. Only read in "Camera" mode; see updateMirror.
 		Standoff = glass:GetAttribute("MirrorStandoff") or mirrorPart:GetAttribute("MirrorStandoff") or aim.Standoff or 0,
+		-- How far, in studs, to push the camera straight out SIDEWAYS from the
+		-- car - away from the centreline - see the Outboard note on
+		-- DEFAULT_MIRRORS. Also "Camera" mode only.
+		Outboard = glass:GetAttribute("MirrorOutboard") or mirrorPart:GetAttribute("MirrorOutboard") or aim.Outboard or 0,
 		-- [sourcePart] = { Clone = ..., LastSeen = t }. Entries stay here
 		-- after leaving view; only Parent is cleared.
 		Pool = {},
@@ -811,12 +828,29 @@ local function refreshScene(mirror, nearby, surfacePos, normal, now, camPos, tra
 	-- down the road would otherwise still be hanging in the mirror exactly
 	-- where it used to be. Dropping it here hands it back to the ordinary
 	-- world query, which draws it wherever it has actually ended up.
+	--
+	-- Pinned parts still have to be inside this mirror's view cone, exactly like
+	-- world parts below. Being on the reflective side of the plane is not the
+	-- same as being visible: a door mirror aims back along its own flank
+	-- through a narrow cone, and everything else on that side of the plane -
+	-- the far flank, the interior, the roof - can never appear in it. On the
+	-- BoxTruck that was ~100 pinned parts per mirror of which only ~30 could be
+	-- seen, and because a ViewportFrame redraws EVERYTHING in it whenever
+	-- anything in it moves (and the world clones move every frame), the unseen
+	-- ~70 were being redrawn every frame too: 30ms of render CPU, halving the
+	-- frame rate. The car is rigid to the mirror, so this set is stable - it is
+	-- decided once per refresh and the frozen-car path is unaffected.
 	for _, part in state.CarPartList do
 		if
 			part:IsDescendantOf(state.CarModel)
 			and isWorthCloning(part)
 			and extentPastPlane(part, surfacePos, normal) > 0
 			and not swallowsPoint(part, camPos, transform)
+			and insideFrustum(
+				if transform then transform * part.Position else part.Position,
+				part.Size.Magnitude * 0.5,
+				view
+			)
 		then
 			table.insert(pinned, part)
 		end
@@ -1121,6 +1155,15 @@ local function updateMirror(mirror, nearby, camera, eye, now)
 		-- mirror shows a sliver of the door/cab instead of the road (see the
 		-- Standoff note on DEFAULT_MIRRORS in VehiclePhysics).
 		camPos = surfacePos + normal * (0.05 + mirror.Standoff)
+		-- Outboard is along the CHASSIS' right axis, not the glass normal, so
+		-- it always means "further out from the side of the car" however the
+		-- mirror mesh happens to face. Which way is "out" comes from which side
+		-- of the centreline the glass sits on; a centred mirror (the rear-view)
+		-- has no outward side and does not move.
+		if mirror.Outboard ~= 0 then
+			local side = math.sign(basis.Position.X)
+			camPos += state.SmoothChassisCF.RightVector * (side * mirror.Outboard)
+		end
 		worldViewCF = CFrame.lookAt(camPos, camPos + outDir, up)
 		-- The car is deliberately NOT excluded any more. It used to be, because
 		-- with a centre-point plane test the dashboard landed on the lens; the
@@ -1291,6 +1334,27 @@ local function onRenderStep(dt)
 	end
 
 	local now = os.clock()
+
+	-- The 30-a-second gate (see MIRROR_UPDATE_HZ). Placed after the smoothing
+	-- above, so SmoothChassisCF keeps integrating every frame, and before the
+	-- query and placement below, which are the only things that touch the
+	-- mirrors' contents. Scheduled off the previous deadline rather than off
+	-- `now` so updates land evenly; after a hitch it resets instead of firing
+	-- a burst to catch up.
+	--
+	-- A quarter-interval of slack on the deadline, and it is not optional.
+	-- Frame times jitter, so when the game itself runs near MIRROR_UPDATE_HZ a
+	-- frame routinely lands a millisecond BEFORE the deadline and gets skipped
+	-- - measured at ~30fps, the mirrors updated on only 66 of 92 frames, about
+	-- 22 times a second instead of 30. With the slack, a frame that is nearly
+	-- due counts as due: at 30fps that is every frame, at 60fps still exactly
+	-- every other frame.
+	local frameInterval = 1 / MIRROR_UPDATE_HZ
+	if now < state.NextFrame - frameInterval * 0.25 then
+		return
+	end
+	state.NextFrame = if now - state.NextFrame > frameInterval then now + frameInterval else state.NextFrame + frameInterval
+
 	-- One mirror per tick, ticking at the refresh rate x mirror count so each
 	-- still refreshes at that rate. The query is shared, so it runs
 	-- once here and only the mirror whose turn it is consumes it; the others
@@ -1437,6 +1501,7 @@ function VehicleMirrorViews.Start(carModel, config)
 			return params
 		end)(),
 		NextQuery = 0,
+		NextFrame = 0,
 		RefreshCursor = 0,
 		Enabled = true,
 		Mode = if MIRROR_MODE == "Auto" then (if reflectSupported then "Reflect" else "Camera") else MIRROR_MODE,

@@ -761,6 +761,12 @@ local OPTIONAL_STRING_KEYS = { "WheelModelName", "FrontWheelModelName", "RearWhe
 --          the road - that happens because the camera starts almost exactly
 --          at the glass, which usually sits nearly flush with the body.
 --          0 is the old, flush-with-the-glass behaviour.
+--   Outboard  push the camera's origin straight out SIDEWAYS from the car, in
+--          studs, away from the centreline - so the left mirror's camera moves
+--          left and the right one right, whichever way the glass mesh faces.
+--          Bigger = the mirror looks from further outside the body, so your
+--          own flank takes up less of the image. A mirror on the centreline
+--          (the rear-view) is not moved. 0 = no sideways offset.
 --
 -- Only used when VehicleMirrorViews is in AIM_MODE "Rearward" (its default),
 -- which ignores how the mirror mesh happens to be rotated. In "Physical" mode
@@ -769,9 +775,9 @@ local OPTIONAL_STRING_KEYS = { "WheelModelName", "FrontWheelModelName", "RearWhe
 -- These values are the ones tuned by eye on the PickupTruck; they are a
 -- reasonable starting point for any car, not a physical constant.
 local DEFAULT_MIRRORS = {
-	LeftMirror = { Yaw = -15, Pitch = 15, Standoff = 0 },
-	RightMirror = { Yaw = 15, Pitch = 15, Standoff = 0 },
-	RearViewMirror = { Yaw = 0, Pitch = 4, Standoff = 0 },
+	LeftMirror = { Yaw = -15, Pitch = 15, Standoff = 0, Outboard = 0 },
+	RightMirror = { Yaw = 15, Pitch = 15, Standoff = 0, Outboard = 0 },
+	RearViewMirror = { Yaw = 0, Pitch = 4, Standoff = 0, Outboard = 0 },
 }
 
 -- Precedence, highest first: an Attribute set directly on this Chassis
