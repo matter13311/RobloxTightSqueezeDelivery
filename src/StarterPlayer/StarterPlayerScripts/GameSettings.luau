@@ -105,13 +105,27 @@ local DEFINITIONS = {
 			return string.format("%d / sec", value)
 		end,
 	},
+	{
+		Category = "Audio",
+		Key = "MusicVolume",
+		Label = "Music volume",
+		Description = "How loud the background music plays.",
+		Type = "Slider",
+		Min = 0,
+		Max = 100,
+		Step = 5,
+		Default = 50,
+		Format = function(value)
+			return string.format("%d%%", value)
+		end,
+	},
 }
 
 -- Category order in the menu. Anything not listed is appended alphabetically,
 -- so a new category still shows up without being registered here.
 -- Tutorial first: it is the only row here that a lost player is looking for,
 -- and every other category is a comfort option they can find at leisure.
-local CATEGORY_ORDER = { "Tutorial", "Mirrors" }
+local CATEGORY_ORDER = { "Tutorial", "Mirrors", "Audio" }
 
 local values = {}
 local byKey = {}
