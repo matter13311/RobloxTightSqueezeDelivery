@@ -1095,7 +1095,7 @@ local function makePassBanner(vehicleId, ownsPass, layoutOrder)
 		TextWrapped = true,
 		Text = if ownsPass
 			then "Every upgrade on this vehicle is yours to buy."
-			else "Unlock 6 more upgrades for this vehicle.",
+			else "Unlock more upgrades for this vehicle.",
 	})
 
 	if ownsPass then

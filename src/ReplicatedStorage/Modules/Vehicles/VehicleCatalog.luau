@@ -62,7 +62,10 @@ VehicleCatalog.Vehicles = {
 		Id = "BoxTruck",
 		DisplayName = "Box Truck",
 		TemplateName = "BoxTruck", -- must exist under ServerStorage.VehicleTemplates
-		ImageId = "", -- no thumbnail rendered yet - shows the "Image Coming Soon" placeholder
+		-- Thumbnail rendered from the photo-display build (see
+		-- tools/BuildPhotoDisplayCar_CommandBar.luau) and uploaded as a Decal/
+		-- Image asset, same as StarterVehicle/PickupTruck.
+		ImageId = "rbxassetid://70893299934109",
 		-- Placeholder - adjust to taste. The next tier up from PickupTruck, so
 		-- priced/gated higher.
 		Price = 100,
