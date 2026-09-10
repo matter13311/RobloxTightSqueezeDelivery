@@ -132,7 +132,7 @@ local function playSqueakSound(position)
 
 	local sound = Instance.new("Sound")
 	sound.SoundId = soundId
-	sound.Volume = 0.4
+	sound.Volume = 1.4
 	sound.PlaybackSpeed = VehicleCollision.BumpSoundMinPitch
 		+ math.random() * (VehicleCollision.BumpSoundMaxPitch - VehicleCollision.BumpSoundMinPitch)
 	sound.RollOffMaxDistance = 60

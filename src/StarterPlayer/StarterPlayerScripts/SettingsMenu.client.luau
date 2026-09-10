@@ -352,6 +352,12 @@ local function buildMenu()
 	local hint = label(panel, "Press M to close", 12, COLORS.Muted)
 	hint.Position = UDim2.new(0, 20, 0, 40)
 	hint.Size = UDim2.new(1, -60, 0, 16)
+	-- "M" means nothing without a keyboard - the X button is the way out on
+	-- touch - so the hint drops there, same as the launcher's "[M]".
+	hint.Visible = not isTouchInput(UserInputService:GetLastInputType())
+	UserInputService.LastInputTypeChanged:Connect(function(inputType)
+		hint.Visible = not isTouchInput(inputType)
+	end)
 
 	local close = Instance.new("TextButton")
 	close.AnchorPoint = Vector2.new(1, 0)

@@ -34,6 +34,7 @@ local UpgradePasses = {}
 UpgradePasses.PassIdByVehicleId = {
 	StarterVehicle = 1969611825,
 	PickupTruck = 1967959980,
+	BoxTruck = 1976756745,
 }
 
 -- The gated stats, by config key. Same set for every car - a stat that is

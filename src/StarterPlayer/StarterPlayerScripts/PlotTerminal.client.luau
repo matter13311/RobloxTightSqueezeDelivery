@@ -953,7 +953,13 @@ local function makeUpgradeCard(section, vehicleId, statName, spec, unlockedLevel
 		if clamped == currentLevel then
 			return
 		end
-		setCarConfigValueEvent:FireServer(vehicleId, statName, VehicleUpgrades.ValueAtLevel(spec, clamped))
+		-- InvokeServer, not FireServer: this used to fire-and-forget and redraw
+		-- immediately after, but that redraw's GetPlotData round trip had no
+		-- guaranteed ordering against this one and could beat it to the server -
+		-- showing the bar still at the old level, which is why the arrows looked
+		-- like they needed a second press to move it once. Blocking here means
+		-- the tune is guaranteed applied before refreshTerminalData reads it back.
+		setCarConfigValueEvent:InvokeServer(vehicleId, statName, VehicleUpgrades.ValueAtLevel(spec, clamped))
 		refreshTerminalData()
 	end
 
@@ -1041,7 +1047,7 @@ local function makeUpgradeCard(section, vehicleId, statName, spec, unlockedLevel
 			-- nothing at all. Turning the new level on immediately makes buying
 			-- one action with a visible result; the arrows above are how you
 			-- undo it, not how you complete it.
-			setCarConfigValueEvent:FireServer(vehicleId, statName, VehicleUpgrades.ValueAtLevel(spec, unlockedLevel + 1))
+			setCarConfigValueEvent:InvokeServer(vehicleId, statName, VehicleUpgrades.ValueAtLevel(spec, unlockedLevel + 1))
 		end
 		refreshTerminalData()
 	end)

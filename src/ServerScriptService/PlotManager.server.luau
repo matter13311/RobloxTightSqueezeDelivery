@@ -105,7 +105,17 @@ local buyUpgradeEvent = Instance.new("RemoteFunction")
 buyUpgradeEvent.Name = "BuyUpgrade"
 buyUpgradeEvent.Parent = ReplicatedStorage
 
-local setCarConfigValueEvent = Instance.new("RemoteEvent")
+-- A RemoteFunction, not a fire-and-forget RemoteEvent, for the same reason as
+-- BuyUpgrade above: the terminal's tune arrows fire this and then immediately
+-- re-fetch GetPlotData to redraw the segment bar, and there is no guaranteed
+-- ordering between a RemoteEvent fired a moment earlier and a RemoteFunction
+-- invoked right after it. With a plain RemoteEvent, that follow-up GetPlotData
+-- invoke could reach the server and return before OnServerEvent here had
+-- actually run, so the bar redrew at the OLD level even though the tune had
+-- gone through - which is why the arrows looked like they needed two presses
+-- to move the bar once (the first press's effect only showed up on the redraw
+-- after the second press).
+local setCarConfigValueEvent = Instance.new("RemoteFunction")
 setCarConfigValueEvent.Name = "SetCarConfigValue"
 setCarConfigValueEvent.Parent = ReplicatedStorage
 
@@ -826,19 +836,19 @@ buyUpgradeEvent.OnServerInvoke = function(player, vehicleId, statName)
 	return true
 end
 
-setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statName, value)
+setCarConfigValueEvent.OnServerInvoke = function(player, vehicleId, statName, value)
 	local data = playerData[player.UserId]
 	if not data or typeof(vehicleId) ~= "string" or typeof(statName) ~= "string" or typeof(value) ~= "number" then
-		return
+		return false
 	end
 	if not data.OwnedVehicleIds[vehicleId] then
-		return
+		return false
 	end
 	local vehicleDef = VehicleCatalog.Get(vehicleId)
 	local specs = getUpgradeSpecs(vehicleDef)
 	local spec = specs and specs[statName]
 	if not spec then
-		return
+		return false
 	end
 
 	-- Snapping to the nearest notch the player has actually UNLOCKED (not
@@ -850,7 +860,7 @@ setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statNam
 	-- second half is what keeps a player who upgraded before the pass existed
 	-- able to use what they paid in-game money for - see UpgradePasses.CanTune.
 	if not UpgradePasses.CanTune(statName, ownsUpgradePass(player, vehicleId), unlockedLevel) then
-		return
+		return false
 	end
 
 	local snapped = VehicleUpgrades.NearestUnlockedValue(spec, unlockedLevel, value)
@@ -869,7 +879,9 @@ setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statNam
 	if session and session.SpawnedVehicle and data.SelectedVehicleId == vehicleId and session.SpawnedVehicle.PrimaryPart then
 		session.SpawnedVehicle.PrimaryPart:SetAttribute(statName, snapped)
 	end
-end)
+
+	return true
+end
 
 tutorialFinishedEvent.OnServerEvent:Connect(function(player)
 	local data = playerData[player.UserId]

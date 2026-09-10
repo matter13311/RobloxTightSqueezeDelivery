@@ -12,6 +12,8 @@
 -- thing doesn't read as "one more wall of keybinds" - just "here's how to
 -- get out" first, everything else second.
 
+local UserInputService = game:GetService("UserInputService")
+
 local PANEL = Color3.fromRGB(18, 20, 25)
 local PANEL_EDGE = Color3.fromRGB(52, 58, 70)
 -- Brightened from (120, 130, 148): the whole panel was reported as easy to
@@ -103,7 +105,22 @@ function ControlsHint.new(player)
 	self.Visible = false
 	panel.Visible = false
 
+	-- Never shown on touch: every key it names is keyboard-only, and
+	-- VehicleTouchControls already puts a labelled button on screen for each
+	-- of them, so on a phone this is just a strip of screen saying nothing
+	-- useful. Tracked live, same as VehicleTouchControls, since a hybrid
+	-- device can switch between touch and keyboard mid-drive.
+	self.TouchActive = UserInputService:GetLastInputType() == Enum.UserInputType.Touch
+	self._inputConnection = UserInputService.LastInputTypeChanged:Connect(function(inputType)
+		self.TouchActive = inputType == Enum.UserInputType.Touch
+		self:_apply()
+	end)
+
 	return self
+end
+
+function ControlsHint:_apply()
+	self.Panel.Visible = self.Visible and not self.TouchActive
 end
 
 -- Shown only in first person - in third person the dashboard's own status
@@ -114,10 +131,14 @@ function ControlsHint:SetVisible(visible)
 		return
 	end
 	self.Visible = visible
-	self.Panel.Visible = visible
+	self:_apply()
 end
 
 function ControlsHint:Destroy()
+	if self._inputConnection then
+		self._inputConnection:Disconnect()
+		self._inputConnection = nil
+	end
 	if self.Gui then
 		self.Gui:Destroy()
 		self.Gui = nil
