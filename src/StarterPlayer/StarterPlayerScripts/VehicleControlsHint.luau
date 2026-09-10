@@ -14,7 +14,9 @@
 
 local PANEL = Color3.fromRGB(18, 20, 25)
 local PANEL_EDGE = Color3.fromRGB(52, 58, 70)
-local DIM_TEXT = Color3.fromRGB(120, 130, 148)
+-- Brightened from (120, 130, 148): the whole panel was reported as easy to
+-- miss, and the secondary controls were the dimmest thing on it.
+local DIM_TEXT = Color3.fromRGB(160, 170, 188)
 local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
 local EXIT_COLOR = Color3.fromRGB(232, 138, 60)
 
@@ -68,13 +70,17 @@ function ControlsHint.new(player)
 	panel.Name = "Panel"
 	panel.AnchorPoint = Vector2.new(0.5, 0)
 	panel.Position = UDim2.new(0.5, 0, 0, 12)
-	panel.Size = UDim2.fromOffset(430, 26)
+	-- Bigger than the original 430x26: this was reported as easy to miss
+	-- entirely. DeliveryHud's job panel is anchored off this panel's bottom
+	-- edge (see its comment above jobFrame.Position), so a height change here
+	-- has to be mirrored there or the two start overlapping.
+	panel.Size = UDim2.fromOffset(480, 34)
 	panel.BackgroundColor3 = PANEL
-	panel.BackgroundTransparency = 0.15
+	panel.BackgroundTransparency = 0.1
 	panel.BorderSizePixel = 0
 	panel.Parent = gui
 	corner(panel, 8)
-	stroke(panel, PANEL_EDGE)
+	stroke(panel, PANEL_EDGE, 1.5)
 	self.Panel = panel
 
 	-- One row, all the controls, built from RichText so "F exit" can carry
@@ -83,7 +89,8 @@ function ControlsHint.new(player)
 	-- alone is what makes F the one your eye catches first.
 	local hexEXIT = EXIT_COLOR:ToHex()
 	local hexDIM = DIM_TEXT:ToHex()
-	local row = newLabel(panel, "Hint", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 13, DIM_TEXT, Enum.Font.GothamMedium)
+	-- Bumped from 13 to 16 alongside the panel - see its comment.
+	local row = newLabel(panel, "Hint", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 16, DIM_TEXT, Enum.Font.GothamMedium)
 	row.RichText = true
 	row.Text = string.format(
 		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">Space handbrake   Q/E blinkers   H honk   L lights</font>',

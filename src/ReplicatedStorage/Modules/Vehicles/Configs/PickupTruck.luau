@@ -73,7 +73,7 @@ return {
 			Description = "The truck's top speed in a straight line. Higher Max Speed lets you go faster once you're up to full speed, but doesn't change how quickly you get there.",
 		},
 		SteerAngle = {
-			DisplayName = "Turning",
+			DisplayName = "Handling",
 			IconId = "rbxassetid://77987850174545",
 			Max = 52,
 			Step = 4,

@@ -253,6 +253,24 @@ ProgressionConfig.Monetization = {
 	-- active adds this on top of whatever time is left rather than
 	-- overwriting it - see the grant handler in Monetization.server.luau.
 	ThirdPersonDurationSeconds = 20 * 60,
+
+	-- The free path to the same refresh (see ContractPool.FreeRefresh): one
+	-- always-available refresh on a rolling cooldown, not "N free per calendar
+	-- day". A day-boundary reset needs a timezone decision this game has no
+	-- good answer for and resets itself for every player at once regardless of
+	-- when they actually last used it; a cooldown measured from the last use
+	-- reuses the exact same timestamp shape ContractsRegenAt already is
+	-- elsewhere in this file, and is fair to a player who logs in at an odd
+	-- hour.
+	--
+	-- Six hours, not once a day and not "2 free a day": long enough that a
+	-- player cannot chain free refreshes within one sitting (which would make
+	-- the Robux refresh pointless the moment someone is impatient enough to
+	-- want a second one), short enough that a player who plays more than once
+	-- a day - the target for a comeback hook - gets it back on their next
+	-- session rather than waiting a full day for the exact same board they
+	-- already gave up on.
+	FreeRefreshCooldownSeconds = 6 * 60 * 60,
 }
 
 return ProgressionConfig

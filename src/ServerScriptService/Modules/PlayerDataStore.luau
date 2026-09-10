@@ -19,6 +19,7 @@
 --     Contracts = { { Id, Stop, TypeId, UnitsFraction }, ... }, -- the standing job board, see ContractPool
 --     ContractsRegenAt = number,      -- os.time() the next contract slot is granted, or 0 when the board is full
 --     NextContractId = number,        -- so a rejoin can't reissue an id the player is still holding
+--     FreeRefreshAvailableAt = number, -- os.time() the free board refresh comes back; 0/past = available now
 --     TutorialDone = boolean,         -- false only for a player who has never been through the guided first delivery
 --   }
 --
@@ -95,6 +96,10 @@ local function newDefaultData()
 		Contracts = nil,
 		ContractsRegenAt = 0,
 		NextContractId = 0,
+		-- 0 rather than nil: a brand new player's free refresh is available
+		-- from the moment they can first see the board, same as ContractsRegenAt
+		-- above starting the board itself full. See ContractPool.FreeRefresh.
+		FreeRefreshAvailableAt = 0,
 		-- The one field a brand new player is defined by. Everything else here
 		-- starts at a zero that an existing player could legitimately also be
 		-- sitting on; this starts at the value that means "has never played",

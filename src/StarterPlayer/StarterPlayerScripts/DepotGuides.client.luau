@@ -58,8 +58,12 @@ local guides = DeliveryConfig.Guides
 -- Palette
 --=============================================================================
 
-local FAR = Color3.fromRGB(220, 62, 52) -- nowhere near lined up
-local NEAR = Color3.fromRGB(244, 176, 54) -- close
+-- Orange -> green rather than red -> amber -> green: red reads to players as
+-- "stay away from this space", which is backwards for a guide whose entire
+-- job is to draw them INTO the bay. Orange still says "not yet" without
+-- telling them to avoid it.
+local FAR = Color3.fromRGB(232, 108, 32) -- nowhere near lined up
+local NEAR = Color3.fromRGB(236, 168, 40) -- close
 local IN = Color3.fromRGB(74, 214, 116) -- inside: the board will open
 
 local HAZARD_YELLOW = Color3.fromRGB(250, 204, 48)

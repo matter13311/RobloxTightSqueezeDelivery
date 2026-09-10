@@ -138,6 +138,19 @@ end)
 local getContractBoardFunction = script.Parent:WaitForChild("GetContractBoard")
 local takeContractFunction = script.Parent:WaitForChild("TakeContract")
 local recordDeliveryFunction = script.Parent:WaitForChild("RecordDelivery")
+local freeRefreshContractsFunction = script.Parent:WaitForChild("FreeRefreshContracts")
+
+-- The client's free-refresh button. A straight passthrough to PlotManager's
+-- bindable rather than another AcceptContract-style handler: the cooldown
+-- itself IS the security here (see ContractPool.FreeRefresh), so there is
+-- nothing else for this handler to check before asking it.
+local freeRefreshFunction = Instance.new("RemoteFunction")
+freeRefreshFunction.Name = "FreeRefreshContracts"
+freeRefreshFunction.Parent = ReplicatedStorage
+
+freeRefreshFunction.OnServerInvoke = function(player)
+	return freeRefreshContractsFunction:Invoke(player)
+end
 
 --=============================================================================
 -- The board

@@ -51,8 +51,11 @@ VehicleCollision.BODY_FOLDER = "Body"
 -- headlight knocked off in a hard enough crash just goes dark, the same way a
 -- real one would - VehicleLights.luau caches a direct reference to each
 -- light's Part when it first builds a car's rig, so a part that later
--- detaches (and eventually despawns, like any other debris) simply stops
--- being where the light is, without needing any extra bookkeeping there.
+-- detaches (and eventually despawns, like any other debris) is still the same
+-- Instance that rig is driving. VehicleLights.setInstancesLit checks the
+-- IsDebris attribute set below before honouring the switch, which is the one
+-- piece of bookkeeping this needs - without it a detached light would still
+-- flick on with the rest of the switch/brake group it fell off of.
 VehicleCollision.DETACHABLE_FOLDERS = { "Body", "Mirror", "Lights" }
 
 --=============================================================================

@@ -814,10 +814,20 @@ local function finish()
 	finishToken += 1
 	local token = finishToken
 	task.delay(TutorialConfig.Finish.Seconds, function()
-		if finishToken == token then
-			screenGui.Enabled = false
-			skipButton.Text = "Skip"
+		if finishToken ~= token then
+			return
 		end
+
+		-- One more banner before this goes away for good: the garage-terminal
+		-- nudge (see TutorialConfig.GarageReminder for why). Same token, so a
+		-- replay started during either banner still tears both down cleanly.
+		renderBanner("TIP", TutorialConfig.GarageReminder.Title, TutorialConfig.GarageReminder.Body)
+		task.delay(TutorialConfig.GarageReminder.Seconds, function()
+			if finishToken == token then
+				screenGui.Enabled = false
+				skipButton.Text = "Skip"
+			end
+		end)
 	end)
 end
 

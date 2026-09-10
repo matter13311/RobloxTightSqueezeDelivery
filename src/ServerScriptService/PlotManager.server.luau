@@ -432,6 +432,26 @@ refreshContractsFunction.OnInvoke = function(player)
 	return true
 end
 
+-- The free path to the same refresh - see ContractPool.FreeRefresh. Same
+-- immediate-save reasoning as the paid one above: the cooldown this starts is
+-- the scarce resource, and losing that write to a server crash would hand the
+-- player their free refresh back for nothing the next time they join.
+local freeRefreshContractsFunction = Instance.new("BindableFunction")
+freeRefreshContractsFunction.Name = "FreeRefreshContracts"
+freeRefreshContractsFunction.Parent = script.Parent
+
+freeRefreshContractsFunction.OnInvoke = function(player)
+	local data = playerData[player.UserId]
+	if not data then
+		return false
+	end
+	if not ContractPool.FreeRefresh(data) then
+		return false
+	end
+	PlayerDataStore.Save(player, data)
+	return true
+end
+
 local function despawnVehicle(session)
 	if session.SpawnedVehicle and session.SpawnedVehicle.Parent then
 		session.SpawnedVehicle:Destroy()

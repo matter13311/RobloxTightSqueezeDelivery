@@ -90,6 +90,18 @@ local SCREEN_MARGIN_TOP = 130
 -- large or small.
 local DEFAULT_NEAR_DISTANCE = 100
 
+-- How far off dead-ahead (degrees, measured on the horizontal plane) the
+-- target can be before the screen marker switches from the diamond to the
+-- arrow. WorldToViewportPoint being "on screen" is not the same question as
+-- "roughly in front of the player" - the camera's FOV alone puts targets
+-- 30+ degrees to either side on screen, and pinning a diamond exactly over
+-- one of those reads as "it's right there" when the player still has to
+-- turn a third of the way around to face it. Below this angle the target is
+-- close enough to dead-ahead that a static pin at its exact spot is the more
+-- honest signal; at or beyond it, the arrow's rotation is the only thing
+-- that actually answers "which way do I turn".
+local ON_TARGET_ANGLE = 18
+
 local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
 
 --=============================================================================
@@ -423,31 +435,54 @@ function GuideMarker:_step()
 		return
 	end
 
-	local point, onScreen = camera:WorldToViewportPoint(centre)
 	local viewport = camera.ViewportSize
+	local camCFrame = camera.CFrame
+	local toTarget = centre - camCFrame.Position
 
-	-- Behind the camera comes back with a negative Z and coordinates mirrored
-	-- through the centre. Flipping them back is what stops the arrow pointing
-	-- left when the target is behind and to the right.
-	local behind = point.Z <= 0
-	local x = if behind then viewport.X - point.X else point.X
-	local y = if behind then viewport.Y - point.Y else point.Y
+	-- Facing angle, not screen clamping, decides pin-vs-arrow - see
+	-- ON_TARGET_ANGLE for why. Flattened onto the horizontal plane so looking
+	-- up or down at a target dead ahead doesn't read as "off to the side".
+	local flatToTarget = Vector3.new(toTarget.X, 0, toTarget.Z)
+	local flatLook = Vector3.new(camCFrame.LookVector.X, 0, camCFrame.LookVector.Z)
+	local facingAngle = 0
+	if flatToTarget.Magnitude > 0.01 and flatLook.Magnitude > 0.01 then
+		facingAngle = math.deg(math.acos(math.clamp(flatLook.Unit:Dot(flatToTarget.Unit), -1, 1)))
+	end
 
-	local clampedX = math.clamp(x, SCREEN_MARGIN, viewport.X - SCREEN_MARGIN)
-	local clampedY = math.clamp(y, SCREEN_MARGIN_TOP, viewport.Y - SCREEN_MARGIN)
-	local atEdge = behind or not onScreen or clampedX ~= x or clampedY ~= y
-
-	self._screen.Position = UDim2.fromOffset(clampedX, clampedY)
-
-	if atEdge then
-		-- Point from the middle of the screen toward where the target actually
-		-- is. The glyph is drawn pointing up, hence the +90.
-		local dx, dy = x - viewport.X / 2, y - viewport.Y / 2
-		self._screenArrow.Rotation = math.deg(math.atan2(dy, dx)) + 90
-		self._screenArrow.Text = "\u{25B2}"
-	else
+	if facingAngle <= ON_TARGET_ANGLE then
+		-- Close enough to dead-ahead that the projected point is both stable
+		-- and the more honest signal: pin the diamond exactly where the
+		-- target sits on screen.
+		local point = camera:WorldToViewportPoint(centre)
+		local clampedX = math.clamp(point.X, SCREEN_MARGIN, viewport.X - SCREEN_MARGIN)
+		local clampedY = math.clamp(point.Y, SCREEN_MARGIN_TOP, viewport.Y - SCREEN_MARGIN)
+		self._screen.Position = UDim2.fromOffset(clampedX, clampedY)
 		self._screenArrow.Rotation = 0
 		self._screenArrow.Text = "\u{25C6}" -- a pin sitting on the spot, not a direction
+	else
+		-- Off to a side, including straight behind - bearing computed in the
+		-- CAMERA'S LOCAL SPACE rather than from WorldToViewportPoint. A point
+		-- directly behind the camera projects back through the lens near the
+		-- SCREEN CENTRE (mirroring the pixel coordinates through the middle
+		-- does not fix this), so close to dead-behind the pixel-based
+		-- direction was unstable - the arrow flickered around the middle of
+		-- the screen on the tiniest look change instead of settling to
+		-- whichever side the target was actually on. Local space has no such
+		-- singularity anywhere except the single exact reverse point.
+		local localDir = camCFrame:VectorToObjectSpace(toTarget)
+		local nx, ny = localDir.X, -localDir.Y
+		local mag = math.sqrt(nx * nx + ny * ny)
+		if mag < 0.001 then
+			nx, mag = 1, 1
+		end
+		nx, ny = nx / mag, ny / mag
+
+		local clampedX = viewport.X / 2 + nx * (viewport.X / 2 - SCREEN_MARGIN)
+		local clampedY = viewport.Y / 2 + ny * (viewport.Y / 2 - SCREEN_MARGIN_TOP)
+		self._screen.Position = UDim2.fromOffset(clampedX, clampedY)
+		-- The glyph is drawn pointing up, hence the +90.
+		self._screenArrow.Rotation = math.deg(math.atan2(ny, nx)) + 90
+		self._screenArrow.Text = "\u{25B2}"
 	end
 
 	self._screenCaption.Text = string.format(

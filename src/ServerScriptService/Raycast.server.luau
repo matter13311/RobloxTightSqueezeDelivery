@@ -136,10 +136,23 @@ local function SetUpSteeringWheel(carModel, chassis)
 		return -- car has no steering wheel prop, which is fine
 	end
 
-	part.Anchored = false
-	part.CanCollide = false
+	-- SetUpAnimatableWeld FIRST, before any sibling parts (rim, spokes, horn
+	-- boss...) get welded onto `part` below - order matters here and getting
+	-- it backwards is exactly what used to make one of those siblings fall
+	-- off and vanish. SetUpAnimatableWeld destroys every joint already
+	-- connected to `part` via part:GetJoints() (see its own header), and
+	-- GetJoints() returns a joint that references `part` in EITHER Part0 or
+	-- Part1 - regardless of which instance it's parented to. Welding the
+	-- siblings on first meant their brand new WeldConstraint (Part0 = part)
+	-- got caught and destroyed by that very next line, leaving the sibling
+	-- Anchored = false with nothing holding it up: it dropped straight out
+	-- of the car and, past this place's fallen-parts kill height, was gone
+	-- for good - "the part disappears and isn't on the steering wheel
+	-- anymore" was that fall, not a missing asset.
+	SetUpAnimatableWeld(chassis, part, "SteeringWheelWeld")
+
 	-- Multi-part steering wheel (rim, spokes, horn boss): everything else
-	-- rides on the part we're about to animate, so the whole assembly turns
+	-- rides on the part we just animated, so the whole assembly turns
 	-- together. The container has to be a "SteeringWheel" wrapper and NOT the
 	-- car model itself - a steering wheel that is a direct part child of the
 	-- car would otherwise match here and weld the entire vehicle to it.
@@ -156,8 +169,6 @@ local function SetUpSteeringWheel(carModel, chassis)
 			end
 		end
 	end
-
-	SetUpAnimatableWeld(chassis, part, "SteeringWheelWeld")
 end
 
 -- SpeedNeedle and RPMNeedle (Dashboard.SpeedNeedle / Dashboard.RPMNeedle) spin

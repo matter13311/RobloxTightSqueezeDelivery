@@ -81,6 +81,18 @@ TutorialConfig.Finish = {
 	Seconds = 8,
 }
 
+-- Shown once, right after Finish, before the banner goes away for good - see
+-- TutorialGuide's finish(). Nothing in the five steps above ever sends the
+-- player back to their garage terminal once they have spawned a car, so a
+-- first-time player has no reason to ever learn upgrades exist there. This is
+-- the one nudge toward it, timed for the moment they are standing right next
+-- to it and about to drive off for the rest of the session.
+TutorialConfig.GarageReminder = {
+	Title = "Don't forget your garage!",
+	Body = "Come back to your garage terminal any time to browse and upgrade your vehicle.",
+	Seconds = 8,
+}
+
 --=============================================================================
 -- Look
 --=============================================================================

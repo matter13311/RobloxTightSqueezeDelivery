@@ -42,6 +42,11 @@ local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
 -- rebuilt the board on the server - see its comment for why this exists rather
 -- than redrawing on PromptProductPurchaseFinished.
 local contractsRefreshedEvent = ReplicatedStorage:WaitForChild("ContractsRefreshed")
+-- The free refresh's own remote - see DeliveryManager.server.luau. A plain
+-- RemoteFunction rather than a purchase flow: there is no receipt for a free
+-- action, so the answer comes back on the same call instead of arriving later
+-- over ContractsRefreshed.
+local freeRefreshFunction = ReplicatedStorage:WaitForChild("FreeRefreshContracts")
 
 -- WaitForChild for the same reason PlotTerminal does it: Workspace is not
 -- guaranteed to have replicated by the time PlayerScripts starts, and a direct
@@ -133,12 +138,12 @@ local jobFrame = Instance.new("Frame")
 -- costs about eighty pixels of the line.
 jobFrame.Size = UDim2.fromOffset(300, 92)
 jobFrame.AnchorPoint = Vector2.new(0.5, 0)
--- Below VehicleControlsHint's panel (top-centre, y=12, 26 tall - see that
+-- Below VehicleControlsHint's panel (top-centre, y=12, 34 tall - see that
 -- script), not level with it: both are anchored top-centre, and level would
 -- put this frame's card square over the "F exit / Space handbrake ..." strip
--- the instant a player is in a vehicle and first person. 46 clears that
--- panel's bottom edge (12 + 26 = 38) with an 8px gap.
-jobFrame.Position = UDim2.new(0.5, 0, 0, 46)
+-- the instant a player is in a vehicle and first person. 54 clears that
+-- panel's bottom edge (12 + 34 = 46) with an 8px gap.
+jobFrame.Position = UDim2.new(0.5, 0, 0, 54)
 jobFrame.BackgroundColor3 = PANEL
 jobFrame.BackgroundTransparency = 0.1
 jobFrame.BorderSizePixel = 0
@@ -340,6 +345,24 @@ refreshButton.Text = ""
 refreshButton.Parent = board
 corner(refreshButton, 8)
 stroke(refreshButton, PANEL_EDGE)
+
+-- Sits just above the button and says which of the two refreshes this click
+-- currently is - "free, and consumes today's freebie" or "costs Robux, and
+-- comes back for free in X". Without this the button alone can't say both
+-- "what happens" and "why", and a player who taps it not knowing which one
+-- they just spent has no way to learn the free one exists at all.
+-- Boxed into the gap between the timer panel (ends x=334) and the button
+-- (starts y=446, see refreshButton above) - there isn't room in that 146x36
+-- corner for a big font AND a long sentence, so this went up in size (11 ->
+-- 14, reported as too small to read) and the copy went down in length to
+-- match, rather than fighting the space for a sentence that no longer fits.
+local refreshCaption = label(board, "", 14, DIM_TEXT, true)
+refreshCaption.AnchorPoint = Vector2.new(1, 1)
+refreshCaption.Position = UDim2.new(1, -20, 1, -56)
+refreshCaption.Size = UDim2.fromOffset(146, 36)
+refreshCaption.TextXAlignment = Enum.TextXAlignment.Right
+refreshCaption.TextYAlignment = Enum.TextYAlignment.Bottom
+refreshCaption.TextWrapped = true
 
 -- The payout summary, centred low so it does not cover the windscreen.
 local summary = Instance.new("Frame")
@@ -758,15 +781,68 @@ local function updateFooter()
 	poolProgress.Text = text
 end
 
+-- 0 (or no board yet) means the free refresh is available right now; a
+-- positive number is how long until it is. Computed the same way the "NEXT
+-- JOB IN" countdown is - a duration the server sent, aged by however long
+-- this client has been holding it - so it never needs to agree clocks with
+-- the server either.
+local function freeRefreshRemaining()
+	local state = boardState
+	if not state or type(state.FreeRefreshSecondsRemaining) ~= "number" then
+		return 0
+	end
+	return math.max(0, state.FreeRefreshSecondsRemaining - (os.clock() - boardStateAt))
+end
+
+-- Redrawn every tick (see updateFooter below), not just when the board is
+-- fetched: the whole point of the caption is the countdown counting down
+-- while the player is looking at it.
 local function updateRefreshButton()
-	refreshButton.Text = "Refresh Jobs"
+	local remaining = freeRefreshRemaining()
+	if remaining <= 0 then
+		-- Styled like the accent-green job cards - the one moment this button
+		-- is worth pressing, it should look like it.
+		refreshButton.Text = "FREE REFRESH"
+		refreshButton.BackgroundColor3 = ACCENT
+		refreshButton.TextColor3 = BRIGHT_TEXT
+		refreshCaption.Text = "Free - new board"
+		refreshCaption.TextColor3 = ACCENT
+	else
+		refreshButton.Text = "Refresh Jobs"
+		refreshButton.BackgroundColor3 = CARD
+		refreshButton.TextColor3 = BRIGHT_TEXT
+		refreshCaption.Text = string.format("%d R$ · free in %s", refreshPrice, formatDuration(remaining))
+		refreshCaption.TextColor3 = DIM_TEXT
+	end
 end
 
 -- Priced from the config immediately rather than waiting on the round trip
 -- below, so the button is never briefly blank on a slow connection.
 updateRefreshButton()
 
+-- Forward-declared: requestBoard isn't defined until further down (see
+-- "Drawing and asking for the board"), but the free-refresh click handler
+-- right below needs to call it. Without this, that handler closes over a
+-- global `requestBoard` - which is nil - instead of the local defined later,
+-- and clicking FREE REFRESH throws "attempt to call a nil value".
+local requestBoard
+
 refreshButton.Activated:Connect(function()
+	if freeRefreshRemaining() <= 0 then
+		-- No purchase flow to wait on - the answer comes back on this call.
+		-- A false here means somebody else's click (or a slow client) already
+		-- spent this cooldown a moment ago; the button simply redraws itself
+		-- back to the paid state on the next updateRefreshButton() rather than
+		-- needing a special case.
+		local ok, granted = pcall(function()
+			return freeRefreshFunction:InvokeServer()
+		end)
+		if ok and granted then
+			requestBoard()
+		end
+		return
+	end
+
 	-- Roblox owns the whole purchase flow from here: the prompt, the payment,
 	-- and telling the server. Nothing about the board changes on this click -
 	-- it changes when the SERVER says the refresh happened (see the
@@ -829,7 +905,7 @@ end
 -- anything likes: the pool is persisted, so the answer does not change just
 -- because it was asked for - which is the entire reason backing out of the bay
 -- and driving in again no longer re-rolls the jobs.
-local function requestBoard()
+requestBoard = function()
 	if boardRequestInFlight then
 		return nil
 	end
@@ -868,6 +944,9 @@ local function tickBoard()
 		return
 	end
 	updateFooter()
+	-- Redrawn every tick, not just on a fresh fetch, so the "free one in
+	-- X:XX" caption actually counts down while the board is open.
+	updateRefreshButton()
 	if not boardState.SecondsUntilNext then
 		return
 	end
@@ -1408,31 +1487,47 @@ RunService.RenderStepped:Connect(function()
 	end
 	local distance = (target - from).Magnitude
 
-	local point, onScreen = camera:WorldToViewportPoint(target)
+	local point = camera:WorldToViewportPoint(target)
 
-	-- Behind the camera comes back with a negative Z and coordinates that are
-	-- mirrored through the centre. Flipping them back is what stops the arrow
-	-- pointing left when the destination is behind and to the right.
-	local behind = point.Z <= 0
-	local x = if behind then viewport.X - point.X else point.X
-	local y = if behind then viewport.Y - point.Y else point.Y
+	-- Left/right is decided in the CAMERA'S LOCAL SPACE, not from the
+	-- projected pixel. A point behind the camera projects back through the
+	-- lens close to the screen centre, which is what used to leave the
+	-- diamond sitting in the middle of the screen when the destination was
+	-- behind the player. Local X is simply "which side of me is it on", and
+	-- has no such singularity.
+	local localDir = camera.CFrame:VectorToObjectSpace(target - camera.CFrame.Position)
+	local behind = localDir.Z >= 0 -- camera looks down -Z
+	local minX, maxX = WAYPOINT_MARGIN, viewport.X - WAYPOINT_MARGIN
+	local minY, maxY = WAYPOINT_MARGIN_TOP, viewport.Y - WAYPOINT_MARGIN
 
-	local clampedX = math.clamp(x, WAYPOINT_MARGIN, viewport.X - WAYPOINT_MARGIN)
-	local clampedY = math.clamp(y, WAYPOINT_MARGIN_TOP, viewport.Y - WAYPOINT_MARGIN)
-	local edge = behind or not onScreen or clampedX ~= x or clampedY ~= y
+	-- Off to a side (or behind): park on the left or right edge and point
+	-- that way - "turn this way" - instead of floating somewhere misleading.
+	-- Only HORIZONTAL off-screen counts; a destination merely above or below
+	-- the frame is still ahead, so it just clamps vertically as before.
+	local edge = behind or point.X < minX or point.X > maxX
+	local clampedX, clampedY
+	if edge then
+		local right = localDir.X >= 0
+		clampedX = if right then maxX else minX
+		-- Keep the vertical position while the target is in front, so the
+		-- marker slides along the edge smoothly; behind, the projected Y is
+		-- meaningless, so sit at mid-height.
+		clampedY = if behind then viewport.Y / 2 else math.clamp(point.Y, minY, maxY)
+		waypointArrow.Rotation = if right then 90 else -90 -- glyph points up
+		waypointArrow.Text = "▲"
+		waypointArrow.Position = UDim2.new(0.5, 0, 0, 0)
+	else
+		clampedX = point.X
+		clampedY = math.clamp(point.Y, minY, maxY)
+	end
 
 	waypoint.Position = UDim2.fromOffset(clampedX, clampedY)
 
-	if near then
-		-- Still rotates to point on the rare close-range case where the
-		-- destination is off screen or behind - otherwise it stands upright
-		-- and just bounces over the spot.
-		if edge then
-			local dx, dy = x - viewport.X / 2, y - viewport.Y / 2
-			waypointArrow.Rotation = math.deg(math.atan2(dy, dx)) + 90
-		else
-			waypointArrow.Rotation = 0
-		end
+	if edge then
+		-- Handled above: a sideways arrow on the edge, at any range.
+	elseif near then
+		-- Upright arrow bouncing over the exact spot.
+		waypointArrow.Rotation = 0
 		waypointArrow.Text = "▲"
 		local bounce = math.sin(os.clock() * WAYPOINT_BOUNCE_SPEED) * WAYPOINT_BOUNCE_AMPLITUDE
 		waypointArrow.Position = UDim2.new(0.5, 0, 0, bounce)

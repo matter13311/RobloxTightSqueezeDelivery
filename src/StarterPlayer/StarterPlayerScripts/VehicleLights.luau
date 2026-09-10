@@ -18,6 +18,7 @@
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 
 local VehicleLights = {}
@@ -119,8 +120,25 @@ end
 -- Every rig entry is a LIST of { Part, Light, OffMaterial } instances - one
 -- per physical part backing that name - so toggling a "side" toggles every
 -- part on it at once.
+--
+-- A HEADLIGHT OR TAILLIGHT THAT HAS BEEN KNOCKED OFF STAYS DARK, whatever the
+-- switch does next. VehicleDamage.server.luau's detach() reparents the Part
+-- into the debris folder and stamps IsDebris on it, but it is still the same
+-- Instance this rig cached a reference to (see the module header) - so
+-- without this check, pressing L or the brake after a crash would keep
+-- lighting up a headlight lying in the road, which is exactly the "it should
+-- go dark like a real one" behaviour the header promises and does not, on its
+-- own, deliver. Checked per-instance rather than once for the whole rig
+-- because Left and Right can detach independently.
 local function setInstancesLit(instances, on)
 	for _, instance in instances do
+		if instance.Part:GetAttribute(VehicleCollision.DEBRIS_ATTRIBUTE) then
+			if instance.Light.Enabled then
+				instance.Light.Enabled = false
+				instance.Part.Material = instance.OffMaterial
+			end
+			continue
+		end
 		instance.Light.Enabled = on
 		instance.Part.Material = if on then Enum.Material.Neon else instance.OffMaterial
 	end

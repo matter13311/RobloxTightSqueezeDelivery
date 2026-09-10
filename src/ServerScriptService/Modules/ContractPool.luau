@@ -215,6 +215,17 @@ function ContractPool.Reconcile(data, now)
 		data.ContractsRegenAt = now + POOL.RegenSeconds
 	end
 
+	-- Same reasoning as ContractsRegenAt just above, for the free refresh's own
+	-- cooldown clock: a missing/NaN value means "never used, available now",
+	-- and a value further out than the cooldown itself allows is clamped back
+	-- rather than trusted.
+	local freeRefreshCooldown = ProgressionConfig.Monetization.FreeRefreshCooldownSeconds
+	if type(data.FreeRefreshAvailableAt) ~= "number" or data.FreeRefreshAvailableAt ~= data.FreeRefreshAvailableAt then
+		data.FreeRefreshAvailableAt = 0
+	elseif data.FreeRefreshAvailableAt > now + freeRefreshCooldown then
+		data.FreeRefreshAvailableAt = now + freeRefreshCooldown
+	end
+
 	ContractPool.Regenerate(data, now)
 	return data
 end
@@ -339,6 +350,39 @@ function ContractPool.Refresh(data, now)
 	return #data.Contracts > 0
 end
 
+--=============================================================================
+-- The free refresh
+--=============================================================================
+
+-- Seconds until this player's one free refresh comes back, or 0 if it is
+-- available right now. See ProgressionConfig.Monetization.FreeRefreshCooldownSeconds
+-- for why this is a rolling cooldown rather than a once-a-calendar-day count.
+function ContractPool.FreeRefreshSecondsRemaining(data, now)
+	now = now or os.time()
+	local availableAt = data.FreeRefreshAvailableAt
+	if type(availableAt) ~= "number" or availableAt <= now then
+		return 0
+	end
+	return availableAt - now
+end
+
+-- The free version of Refresh above: identical board rebuild, gated by the
+-- cooldown instead of a receipt and costing no Robux. Returns false (and
+-- touches nothing, including the cooldown) if the cooldown has not elapsed or
+-- there was nothing to generate - the caller must never start the cooldown
+-- for a refresh that did not actually happen.
+function ContractPool.FreeRefresh(data, now)
+	now = now or os.time()
+	if ContractPool.FreeRefreshSecondsRemaining(data, now) > 0 then
+		return false
+	end
+	if not ContractPool.Refresh(data, now) then
+		return false
+	end
+	data.FreeRefreshAvailableAt = now + ProgressionConfig.Monetization.FreeRefreshCooldownSeconds
+	return true
+end
+
 -- One lifetime delivery. The only writer of the game's single progression
 -- number - the one every gate in the game is stated in - which is why it lives
 -- here next to the pool rather than being incremented wherever a payout happens
@@ -439,6 +483,10 @@ function ContractPool.Board(data, config, capacity, now)
 		SecondsUntilNext = if #offers < cap and type(regenAt) == "number" and regenAt > 0
 			then math.max(0, regenAt - now)
 			else nil,
+		-- 0 means the free refresh is available right now; the client turns
+		-- that into the button's FREE state, and a positive number into a
+		-- countdown to when it comes back. See ContractPool.FreeRefresh.
+		FreeRefreshSecondsRemaining = ContractPool.FreeRefreshSecondsRemaining(data, now),
 	}
 end
 
