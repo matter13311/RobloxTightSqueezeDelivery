@@ -459,6 +459,16 @@ local DEFAULTS = {
 	HonkSoundVolume = 1,
 	HonkSoundRollOffMaxDistance = 250,
 
+	-- Reverse beeper - the backup alarm big trucks sound while reversing.
+	-- Empty by default: unlike the horn, not every car should have one, so a
+	-- car opts in by setting its own ReverseBeepSoundId (see BoxTruck.luau).
+	-- Built and played client-side by VehicleReverseBeep.luau, same
+	-- lazy-per-vehicle rig as VehicleEffects' tire screech - looped for as
+	-- long as NetReversing/the driver's own Reversing state stays true.
+	ReverseBeepSoundId = "",
+	ReverseBeepVolume = 0.6,
+	ReverseBeepRollOffMaxDistance = 60,
+
 	-- Cargo. How many crates the bed holds, how heavy each one is, and how
 	-- much worse the truck handles for carrying them. See
 	-- docs/CargoDesign.md, and CargoLoad.luau's header for why a handling

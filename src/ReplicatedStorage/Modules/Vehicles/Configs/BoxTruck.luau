@@ -267,6 +267,11 @@ return {
 	-- so a new car that says nothing here still honks.
 	HonkSoundId = "rbxassetid://127513531122725",
 
+	-- Reverse beeper. A box truck is exactly the kind of big vehicle that
+	-- beeps while backing up - see VehiclePhysics.Defaults.ReverseBeepSoundId
+	-- for why this is opt-in per car rather than shared by every vehicle.
+	ReverseBeepSoundId = "rbxassetid://5471337533",
+
 	Mirrors = {
 		-- Pitch 20 (5 more than the Pickup's) and Outboard 1: the box body is
 		-- tall and wide, so the mirror looks from a stud further out and a bit

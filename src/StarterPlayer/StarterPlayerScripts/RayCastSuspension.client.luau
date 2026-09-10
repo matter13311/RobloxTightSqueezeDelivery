@@ -11,6 +11,7 @@ local VehicleControlsHint = require(script.Parent.VehicleControlsHint)
 local VehicleEffects = require(script.Parent.VehicleEffects)
 local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
+local VehicleReverseBeep = require(script.Parent.VehicleReverseBeep)
 local VehicleDashboardGauges = require(script.Parent.VehicleDashboardGauges)
 local VehicleControls = require(script.Parent.VehicleControls)
 local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
@@ -856,6 +857,7 @@ workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	VehicleEffects.Clear(vehicle)
 	ExhaustEffects.Clear(vehicle)
 	VehicleLights.Clear(vehicle)
+	VehicleReverseBeep.Clear(vehicle)
 	VehicleDashboardGauges.Clear(vehicle)
 	wheelAttachmentsCache[vehicle] = nil
 	wheelRotationState[vehicle] = nil
@@ -1015,6 +1017,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- pitch actually rise instead of droning at a fixed note.
 			VehiclePhysics.UpdateEngineSound(vehicle, config, rpm)
 			VehicleLights.Update(vehicle, isBraking, isReversing)
+			VehicleReverseBeep.Update(vehicle, config, isReversing)
 			updateSteeringWheel(vehicle, config, smoothSteer)
 			-- Speed comes straight off the chassis' own replicated velocity
 			-- rather than the session/Net split above - see the module
