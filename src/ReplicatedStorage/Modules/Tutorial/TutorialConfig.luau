@@ -89,7 +89,7 @@ TutorialConfig.Finish = {
 -- to it and about to drive off for the rest of the session.
 TutorialConfig.GarageReminder = {
 	Title = "Don't forget your garage!",
-	Body = "Come back to your garage terminal any time to browse and upgrade your vehicle.",
+	Body = "Go to your garage terminal any time to browse and upgrade your vehicle.",
 	Seconds = 8,
 }
 
@@ -102,6 +102,23 @@ TutorialConfig.GarageReminder = {
 -- game: a second tutorial-only colour would be a fourth thing to learn on a
 -- screen that already teaches three.
 TutorialConfig.Color = Color3.fromRGB(86, 200, 128)
+
+-- The banner's edge flashes to this and fades back to Color whenever its
+-- words change, so a new instruction is noticed from the corner of the eye.
+TutorialConfig.FlashColor = Color3.fromRGB(255, 255, 255)
+
+-- How many times the edge pulses white when a NEW step appears. A step only
+-- swapping between its Body and Hint pulses once.
+TutorialConfig.NewStepFlashes = 4
+
+--=============================================================================
+-- Sound
+--=============================================================================
+
+-- Played each time the banner moves on to a new step, including the finish
+-- and garage-tip banners - but not when a step merely swaps between its Body
+-- and its Hint. An "rbxassetid://..." string; left empty, nothing plays.
+TutorialConfig.StepSoundId = ""
 
 --=============================================================================
 -- Tuning

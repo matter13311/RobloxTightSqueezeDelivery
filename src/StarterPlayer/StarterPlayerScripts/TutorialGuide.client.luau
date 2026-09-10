@@ -35,6 +35,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
 
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
@@ -505,6 +506,17 @@ local activeContract = nil
 -- parked, which looks identical to never having taken a job at all.
 local deliveredDuringRun = false
 
+-- Set by DeliveryHud on the local Player for as long as its delivery clipboard
+-- is on screen (see RECEIPT_ATTRIBUTE there). The Deliver step does not count
+-- as done until it clears, so the clipboard gets read on its own and the
+-- finish banner only appears once it has gone. Nil - the HUD missing or
+-- renamed - reads as "not showing", so the step can never hang on it.
+local RECEIPT_ATTRIBUTE = "DeliveryReceiptShowing"
+
+local function receiptShowing()
+	return player:GetAttribute(RECEIPT_ATTRIBUTE) == true
+end
+
 deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 	if type(update) ~= "table" then
 		return
@@ -620,7 +632,7 @@ local stepLogic = {
 
 	Deliver = {
 		IsDone = function()
-			return deliveredDuringRun
+			return deliveredDuringRun and not receiptShowing()
 		end,
 		Ready = function()
 			return VehicleSeats.FindCarDrivenBy(player, VehicleFolder) ~= nil
@@ -703,25 +715,70 @@ end
 -- A quick flash of the banner's edge whenever the words change. Without it the
 -- text simply swaps while the player is looking out of the windscreen, and the
 -- next thing they read is an instruction they think they have already followed.
-local function flashBanner()
-	bannerStroke.Thickness = 5
-	TweenService:Create(bannerStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quad), { Thickness = 2 }):Play()
+-- The colour change is what makes it catch the eye; a thickness pulse alone in
+-- the same green was easy to miss while driving.
+--
+-- `times` is how many white pulses: several for a brand new step, one for a
+-- step swapping between its Body and Hint. Each pulse is green -> white ->
+-- green (the tween reverses), so it always comes to rest back on ACCENT.
+local flashTween = nil
+
+local function flashBanner(times)
+	-- Cancelled rather than left to finish, so a step arriving mid-flash
+	-- restarts the count instead of two tweens fighting over the stroke.
+	if flashTween then
+		flashTween:Cancel()
+	end
+	bannerStroke.Color = ACCENT
+	bannerStroke.Thickness = 2
+	flashTween = TweenService:Create(
+		bannerStroke,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut, math.max(1, times) - 1, true),
+		{ Thickness = 6, Color = TutorialConfig.FlashColor }
+	)
+	flashTween:Play()
+end
+
+local function playStepSound()
+	local soundId = TutorialConfig.StepSoundId
+	if type(soundId) ~= "string" or soundId == "" then
+		return
+	end
+	local sound = Instance.new("Sound")
+	sound.SoundId = soundId
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+	SoundService:PlayLocalSound(sound)
 end
 
 local lastRenderedText = nil
+-- The counter line ("STEP 2 OF 5", "DONE", "TIP") is what says a NEW step has
+-- arrived, as opposed to the same step swapping between its Body and Hint -
+-- so the sound keys off it, while the flash keys off the text.
+local lastRenderedCounter = nil
 
 local function renderBanner(counter, title, body)
 	stepCounter.Text = counter
 	stepTitle.Text = title
 	stepBody.Text = body
+	-- Hidden while DeliveryHud's clipboard is up (see poll); any render is
+	-- the tutorial having something to say again.
+	banner.Visible = true
+
+	local newStep = lastRenderedCounter ~= counter
+	if newStep then
+		lastRenderedCounter = counter
+		playStepSound()
+	end
 
 	-- Flashed on the TEXT changing rather than on the step changing, so the
 	-- swap between a step's Body and its Hint - which is a different
 	-- instruction, even though the step number has not moved - gets the same
 	-- announcement as a new step does.
-	if lastRenderedText ~= title .. "\0" .. body then
+	if newStep or lastRenderedText ~= title .. "\0" .. body then
 		lastRenderedText = title .. "\0" .. body
-		flashBanner()
+		flashBanner(if newStep then TutorialConfig.NewStepFlashes else 1)
 	end
 end
 
@@ -763,6 +820,7 @@ stop = function(tellServer)
 	setRunning(false)
 	stepIndex = 0
 	lastRenderedText = nil
+	lastRenderedCounter = nil
 	finishToken += 1
 
 	if spotlight then
@@ -856,6 +914,19 @@ local function poll()
 
 	local step = steps[stepIndex]
 	local logic = stepLogic[step.Id]
+
+	-- Delivered, and the clipboard is still stamping its lines on. The banner
+	-- and every marker step aside so the clipboard is the only thing to read;
+	-- the next poll after it slides away finishes the step and puts the banner
+	-- back with the finish message.
+	if step.Id == "Deliver" and deliveredDuringRun then
+		banner.Visible = false
+		ensureMarker():SetTarget(nil, nil)
+		ensureSpotlight():SetTarget(nil, nil)
+		ensureSpaceMarker():SetTarget(nil, nil)
+		return
+	end
+
 	local ready = logic.Ready()
 
 	-- Hint only when there IS one. A step with no Hint keeps its Body whatever

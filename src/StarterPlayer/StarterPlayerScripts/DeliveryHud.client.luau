@@ -1,6 +1,6 @@
 -- The player's side of the delivery loop: the contract board that opens when
 -- you pull into the depot's loading bay, the running job display while you are
--- carrying a load, and the payout summary when you park at the far end.
+-- carrying a load, and the delivery clipboard when you park at the far end.
 --
 -- Nothing here is a security boundary. DeliveryManager.server.luau re-checks
 -- that the truck really is in the bay, really is yours, and really is stopped
@@ -23,6 +23,8 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
@@ -364,10 +366,10 @@ refreshCaption.TextXAlignment = Enum.TextXAlignment.Right
 refreshCaption.TextYAlignment = Enum.TextYAlignment.Bottom
 refreshCaption.TextWrapped = true
 
--- The payout summary, centred low so it does not cover the windscreen.
+-- The "contract lost" notice, centred low so it does not cover the windscreen.
+-- It used to be the payout summary as well; a successful delivery gets the
+-- clipboard below now, and this panel is only ever a cancellation.
 local summary = Instance.new("Frame")
--- Taller than it was by one line, for the progress/level-up line the payout
--- now carries (see progressLine).
 summary.Size = UDim2.fromOffset(360, 154)
 summary.Position = UDim2.fromScale(0.5, 0.78)
 summary.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -377,9 +379,7 @@ summary.Visible = false
 summary.Parent = screenGui
 ResponsiveScale.Fit(summary, { Margin = 16 })
 corner(summary, 10)
--- Kept, because this panel is reused for a cancelled contract as well as a
--- completed one and the edge recolours to say which (see showCancelled).
-local summaryStroke = stroke(summary, ACCENT)
+local summaryStroke = stroke(summary, WARN_TEXT)
 
 local summaryTitle = label(summary, "", 20, ACCENT, true)
 summaryTitle.Position = UDim2.fromOffset(16, 12)
@@ -400,6 +400,244 @@ summaryBody.RichText = true
 summaryBody.TextWrapped = true
 summaryBody.Text = ""
 summaryBody.Parent = summary
+
+--=============================================================================
+-- The delivery clipboard
+--=============================================================================
+
+-- What a successful delivery shows. It replaced a panel that printed every
+-- fact about the delivery at once, for six seconds, in the bottom band the
+-- tutorial banner also lives in - so a first-time player was handed two
+-- paragraphs at the same moment and absorbed neither.
+--
+-- A clipboard in the middle of the screen that stamps ONE line on at a time,
+-- with a thump per line, is something a nine-year-old actually reads: each
+-- line gets its own beat and the sound pulls the eye to it. The money comes
+-- last, on its own, with a coin sound - it is the one number every player
+-- cares about, so it gets a moment nobody else is sharing.
+
+local STAMP_SOUND_ID = "rbxassetid://521293072"
+local COIN_SOUND_ID = "rbxassetid://607665037"
+
+-- Same fire-and-forget local sound PlotTerminal uses for its clicks.
+local function playSound(soundId)
+	local sound = Instance.new("Sound")
+	sound.SoundId = soundId
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+	SoundService:PlayLocalSound(sound)
+end
+
+-- A clipboard is the one place this UI leaves its dark-panel look behind on
+-- purpose: dark ink on paper reads instantly as "a form about your delivery",
+-- where another dark panel would read as more HUD.
+local CLIP_WOOD = Color3.fromRGB(176, 122, 70)
+local CLIP_WOOD_EDGE = Color3.fromRGB(120, 78, 40)
+local CLIP_METAL = Color3.fromRGB(196, 202, 212)
+local CLIP_METAL_EDGE = Color3.fromRGB(110, 116, 128)
+local PAPER = Color3.fromRGB(252, 249, 240)
+local PAPER_RULE = Color3.fromRGB(228, 220, 202)
+local INK = Color3.fromRGB(46, 50, 60)
+local INK_DIM = Color3.fromRGB(122, 124, 134)
+-- Darker than ACCENT: ACCENT is tuned for a near-black panel and washes out
+-- on white paper.
+local INK_GOOD = Color3.fromRGB(40, 150, 80)
+local INK_CAUTION = Color3.fromRGB(196, 132, 24)
+local INK_BAD = Color3.fromRGB(196, 60, 60)
+
+-- Pacing. Deliberately slow - the entire point of this panel is that the
+-- player has time to read each line before the next one lands.
+local CLIPBOARD_SLIDE_SECONDS = 0.45
+local CLIPBOARD_FIRST_LINE_DELAY = 0.6
+local CLIPBOARD_LINE_INTERVAL = 1
+-- A beat of silence before the money, so it lands as the payoff rather than
+-- as one more line.
+local CLIPBOARD_MONEY_DELAY = 0.6
+local CLIPBOARD_HOLD_SECONDS = 4
+-- Rows built up front, one per fact.
+--
+-- There is deliberately no progression line ("3 deliveries until 4 max
+-- jobs"). It was here once and it asked a new player to know what "max jobs"
+-- means, which nothing has taught them at this point. The board footer still
+-- carries it, next to the board it is actually about.
+local CLIPBOARD_MAX_LINES = 5
+
+local CLIPBOARD_REST = UDim2.fromScale(0.5, 0.47)
+-- Below the bottom edge; it slides up into place and back down out of it.
+local CLIPBOARD_HIDDEN = UDim2.fromScale(0.5, 1.6)
+
+-- IS THE CLIPBOARD ON SCREEN RIGHT NOW. Mirrored onto the local Player as an
+-- attribute, the same way TutorialGuide publishes "TutorialActive": the
+-- tutorial holds its next banner until this goes false, so the player reads
+-- the clipboard first and the "you're a delivery driver" banner after it,
+-- rather than both at once. Client-only; it describes this screen and the
+-- server has no use for it.
+local RECEIPT_ATTRIBUTE = "DeliveryReceiptShowing"
+
+local clipboard = Instance.new("Frame")
+clipboard.Name = "DeliveryClipboard"
+clipboard.Size = UDim2.fromOffset(360, 440)
+clipboard.AnchorPoint = Vector2.new(0.5, 0.5)
+clipboard.Position = CLIPBOARD_HIDDEN
+clipboard.BackgroundColor3 = CLIP_WOOD
+clipboard.BorderSizePixel = 0
+clipboard.Visible = false
+clipboard.Parent = screenGui
+-- ResponsiveScale owns this frame's UIScale, which is why the clipboard slides
+-- in by Position rather than popping in by scale - the two would fight.
+ResponsiveScale.Fit(clipboard, { Margin = 16 })
+corner(clipboard, 16)
+stroke(clipboard, CLIP_WOOD_EDGE).Thickness = 3
+
+local paper = Instance.new("Frame")
+paper.Position = UDim2.fromOffset(16, 22)
+paper.Size = UDim2.new(1, -32, 1, -38)
+paper.BackgroundColor3 = PAPER
+paper.BorderSizePixel = 0
+paper.Parent = clipboard
+corner(paper, 6)
+stroke(paper, PAPER_RULE)
+
+-- The metal clip, overlapping the top edge of the paper like a real one.
+local clip = Instance.new("Frame")
+clip.AnchorPoint = Vector2.new(0.5, 0)
+clip.Position = UDim2.new(0.5, 0, 0, -16)
+clip.Size = UDim2.fromOffset(130, 44)
+clip.BackgroundColor3 = CLIP_METAL
+clip.BorderSizePixel = 0
+clip.ZIndex = 2
+clip.Parent = clipboard
+corner(clip, 8)
+stroke(clip, CLIP_METAL_EDGE).Thickness = 2
+
+local clipHole = Instance.new("Frame")
+clipHole.AnchorPoint = Vector2.new(0.5, 0)
+clipHole.Position = UDim2.new(0.5, 0, 0, 7)
+clipHole.Size = UDim2.fromOffset(40, 10)
+clipHole.BackgroundColor3 = CLIP_METAL_EDGE
+clipHole.BorderSizePixel = 0
+clipHole.ZIndex = 2
+clipHole.Parent = clip
+corner(clipHole, 5)
+
+local clipTitle = Instance.new("TextLabel")
+clipTitle.BackgroundTransparency = 1
+clipTitle.Position = UDim2.fromOffset(0, 26)
+clipTitle.Size = UDim2.new(1, 0, 0, 34)
+-- The tutorial banner's title font: the same chunky, friendly voice for the
+-- two things written for a first-time player.
+clipTitle.Font = Enum.Font.LuckiestGuy
+clipTitle.TextSize = 30
+clipTitle.TextColor3 = INK
+clipTitle.Text = "DELIVERED!"
+clipTitle.Parent = paper
+
+local titleRule = Instance.new("Frame")
+titleRule.Position = UDim2.fromOffset(16, 64)
+titleRule.Size = UDim2.new(1, -32, 0, 2)
+titleRule.BackgroundColor3 = PAPER_RULE
+titleRule.BorderSizePixel = 0
+titleRule.Parent = paper
+
+local clipLines = Instance.new("Frame")
+clipLines.Position = UDim2.fromOffset(16, 72)
+clipLines.Size = UDim2.new(1, -32, 0, 156)
+clipLines.BackgroundTransparency = 1
+clipLines.Parent = paper
+
+local clipLinesLayout = Instance.new("UIListLayout")
+clipLinesLayout.Padding = UDim.new(0, 4)
+clipLinesLayout.SortOrder = Enum.SortOrder.LayoutOrder
+clipLinesLayout.Parent = clipLines
+
+-- Adds the "thump" to something as it appears: starts oversized and slams
+-- down past full size before settling, which is what a rubber stamp looks like.
+local function stampIn(guiObject, uiScale)
+	uiScale.Scale = 1.8
+	guiObject.Visible = true
+	TweenService:Create(
+		uiScale,
+		TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1 }
+	):Play()
+end
+
+local clipRows = {}
+for index = 1, CLIPBOARD_MAX_LINES do
+	local row = Instance.new("Frame")
+	row.Name = "Line" .. index
+	row.Size = UDim2.new(1, 0, 0, 28)
+	row.BackgroundTransparency = 1
+	row.LayoutOrder = index
+	row.Visible = false
+	row.Parent = clipLines
+
+	-- The part that stamps in. Its own frame, centred in the row, because a
+	-- UIScale scales around its object's anchor point and the row itself is
+	-- placed from its top-left corner by the list layout.
+	local stampFrame = Instance.new("Frame")
+	stampFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	stampFrame.Position = UDim2.fromScale(0.5, 0.5)
+	stampFrame.Size = UDim2.fromScale(1, 1)
+	stampFrame.BackgroundTransparency = 1
+	stampFrame.Parent = row
+	local stampScale = Instance.new("UIScale")
+	stampScale.Parent = stampFrame
+
+	local nameLabel = label(stampFrame, "", 15, INK_DIM, true)
+	nameLabel.Size = UDim2.fromScale(0.45, 1)
+
+	local valueLabel = label(stampFrame, "", 17, INK, true)
+	valueLabel.AnchorPoint = Vector2.new(1, 0)
+	valueLabel.Position = UDim2.fromScale(1, 0)
+	valueLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+	local rowRule = Instance.new("Frame")
+	rowRule.AnchorPoint = Vector2.new(0, 1)
+	rowRule.Position = UDim2.fromScale(0, 1)
+	rowRule.Size = UDim2.new(1, 0, 0, 1)
+	rowRule.BackgroundColor3 = PAPER_RULE
+	rowRule.BorderSizePixel = 0
+	rowRule.Parent = stampFrame
+
+	clipRows[index] = {
+		Frame = row,
+		Scale = stampScale,
+		NameLabel = nameLabel,
+		ValueLabel = valueLabel,
+	}
+end
+
+-- The money, on its own at the bottom of the sheet.
+local earnedGroup = Instance.new("Frame")
+earnedGroup.AnchorPoint = Vector2.new(0.5, 0.5)
+earnedGroup.Position = UDim2.new(0.5, 0, 1, -66)
+earnedGroup.Size = UDim2.new(1, -24, 0, 104)
+earnedGroup.BackgroundTransparency = 1
+earnedGroup.Visible = false
+earnedGroup.Parent = paper
+local earnedScale = Instance.new("UIScale")
+earnedScale.Parent = earnedGroup
+
+local earnedCaption = label(earnedGroup, "YOU EARNED", 14, INK_DIM, true)
+earnedCaption.Size = UDim2.new(1, 0, 0, 18)
+earnedCaption.TextXAlignment = Enum.TextXAlignment.Center
+
+local earnedAmount = Instance.new("TextLabel")
+earnedAmount.BackgroundTransparency = 1
+earnedAmount.Position = UDim2.fromOffset(0, 20)
+earnedAmount.Size = UDim2.new(1, 0, 0, 50)
+earnedAmount.Font = Enum.Font.LuckiestGuy
+earnedAmount.TextSize = 46
+earnedAmount.TextColor3 = INK_GOOD
+earnedAmount.Text = ""
+earnedAmount.Parent = earnedGroup
+
+local earnedBalance = label(earnedGroup, "", 14, INK_DIM, true)
+earnedBalance.Position = UDim2.fromOffset(0, 78)
+earnedBalance.Size = UDim2.new(1, 0, 0, 18)
+earnedBalance.TextXAlignment = Enum.TextXAlignment.Center
 
 --=============================================================================
 -- Board contents
@@ -1080,66 +1318,118 @@ end
 --=============================================================================
 
 local summaryToken = 0
+local receiptToken = 0
 
--- The line under the payout that says the delivery counted for something beyond
--- money. Raising the board's maximum is the loudest thing that can happen at a
--- drop-off, so it takes the whole line; otherwise the line quietly counts down
--- to the next one, which is what makes the ladder visible without needing a
--- screen of its own.
---
--- Phrased as a MAXIMUM throughout, matching the board footer. "A 4th job slot"
--- reads as one more job turning up now; "4 maximum jobs" is what actually
--- changes.
-local function progressLine(progress)
-	if type(progress) ~= "table" then
-		return "" -- they left between parking and being paid; there is no count to show
-	end
-	local deliveries = progress.Deliveries or 0
+-- Every line the clipboard will stamp, in order. A line with no Name is a
+-- full-width sentence rather than a "label ... value" pair.
+local function receiptLines(completed)
+	local cargoType = CargoTypes.GetOrDefault(completed.TypeId)
+	local condition = completed.Condition or 1
 
-	if progress.CapIncreased and progress.ContractCap then
-		return string.format("\n<b>Unlocked: %d maximum jobs</b>", progress.ContractCap)
-	end
-
-	local milestone = progress.NextCapMilestone
-	if not milestone then
-		return string.format("\n%s completed", ProgressionConfig.DeliveryCountText(deliveries))
-	end
-	return string.format(
-		"\n%s to %d maximum jobs",
-		ProgressionConfig.DeliveryCountText(math.max(0, milestone.Deliveries - deliveries)),
-		milestone.Cap
-	)
+	local lines = {
+		{ Name = "Cargo", Value = string.format("%d x %s", completed.Units, cargoType.DisplayName) },
+		{ Name = "Dropped off at", Value = tostring(completed.Destination) },
+		{
+			Name = "Cargo condition",
+			Value = string.format("%d%%", math.floor(condition * 100 + 0.5)),
+			-- The same thresholds as the running job display's condition line.
+			Color = if condition > 0.75 then INK_GOOD elseif condition > 0.4 then INK_CAUTION else INK_BAD,
+		},
+		{ Name = "Parking", Value = tostring(completed.ParkLabel) },
+		{
+			Name = "Pay rate",
+			Value = string.format("x%.2f", completed.Multiplier or 1),
+			Color = if (completed.Multiplier or 1) >= 1 then INK_GOOD else INK_CAUTION,
+		},
+	}
+	return lines
 end
 
-local function showSummary(completed)
-	local cargoType = CargoTypes.GetOrDefault(completed.TypeId)
-	-- Reset, because showCancelled below repaints both of these red and the two
-	-- share one panel. Set unconditionally rather than only after a cancellation
-	-- so there is no state to have got wrong.
-	summaryStroke.Color = ACCENT
-	summaryTitle.TextColor3 = ACCENT
-	summaryTitle.Text = string.format("Delivered  +$%d", completed.Payout)
-	summaryBody.Text = string.format(
-		"%d x %s to %s\nCondition on arrival: %d%%\nPark: %s  (x%.2f total)%s%s",
-		completed.Units,
-		cargoType.DisplayName,
-		completed.Destination,
-		math.floor(completed.Condition * 100 + 0.5),
-		completed.ParkLabel,
-		completed.Multiplier,
-		if completed.Balance then string.format("\nBalance: $%d", completed.Balance) else "",
-		progressLine(completed.Progress)
-	)
-	summary.Visible = true
+local function fillRow(row, line)
+	row.NameLabel.Text = line.Name or ""
+	row.ValueLabel.Text = line.Value
+	row.ValueLabel.TextColor3 = line.Color or INK
+	if line.Name then
+		row.ValueLabel.Size = UDim2.fromScale(0.55, 1)
+		row.ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+		row.ValueLabel.TextSize = 17
+	else
+		row.ValueLabel.Size = UDim2.fromScale(1, 1)
+		row.ValueLabel.TextXAlignment = Enum.TextXAlignment.Center
+		row.ValueLabel.TextSize = 15
+	end
+end
 
-	-- Token, not a cancelled task: two deliveries in quick succession would
-	-- otherwise have the first one's timer hide the second one's summary.
+local function showReceipt(completed)
+	-- Token, not a cancelled thread: a second delivery arriving mid-animation
+	-- would otherwise have the first one's timers stamping lines onto, and then
+	-- hiding, the second one's clipboard.
+	receiptToken += 1
+	local token = receiptToken
+	player:SetAttribute(RECEIPT_ATTRIBUTE, true)
+
+	-- A lingering "contract lost" notice would sit under the clipboard.
 	summaryToken += 1
-	local token = summaryToken
-	task.delay(6, function()
-		if summaryToken == token then
-			summary.Visible = false
+	summary.Visible = false
+
+	local lines = receiptLines(completed)
+	for index, row in clipRows do
+		row.Frame.Visible = false
+		local line = lines[index]
+		if line then
+			fillRow(row, line)
 		end
+	end
+	earnedGroup.Visible = false
+	earnedAmount.Text = string.format("+$%d", completed.Payout)
+	earnedBalance.Text = if completed.Balance then string.format("You now have $%d", completed.Balance) else ""
+
+	clipboard.Position = CLIPBOARD_HIDDEN
+	clipboard.Visible = true
+	TweenService:Create(
+		clipboard,
+		TweenInfo.new(CLIPBOARD_SLIDE_SECONDS, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Position = CLIPBOARD_REST }
+	):Play()
+
+	task.spawn(function()
+		task.wait(CLIPBOARD_SLIDE_SECONDS + CLIPBOARD_FIRST_LINE_DELAY)
+
+		for index = 1, math.min(#lines, CLIPBOARD_MAX_LINES) do
+			if receiptToken ~= token then
+				return
+			end
+			local row = clipRows[index]
+			stampIn(row.Frame, row.Scale)
+			playSound(STAMP_SOUND_ID)
+			task.wait(CLIPBOARD_LINE_INTERVAL)
+		end
+
+		task.wait(CLIPBOARD_MONEY_DELAY)
+		if receiptToken ~= token then
+			return
+		end
+		stampIn(earnedGroup, earnedScale)
+		playSound(COIN_SOUND_ID)
+
+		task.wait(CLIPBOARD_HOLD_SECONDS)
+		if receiptToken ~= token then
+			return
+		end
+		local slideOut = TweenService:Create(
+			clipboard,
+			TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{ Position = CLIPBOARD_HIDDEN }
+		)
+		slideOut:Play()
+		slideOut.Completed:Wait()
+		if receiptToken ~= token then
+			return
+		end
+		clipboard.Visible = false
+		-- Only once it is actually off screen - this is the tutorial's cue to
+		-- show its next banner.
+		player:SetAttribute(RECEIPT_ATTRIBUTE, false)
 	end)
 end
 
@@ -1185,7 +1475,7 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 	end
 	setActiveContract(update.Active)
 	if update.Completed then
-		showSummary(update.Completed)
+		showReceipt(update.Completed)
 	elseif update.Cancelled then
 		showCancelled(update.Cancelled)
 	end
