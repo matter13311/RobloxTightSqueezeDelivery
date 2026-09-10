@@ -388,6 +388,92 @@ end
 -- a destination model called "Depot".
 local DEPOT_GROUP = "\0Depot"
 
+local entries = {}
+
+-- Tracked per-part rather than per-pass, because with StreamingEnabled a
+-- destination model can still be streaming in (or not exist in the client's
+-- view of the world yet) at the moment it is scanned. Keeping this means a
+-- retry can be re-run safely without building the same guide twice.
+local scannedSpaces = {}
+local scannedSigns = {}
+
+local function scanForGuides(root, group)
+	for _, descendant in root:GetDescendants() do
+		if isSpace(descendant) then
+			if not scannedSpaces[descendant] then
+				scannedSpaces[descendant] = true
+				table.insert(entries, buildGuide(descendant, group))
+			end
+		elseif isSign(descendant) then
+			if not scannedSigns[descendant] then
+				scannedSigns[descendant] = true
+				if group == DEPOT_GROUP then
+					buildSign(descendant)
+				else
+					-- The MODEL's name, not the sign part's - see the
+					-- section header. Warehouse1.Sign reads "Warehouse1".
+					buildDestinationSign(descendant, group)
+				end
+			end
+		end
+	end
+end
+
+-- The depot is scanned forever rather than stopping once found - every
+-- player needs it (it is where jobs are taken and where an empty truck is
+-- told to go), so there is no "not relevant right now" state to gate it on.
+--
+-- It cannot stop as soon as findLoadingBay() first returns something,
+-- either: StreamingEnabled streams a MODEL in before its descendants are
+-- guaranteed complete, so the loading bay existing is not proof its Space
+-- parts do yet. scanForGuides is cheap to re-run (scannedSpaces/scannedSigns
+-- make it a no-op on anything already built), so just keep calling it.
+task.spawn(function()
+	while true do
+		local loadingBay = findLoadingBay()
+		if loadingBay then
+			scanForGuides(loadingBay, DEPOT_GROUP)
+		end
+		task.wait(2)
+	end
+end)
+
+--=============================================================================
+-- Destination guides: built lazily, on demand
+--=============================================================================
+
+-- Unlike the depot, a destination's guide is only ever useful while the
+-- player is actually carrying a contract to it - repoll() below only lights
+-- DEPOT_GROUP or the active contract's destination, never an idle one (see
+-- the header). Scanning every destination in the map on a forever-loop, most
+-- of which nobody is driving to most of the time, was pure waste. So this
+-- watches ONE destination at a time - whichever one is active - and only for
+-- as long as it stays active.
+--
+-- Kept scanning for the whole time it is active, not just until the model is
+-- first found: the SAME streaming gap the depot loop has to guard against
+-- applies here too, and worse, since a destination model is more likely to
+-- be far from the player (and so still streaming its Space parts in) at the
+-- exact moment a contract naming it arrives. scanForGuides is a no-op on
+-- anything already built, so the repeat cost is one FindFirstChild plus a
+-- GetDescendants on a single model, and only while a job is outstanding.
+local watchGeneration = 0
+
+local function watchForDestination(name)
+	watchGeneration += 1
+	local generation = watchGeneration
+	task.spawn(function()
+		while generation == watchGeneration do
+			local destinationsFolder = findDestinationsFolder()
+			local model = destinationsFolder and destinationsFolder:FindFirstChild(name)
+			if model then
+				scanForGuides(model, name)
+			end
+			task.wait(1)
+		end
+	end)
+end
+
 -- Which destination the player is carrying for, or nil.
 --
 -- Read straight off the same RemoteEvent DeliveryHud listens to rather than
@@ -402,57 +488,13 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 		return
 	end
 	activeDestination = update.Active and update.Active.Stops[1] or nil
-end)
-
-local entries = nil
-
-local function build()
-	local loadingBay = findLoadingBay()
-	if not loadingBay then
-		return false
-	end
-
-	local built = {}
-	for _, descendant in loadingBay:GetDescendants() do
-		if isSpace(descendant) then
-			table.insert(built, buildGuide(descendant, DEPOT_GROUP))
-		elseif isSign(descendant) then
-			buildSign(descendant)
-		end
-	end
-
-	-- Every destination gets the same treatment, built once up front. A dark
-	-- guide costs nothing - anchored, non-colliding, fully transparent parts
-	-- that no raycast can see - and building them on accept instead would mean
-	-- the outline popping into existence just as the player arrives to use it.
-	local destinationsFolder = findDestinationsFolder()
-	for _, model in destinationsFolder and destinationsFolder:GetChildren() or {} do
-		for _, descendant in model:GetDescendants() do
-			if isSpace(descendant) then
-				table.insert(built, buildGuide(descendant, model.Name))
-			elseif isSign(descendant) then
-				-- The MODEL's name, not the sign part's - see the section
-				-- header. Warehouse1.Sign reads "Warehouse1".
-				buildDestinationSign(descendant, model.Name)
-			end
-		end
-	end
-
-	if #built == 0 then
-		return false
-	end
-
-	entries = built
-	return true
-end
-
--- Retried on a slow tick until the depot exists, then stops. Same reasoning as
--- DeliveryHud's lazy lookup - during development the geometry appears after
--- this script has already run, and a one-shot lookup would leave the guide
--- silently dead with no clue why.
-task.spawn(function()
-	while not build() do
-		task.wait(2)
+	if activeDestination then
+		watchForDestination(activeDestination)
+	else
+		-- No contract means no pending destination to keep chasing - if one
+		-- was still mid-retry (e.g. the player cancelled before it streamed
+		-- in), this is what lets that loop notice and stop.
+		watchGeneration += 1
 	end
 end)
 
