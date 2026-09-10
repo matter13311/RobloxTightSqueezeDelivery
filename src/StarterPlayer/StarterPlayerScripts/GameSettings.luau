@@ -11,10 +11,9 @@
 -- so nothing here replicates and nothing needs the server's permission. A
 -- setting that changed gameplay would not belong here.
 --
--- Values live for the session only. Persisting them across joins needs a
--- DataStore round-trip through the server, which is a bigger change than it
--- looks (the client has no storage of its own) and is deliberately not done
--- here yet.
+-- Values persist across joins: SettingsPersistence.client.luau applies the
+-- saved table with ApplySaved on join and sends GetSavedValues back to the
+-- server (PlayerDataStore's Settings field) whenever something changes.
 
 local GameSettings = {}
 
@@ -29,8 +28,7 @@ local GameSettings = {}
 -- ACTIONS are the odd one out and worth a paragraph. Everything else in this
 -- file is a VALUE the menu reads and writes; an action is a button that DOES
 -- something, once, somewhere else in the game. It is here rather than
--- hand-built into SettingsMenu (which is what the admin money button does)
--- because the menu's whole design rule is that it never names an individual
+-- hand-built into SettingsMenu because the menu's whole design rule is that it never names an individual
 -- setting - and the moment a second hand-built row appears, that rule is gone
 -- and the menu is back to being a list of special cases.
 --
@@ -46,6 +44,20 @@ local DEFINITIONS = {
 		Description = "Walks you through claiming a garage, picking up cargo at the depot and making a delivery. Handy for showing a friend.",
 		Type = "Action",
 		ButtonText = "Start",
+	},
+	{
+		Category = "Audio",
+		Key = "MusicVolume",
+		Label = "Music volume",
+		Description = "How loud the background music plays.",
+		Type = "Slider",
+		Min = 0,
+		Max = 100,
+		Step = 5,
+		Default = 20,
+		Format = function(value)
+			return string.format("%d%%", value)
+		end,
 	},
 	{
 		Category = "Mirrors",
@@ -105,27 +117,14 @@ local DEFINITIONS = {
 			return string.format("%d / sec", value)
 		end,
 	},
-	{
-		Category = "Audio",
-		Key = "MusicVolume",
-		Label = "Music volume",
-		Description = "How loud the background music plays.",
-		Type = "Slider",
-		Min = 0,
-		Max = 100,
-		Step = 5,
-		Default = 20,
-		Format = function(value)
-			return string.format("%d%%", value)
-		end,
-	},
 }
 
 -- Category order in the menu. Anything not listed is appended alphabetically,
 -- so a new category still shows up without being registered here.
--- Tutorial first: it is the only row here that a lost player is looking for,
--- and every other category is a comfort option they can find at leisure.
-local CATEGORY_ORDER = { "Tutorial", "Mirrors", "Audio" }
+-- Most-used first: Tutorial is the row a lost player is looking for, music is
+-- the one everybody touches, and the mirror rows are performance tuning most
+-- players never open.
+local CATEGORY_ORDER = { "Tutorial", "Audio", "Mirrors" }
 
 local values = {}
 local byKey = {}
@@ -183,6 +182,35 @@ function GameSettings.Set(key, value)
 	values[key] = clamped
 	for _, listener in listeners do
 		listener(key, clamped)
+	end
+end
+
+-- Every value setting as a plain { [key] = value } table - what gets saved.
+-- Actions have no value and are left out.
+function GameSettings.GetSavedValues()
+	local saved = {}
+	for key, value in values do
+		saved[key] = value
+	end
+	return saved
+end
+
+-- Applies a saved table from the server. Goes through Set, so every value is
+-- clamped to its CURRENT definition and every listener fires - a key whose
+-- setting has since been removed is dropped, and a stale out-of-range value
+-- can't survive a tightened Min/Max.
+function GameSettings.ApplySaved(saved)
+	if type(saved) ~= "table" then
+		return
+	end
+	for key, value in saved do
+		local definition = byKey[key]
+		if definition and definition.Type ~= "Action" then
+			local expected = if definition.Type == "Toggle" then "boolean" else "number"
+			if type(value) == expected then
+				GameSettings.Set(key, value)
+			end
+		end
 	end
 end
 

@@ -384,7 +384,9 @@ VehicleCollision.BumpCooldown = 0.45
 VehicleCollision.BumpSoundMinPitch = 0.7
 VehicleCollision.BumpSoundMaxPitch = 0.9
 
-VehicleCollision.DebugLogging = true
+-- Prints every crash/knockdown decision to the server Output ([Damage] and
+-- [Pedestrian] lines). Turn on while tuning; off for live servers.
+VehicleCollision.DebugLogging = false
 
 --=============================================================================
 -- Anti-cheat

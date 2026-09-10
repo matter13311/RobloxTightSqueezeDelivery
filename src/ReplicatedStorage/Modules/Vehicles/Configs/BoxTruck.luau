@@ -6,9 +6,9 @@
 -- VehiclePhysics.Step), so every number here is tied to ONE measured value:
 -- the chassis' AssemblyMass, which is 216: Chassis 170.4, the four wheel
 -- models ~5.9 each, and the Engine counterweight ~22. Every body panel is
--- Massless. Read the real one in-game with `/cargo info` (CargoTestCommands)
--- - it prints "empty mass", which is AssemblyMass with no ballast aboard. It
--- is NOT the Chassis part's own Mass in Studio.
+-- Massless. Read the real one in-game from the chassis' EmptyMass attribute
+-- (CargoLoad.Attributes.EmptyMass), which is AssemblyMass with no ballast
+-- aboard. It is NOT the Chassis part's own Mass in Studio.
 --
 -- The Engine's mass is not decoration. The four wheel attachments centre on
 -- z = -0.55 in chassis space, but the Chassis part (most of the mass) is a

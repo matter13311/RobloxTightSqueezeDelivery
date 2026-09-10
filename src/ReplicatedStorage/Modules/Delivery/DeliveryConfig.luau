@@ -1,6 +1,5 @@
 -- Tuning and naming for the delivery loop, shared so the server's payout and
--- the player's HUD can never quote two different numbers - the same reason
--- Admin.GrantAmount lives in a shared module rather than being typed twice.
+-- the player's HUD can never quote two different numbers.
 --
 -- Everything the code looks for BY NAME in the world is here too, so
 -- renaming a folder in Studio is a one-line change rather than a hunt through

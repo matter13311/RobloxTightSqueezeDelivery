@@ -28,7 +28,6 @@ local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
 local UpgradePasses = require(ReplicatedStorage.Modules.Vehicles.UpgradePasses)
-local Admin = require(ReplicatedStorage.Modules.Admin)
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
 local ContractPool = require(script.Parent.Modules.ContractPool)
@@ -110,10 +109,6 @@ local setCarConfigValueEvent = Instance.new("RemoteEvent")
 setCarConfigValueEvent.Name = "SetCarConfigValue"
 setCarConfigValueEvent.Parent = ReplicatedStorage
 
-local adminGrantMoneyEvent = Instance.new("RemoteEvent")
-adminGrantMoneyEvent.Name = "AdminGrantMoney"
-adminGrantMoneyEvent.Parent = ReplicatedStorage
-
 -- Client -> server, fire and forget: the guided first delivery is over. There
 -- is nothing to validate and nothing to refuse - it sets a flag whose only
 -- effect is that this player is not offered the tutorial again, and a player
@@ -127,6 +122,14 @@ adminGrantMoneyEvent.Parent = ReplicatedStorage
 local tutorialFinishedEvent = Instance.new("RemoteEvent")
 tutorialFinishedEvent.Name = "TutorialFinished"
 tutorialFinishedEvent.Parent = ReplicatedStorage
+
+-- Client -> server, fire and forget: the player's settings-menu values, sent
+-- whole (debounced) by SettingsPersistence.client.luau. Like TutorialFinished
+-- there is nothing to protect - they only change what that one client draws -
+-- so the handler only enforces a storable shape (PlayerDataStore.SanitizeSettings).
+local saveSettingsEvent = Instance.new("RemoteEvent")
+saveSettingsEvent.Name = "SaveSettings"
+saveSettingsEvent.Parent = ReplicatedStorage
 
 --============================================================================
 -- Plot discovery + the "who owns this" nameplate
@@ -868,24 +871,22 @@ setCarConfigValueEvent.OnServerEvent:Connect(function(player, vehicleId, statNam
 	end
 end)
 
-adminGrantMoneyEvent.OnServerEvent:Connect(function(player)
-	if not Admin.IsAdmin(player.UserId) then
-		warn("PlotManager: rejected AdminGrantMoney from non-admin " .. player.Name)
-		return
-	end
-	local data = playerData[player.UserId]
-	if not data then
-		return
-	end
-	setMoney(player, data, data.Money + Admin.GrantAmount)
-end)
-
 tutorialFinishedEvent.OnServerEvent:Connect(function(player)
 	local data = playerData[player.UserId]
 	if not data then
 		return
 	end
 	data.TutorialDone = true
+end)
+
+-- Only kept in memory here; flushPlayerData writes it with everything else, so
+-- a slider drag costs no DataStore requests at all.
+saveSettingsEvent.OnServerEvent:Connect(function(player, settings)
+	local data = playerData[player.UserId]
+	if not data then
+		return
+	end
+	data.Settings = PlayerDataStore.SanitizeSettings(settings)
 end)
 
 getPlotDataFunction.OnServerInvoke = function(player)
@@ -937,6 +938,8 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		-- RemoteFunction for one boolean would be a second thing to keep in
 		-- step with the save's shape for no gain.
 		TutorialDone = data.TutorialDone and true or false,
+		-- Same reasoning: SettingsPersistence reads this once at startup.
+		Settings = data.Settings or {},
 		-- Keyed by VEHICLE id, not by pass id, because that is the question the
 		-- terminal actually asks ("is this car's tuning unlocked") and because a
 		-- numeric pass id as a table key is a shape the client would have to

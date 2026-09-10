@@ -66,14 +66,15 @@ VehicleCatalog.Vehicles = {
 		-- tools/BuildPhotoDisplayCar_CommandBar.luau) and uploaded as a Decal/
 		-- Image asset, same as StarterVehicle/PickupTruck.
 		ImageId = "rbxassetid://70893299934109",
-		-- Placeholder - adjust to taste. The next tier up from PickupTruck, so
-		-- priced/gated higher.
-		Price = 100,
+		-- The next tier up from PickupTruck, so priced/gated higher.
+		-- ~2x what a typical player has earned by the delivery gate below,
+		-- the same ratio as PickupTruck's $5,000 at 20.
+		Price = 15000,
 		-- 75 is the next CapMilestones step up from PickupTruck's 20 (see
 		-- ProgressionConfig.Contracts.CapMilestones), so this vehicle lands
 		-- alongside that milestone's own reward the same way PickupTruck lines
 		-- up with the 20 milestone.
-		RequiredDeliveries = 1,
+		RequiredDeliveries = 75,
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
 }

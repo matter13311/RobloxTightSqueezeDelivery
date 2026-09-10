@@ -316,7 +316,6 @@ Optional attributes on a space Part:
 | `ServerScriptService/DeliveryManager.server.luau` | Contracts, arrival detection, payout |
 | `StarterPlayer/StarterPlayerScripts/DeliveryHud.client.luau` | Contract board at the dock, running-job display, payout summary |
 | `StarterPlayer/StarterPlayerScripts/CargoLoadingHud.client.luau` | The "Loading Cargo" overlay while crates are being placed. Pure caption — see section 3.6 |
-| `ServerScriptService/CargoTestCommands.server.luau` | **Temporary.** Admin `/cargo` commands for tuning before the dock exists — delete once the loop is proven |
 
 There is no separate loading-dock script: the contract board is part of
 `DeliveryHud`, and it opens when `ParkGrade` says the truck is stopped inside

@@ -65,21 +65,6 @@ local tutorialFinishedEvent = ReplicatedStorage:WaitForChild("TutorialFinished")
 
 local world = DeliveryConfig.World
 
--- TEMPORARY - REMOVE BEFORE SHIPPING.
---
--- Runs the tutorial on every join regardless of what the save says, so it can
--- be tested without wiping a DataStore entry or making a fresh account. The
--- save is still written exactly as it would be (TutorialFinished still fires,
--- leaving still marks it done) - this ONLY ignores the answer on the way in, so
--- turning it off restores real behaviour with nothing to clean up.
---
--- With this false, an existing playtest account will NOT see the tutorial on
--- join, and that is correct rather than a bug: every save that predates the
--- TutorialDone field reconciles to "already done" on purpose, because the
--- alternative is dropping every existing player into it (see
--- PlayerDataStore's reconcile). The settings menu is the way back in.
-local FORCE_TUTORIAL = true
-
 -- Matches the delivery HUD and the plot terminal, so the banner reads as part
 -- of the same UI rather than as a second one bolted on.
 local PANEL = Color3.fromRGB(18, 20, 25)
@@ -1063,7 +1048,10 @@ task.spawn(function()
 			return getPlotDataFunction:InvokeServer()
 		end)
 		if ok and type(data) == "table" then
-			if data.TutorialDone and not FORCE_TUTORIAL then
+			-- Finished, skipped, or left partway through on an earlier visit -
+			-- all three set this (see PlotManager's flushPlayerData). The
+			-- settings menu's Replay button is the way back in.
+			if data.TutorialDone then
 				return
 			end
 			break

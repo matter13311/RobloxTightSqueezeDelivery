@@ -21,6 +21,7 @@
 --     NextContractId = number,        -- so a rejoin can't reissue an id the player is still holding
 --     FreeRefreshAvailableAt = number, -- os.time() the free board refresh comes back; 0/past = available now
 --     TutorialDone = boolean,         -- false only for a player who has never been through the guided first delivery
+--     Settings = { [key] = boolean|number }, -- client display settings (GameSettings), see SanitizeSettings
 --   }
 --
 -- Deliveries/Contracts are persisted for one reason: contracts are sold. A
@@ -80,6 +81,36 @@ local function sanitizeCount(value)
 	return math.max(0, math.floor(value))
 end
 
+-- Settings come from the client, so the server can't know the schema (that
+-- lives in GameSettings, client-side) - it only enforces a shape that is safe
+-- to store: a bounded number of short string keys holding booleans or finite
+-- numbers. Range-clamping each value is GameSettings.ApplySaved's job on the
+-- way back in.
+local MAX_SETTINGS = 32
+local MAX_SETTING_KEY_LENGTH = 64
+
+function PlayerDataStore.SanitizeSettings(settings)
+	local clean = {}
+	if type(settings) ~= "table" then
+		return clean
+	end
+	local count = 0
+	for key, value in settings do
+		if count >= MAX_SETTINGS then
+			break
+		end
+		if type(key) == "string" and #key <= MAX_SETTING_KEY_LENGTH then
+			local valueType = type(value)
+			local finite = valueType == "number" and value == value and value ~= math.huge and value ~= -math.huge
+			if valueType == "boolean" or finite then
+				clean[key] = value
+				count += 1
+			end
+		end
+	end
+	return clean
+end
+
 local function newDefaultData()
 	return {
 		Money = 0,
@@ -108,6 +139,8 @@ local function newDefaultData()
 		-- way OUT as well as on completion, so a player who quits halfway
 		-- through is not walked through it again on their next join.
 		TutorialDone = false,
+		-- Empty means "all defaults" - GameSettings owns what those are.
+		Settings = {},
 	}
 end
 
@@ -123,6 +156,7 @@ local function reconcile(data)
 	data.OwnedVehicleIds = type(data.OwnedVehicleIds) == "table" and data.OwnedVehicleIds or {}
 	data.UpgradeLevels = type(data.UpgradeLevels) == "table" and data.UpgradeLevels or {}
 	data.CarConfigs = type(data.CarConfigs) == "table" and data.CarConfigs or {}
+	data.Settings = PlayerDataStore.SanitizeSettings(data.Settings)
 
 	-- Defaults to TRUE for a save that predates the field, not false: an
 	-- existing player already knows how the game works, and dropping every one
