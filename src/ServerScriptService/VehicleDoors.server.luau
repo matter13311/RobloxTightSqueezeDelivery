@@ -251,6 +251,15 @@ local function applyExitCollisionGrace(character)
 		return
 	end
 
+	-- Belt-and-suspenders alongside the collision-group swap below: see
+	-- VehicleCollision.EXIT_KNOCKDOWN_GRACE_ATTRIBUTE for why the group swap
+	-- alone isn't always fast enough to save the exiting character from their
+	-- own car's Touched backstop. Read by VehiclePlayerImpact.server.luau.
+	character:SetAttribute(
+		VehicleCollision.EXIT_KNOCKDOWN_GRACE_ATTRIBUTE,
+		os.clock() + VehicleCollision.ExitKnockdownGraceTime
+	)
+
 	local generation = (exitGraceGeneration[character] or 0) + 1
 	exitGraceGeneration[character] = generation
 

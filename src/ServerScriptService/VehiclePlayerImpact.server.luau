@@ -50,6 +50,7 @@
 -- the hit, but late is better than a pedestrian who is simply immune.
 
 local Players = game:GetService("Players")
+local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
@@ -323,6 +324,78 @@ end)
 -- Backstop
 --=============================================================================
 
+-- A short-lived collision group, same idea as VehicleDoors.server.luau's
+-- ExitGrace: whoever it holds cannot touch a car at all for a moment. Used
+-- here for the other direction - not a player who just got OUT of a car, but
+-- one who walked into a car that is still mid-SettleThenAnchor (see
+-- VehicleCollision.SETTLING_ATTRIBUTE). That car is a real unanchored physics
+-- body and would otherwise happily be shoved by a pedestrian the same way any
+-- other loose prop would; a "parked" truck should feel like a parked truck.
+--
+-- Reuses VehicleDoors' own group rather than inventing a second one - both
+-- are "this character cannot touch any vehicle for a beat", just triggered
+-- from opposite ends.
+local PUSH_GRACE_GROUP = VehicleCollision.Groups.ExitGrace
+local PUSH_GRACE_TIME = 0.5
+
+local function ensureGroup(name)
+	-- RegisterCollisionGroup throws if the group already exists - one of the
+	-- other scripts that also registers it, or a hot-reload in Studio.
+	-- Existing is the desired end state either way; same pattern as
+	-- VehicleCollisionSetup.server.luau, VehicleDoors.server.luau and
+	-- RagdollUtility.
+	pcall(function()
+		PhysicsService:RegisterCollisionGroup(name)
+	end)
+end
+
+ensureGroup(PUSH_GRACE_GROUP)
+for _, group in { VehicleCollision.Groups.Vehicle, VehicleCollision.Groups.Attached, VehicleCollision.Groups.Cosmetic } do
+	ensureGroup(group) -- may not exist yet; these scripts run in no guaranteed order
+	PhysicsService:CollisionGroupSetCollidable(PUSH_GRACE_GROUP, group, false)
+end
+
+local pushGraceGeneration = {} -- [Character] = number, same "don't let an older grace restore over a newer one" guard VehicleDoors uses
+
+-- Moves a character out of the way of a settling car's collision for a beat,
+-- rather than leaving them to physically shove it. Doesn't undo a push that
+-- already happened on the frame Touched fired - the two are already in
+-- contact by the time this runs - but it stops the shove from continuing for
+-- as long as the player keeps leaning on it, which is the actual complaint.
+local function applyPushGrace(character)
+	if not character or not character.Parent then
+		return
+	end
+
+	local generation = (pushGraceGeneration[character] or 0) + 1
+	pushGraceGeneration[character] = generation
+
+	for _, part in character:GetDescendants() do
+		-- Only Default is claimed, same rule VehicleDoors' own grace follows:
+		-- a character already owned by another feature (ragdolled, seated,
+		-- exiting) has its group governed by that feature, and this should
+		-- neither fight it nor restore it out from under it later.
+		if part:IsA("BasePart") and part.CollisionGroup == "Default" then
+			part.CollisionGroup = PUSH_GRACE_GROUP
+		end
+	end
+
+	task.delay(PUSH_GRACE_TIME, function()
+		if pushGraceGeneration[character] ~= generation then
+			return -- a later touch's own grace owns the restore now
+		end
+		pushGraceGeneration[character] = nil
+		if not character.Parent then
+			return
+		end
+		for _, part in character:GetDescendants() do
+			if part:IsA("BasePart") and part.CollisionGroup == PUSH_GRACE_GROUP then
+				part.CollisionGroup = "Default"
+			end
+		end
+	end)
+end
+
 -- Contact detection, kept for the cases the client detector cannot reach: a
 -- car rolling downhill with nobody in it, or a driver whose detector never
 -- started. It is everything the header says is wrong with detecting on contact
@@ -333,6 +406,27 @@ local function onHullTouched(carModel, other)
 	local character = other.Parent
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid then
+		return
+	end
+
+	-- A car that is still settling onto the ground (see
+	-- VehicleCollision.SETTLING_ATTRIBUTE) is not "driverless and out of
+	-- control" in the sense this backstop exists for - it is a parked truck
+	-- that happens to be a real physics body for a few seconds. Never knock
+	-- anyone down for touching one, and push them clear instead of letting
+	-- them shove it.
+	if carModel:GetAttribute(VehicleCollision.SETTLING_ATTRIBUTE) then
+		applyPushGrace(character)
+		return
+	end
+
+	-- A character who has just stepped out of ANY seat - this car or another
+	-- - gets a short window of complete immunity from this backstop. See
+	-- VehicleCollision.EXIT_KNOCKDOWN_GRACE_ATTRIBUTE for why the seated-
+	-- player guard in knockDown isn't enough on its own: SeatPart clears a
+	-- full frame before the character is actually clear of the car.
+	local exitGraceUntil = character:GetAttribute(VehicleCollision.EXIT_KNOCKDOWN_GRACE_ATTRIBUTE)
+	if exitGraceUntil and os.clock() < exitGraceUntil then
 		return
 	end
 

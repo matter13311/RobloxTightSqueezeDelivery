@@ -61,6 +61,14 @@ local function SettleThenAnchor(carModel, chassis, attachments, driverSeat)
 	local config = VehiclePhysics.GetConfig(chassis)
 	local state = VehiclePhysics.NewState()
 
+	-- Marks this car as a physics body that is dropping onto the ground, not
+	-- one anybody is driving or that has come loose - see
+	-- VehicleCollision.SETTLING_ATTRIBUTE for why VehiclePlayerImpact needs to
+	-- tell the two apart. Cleared on every exit from this function, including
+	-- the early return below, since from that point on the entry path in
+	-- AddCar's Occupant handler owns the car instead.
+	carModel:SetAttribute(VehicleCollision.SETTLING_ATTRIBUTE, true)
+
 	chassis.Anchored = false
 	chassis:SetNetworkOwner(nil) -- server simulates this settle-in period
 
@@ -70,12 +78,14 @@ local function SettleThenAnchor(carModel, chassis, attachments, driverSeat)
 		-- Someone may have already gotten in while this was still settling -
 		-- back off immediately rather than fighting the driving client.
 		if driverSeat.Occupant then
+			carModel:SetAttribute(VehicleCollision.SETTLING_ATTRIBUTE, false)
 			return
 		end
 		elapsed += delta
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, { Throttle = 0, Steer = 0 })
 	end
 
+	carModel:SetAttribute(VehicleCollision.SETTLING_ATTRIBUTE, false)
 	if not driverSeat.Occupant then
 		chassis.Anchored = true
 	end

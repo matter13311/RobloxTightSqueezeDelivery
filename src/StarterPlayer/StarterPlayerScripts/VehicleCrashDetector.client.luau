@@ -24,6 +24,7 @@ local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics
 -- Temporary; see the module header. Remove with the rest of the instrumentation.
 local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
 local VehicleCrashSounds = require(ReplicatedStorage.Modules.Vehicles.VehicleCrashSounds)
+local VehicleSqueakSounds = require(ReplicatedStorage.Modules.Vehicles.VehicleSqueakSounds)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local impactRemote = ReplicatedStorage:WaitForChild("VehicleImpact")
@@ -119,6 +120,52 @@ local function stopScrapeEffect(mySession)
 		mySession.ScrapeEffect.Holder:Destroy()
 		mySession.ScrapeEffect = nil
 	end
+end
+
+local function playSqueakSound(position)
+	local holder = newEffectHolder(position)
+	local soundId = VehicleSqueakSounds.PickSqueak()
+	if not soundId then
+		Debris:AddItem(holder, 0)
+		return
+	end
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = soundId
+	sound.Volume = 0.4
+	sound.PlaybackSpeed = VehicleCollision.BumpSoundMinPitch
+		+ math.random() * (VehicleCollision.BumpSoundMaxPitch - VehicleCollision.BumpSoundMinPitch)
+	sound.RollOffMaxDistance = 60
+	sound.Parent = holder
+	sound:Play()
+	Debris:AddItem(holder, 3)
+end
+
+--=============================================================================
+-- Bumps
+--=============================================================================
+
+-- A bump is measured from the SUSPENSION's own response, not from the car's
+-- raw motion - see VehicleCollision.BumpMinDeltaV. `suspensionDeltaV` is the
+-- velocity change the suspension applied this frame (computed in step(),
+-- below), which at rest on flat ground is just enough to cancel gravity every
+-- frame - a large, constant, and completely uninteresting number on its own.
+-- Adding gravityDeltaV back in cancels that constant baseline out and leaves
+-- only the PART of the suspension's response that wasn't just holding the car
+-- up: a wheel getting shoved up and back down by a pothole or a kerb, and
+-- nothing else. This is deliberately a different signal from the crash
+-- detector's own `deltaV` - that one SUBTRACTS the suspension's response
+-- because a bump is exactly the thing it's designed to ignore; this is that
+-- ignored part, read on purpose.
+local function checkBump(mySession, bumpDeltaV, now)
+	if bumpDeltaV.Magnitude < VehicleCollision.BumpMinDeltaV then
+		return
+	end
+	if now - mySession.LastSqueak < VehicleCollision.BumpCooldown then
+		return
+	end
+	mySession.LastSqueak = now
+	playSqueakSound(mySession.Chassis.Position)
 end
 
 --=============================================================================
@@ -354,6 +401,8 @@ local function step(mySession, delta)
 	local deltaV = rawDeltaV - gravityDeltaV - suspensionDeltaV
 	mySession.LastVelocity = velocity
 
+	checkBump(mySession, suspensionDeltaV + gravityDeltaV, now)
+
 	VehicleEntryDebug.Frame(mySession.CarModel, {
 		Dt = delta,
 		DriveReady = mySession.CarModel:GetAttribute("DriveReady"),
@@ -416,6 +465,7 @@ local function beginSession(carModel)
 		LastVelocity = chassis.AssemblyLinearVelocity,
 		LastImpact = 0,
 		LastScrapeReport = 0,
+		LastSqueak = 0,
 		Contacts = {}, -- [BasePart] = os.clock() of the last Touched
 		Connections = {},
 		ImpactParams = impactParams,

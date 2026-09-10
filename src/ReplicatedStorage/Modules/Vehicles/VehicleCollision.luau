@@ -309,6 +309,78 @@ VehicleCollision.EntryDamageGrace = 1.0
 -- Raycast.server.luau's Occupant handler.
 VehicleCollision.ENTRY_GRACE_ATTRIBUTE = "DamageGraceUntil"
 
+-- Server-set on a car model, true for exactly as long as
+-- Raycast.server.luau's SettleThenAnchor is running its one-time drop-onto-
+-- the-ground pass on it. A "parked" car is Anchored and therefore inert, but
+-- for this window it is a genuine unanchored physics body (real suspension,
+-- real mass) so it can fall and settle correctly instead of freezing wherever
+-- it happened to be left in Studio - see SettleThenAnchor's own header.
+--
+-- That is also, incidentally, the only time a car with nobody driving it is a
+-- dynamic body at all. Without this flag, VehiclePlayerImpact's Touched
+-- backstop can't tell "a car quietly dropping onto its wheels" apart from
+-- "a driverless car actually rolling out of control", and a settle that has
+-- any real vertical drop in it (an embedded or floating placement in Studio)
+-- can easily produce a downward-then-upward velocity spike past
+-- KnockdownMinSpeed - which reads as the parked truck running over anyone
+-- standing nearby. Read by onHullTouched, which skips the whole backstop
+-- while this is true; the client-report path already can't fire here because
+-- it requires a seated driver.
+VehicleCollision.SETTLING_ATTRIBUTE = "IsSettling"
+
+-- Character-set (by VehicleDoors.server.luau, on whichever character just
+-- left ANY seat) attribute: the value of os.clock() until which
+-- VehiclePlayerImpact's Touched backstop must not knock this character down,
+-- however fast the car that touched them is going.
+--
+-- Exists because the seated-player guard in knockDown checks
+-- humanoid.SeatPart, and that is already nil the instant a player exits -
+-- Humanoid.Sit = false clears it synchronously, a full physics step before
+-- the character is actually teleported clear of the car (see performExit in
+-- RayCastSuspension.client.luau, which explicitly waits one Heartbeat for
+-- the seat weld to let go before it can move them). For that one frame the
+-- character can be a normal, Default-collision body sitting right where the
+-- seat was, next to a hull that may still be moving at speed - exactly the
+-- "my own car ragdolled me on the way out" report. The ExitGrace collision
+-- group closes most of that window, but it is applied by the SERVER off the
+-- same Occupant-cleared signal and needs a round trip to reach the exiting
+-- player's own client, which is the one simulating their character; this
+-- attribute is the belt to that group's suspenders, checked here on the
+-- server where the knockdown decision is actually made.
+VehicleCollision.EXIT_KNOCKDOWN_GRACE_ATTRIBUTE = "ExitKnockdownGraceUntil"
+VehicleCollision.ExitKnockdownGraceTime = 1.0
+
+--=============================================================================
+-- Bumps (squeak sounds)
+--=============================================================================
+
+-- How hard a small road imperfection has to jolt the suspension before it
+-- counts as a "bump" worth squeaking about, in the same studs/s-of-velocity-
+-- change units ImpactMinDeltaV uses - but measured only from the suspension's
+-- OWN response (see VehicleCrashDetector's bump check), not from the car's
+-- raw motion, so cruising at speed on a flat road never trips this on its
+-- own. Comfortably under ImpactMinDeltaV: a bump is a much gentler event than
+-- a crash, and the two are meant to feel different.
+--
+-- TUNING: this is the knob to move if squeaks are rare or constant, and the
+-- more likely of the two (BumpCooldown below is the other) - 4 was a guess,
+-- not a measurement. Lower it if you're driving over what feels like a
+-- bump and hearing nothing; raise it if smooth road is squeaking.
+VehicleCollision.BumpMinDeltaV = 2.5
+
+-- Seconds before another squeak can play, so bouncing over a rough patch
+-- doesn't machine-gun the sound once per wheel per frame. Read entirely
+-- client-side by VehicleCrashDetector; see VehicleSqueakSounds for the ids.
+VehicleCollision.BumpCooldown = 0.45
+
+-- Random PlaybackSpeed range applied to each squeak, so the same clip played
+-- twice in a row doesn't sound like a loop repeating. 1.0 is the recording's
+-- own pitch; kept close to it because a squeak/rattle reads as a mechanical
+-- object rather than a voice line, and a big pitch swing makes it sound like
+-- a different, wrong-sized part each time.
+VehicleCollision.BumpSoundMinPitch = 0.7
+VehicleCollision.BumpSoundMaxPitch = 0.9
+
 VehicleCollision.DebugLogging = true
 
 --=============================================================================

@@ -465,7 +465,8 @@ return {
 		-- brakes a fraction too long at a drop-off.
 		AutoReverseDelay = 0.55,
 
-		MaxPitch = 1.35, -- a diesel truck should never sound like it is screaming; below DEFAULTS' 1.45
+		IdlePitch = 0.55, -- lower than DEFAULTS' 0.7 - a loaded diesel idles with a deeper, lower-revving note than a car engine
+		MaxPitch = 1.15, -- a diesel truck should never sound like it is screaming; well below DEFAULTS' 1.45
 
 		Gears = {
 			{ Ratio = 3.20, SpeedFraction = 0.24 }, -- 1st: the kerb-climbing, pulling-away gear
