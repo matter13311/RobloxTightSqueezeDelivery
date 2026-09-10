@@ -71,6 +71,61 @@ local function lightRangeOf(vehicle)
 	return range
 end
 
+-- Some cars model a light as one part covering both sides (a single light
+-- bar mesh, say) instead of a separate Left and Right part. For any part name
+-- ending in "Left"/"Right" that's missing, fall back to its opposite-side
+-- counterpart so a car built with only "BrakeLeft" (no "BrakeRight" at all)
+-- still lights up on both sides rather than the rig never finishing and the
+-- lights just never coming on. Returns nil if neither side exists at all -
+-- callers still treat that as "not built yet".
+local function counterpartName(name)
+	if name:find("Left") then
+		return (name:gsub("Left", "Right", 1))
+	elseif name:find("Right") then
+		return (name:gsub("Right", "Left", 1))
+	end
+	return nil
+end
+
+-- Every BasePart directly under `parent` named exactly `name` - plural, not
+-- FindFirstChild's "first match", so a car with several parts all named e.g.
+-- "TurnSignalLeft" (one per light cluster) gets a light on every one of them,
+-- not just whichever happens to be first in the Children list.
+local function findAllNamed(parent, name)
+	local found = {}
+	for _, child in parent:GetChildren() do
+		if child.Name == name and child:IsA("BasePart") then
+			table.insert(found, child)
+		end
+	end
+	return found
+end
+
+-- Same idea as findAllNamed, but falls back to the opposite side's parts (see
+-- counterpartName) when this side has none at all - the merged-single-part
+-- case. Returns an empty list, never nil, so callers just check #parts == 0.
+local function findPartsWithFallback(parent, name)
+	local parts = findAllNamed(parent, name)
+	if #parts > 0 then
+		return parts
+	end
+	local counterpart = counterpartName(name)
+	if counterpart then
+		return findAllNamed(parent, counterpart)
+	end
+	return {}
+end
+
+-- Every rig entry is a LIST of { Part, Light, OffMaterial } instances - one
+-- per physical part backing that name - so toggling a "side" toggles every
+-- part on it at once.
+local function setInstancesLit(instances, on)
+	for _, instance in instances do
+		instance.Light.Enabled = on
+		instance.Part.Material = if on then Enum.Material.Neon else instance.OffMaterial
+	end
+end
+
 -- ===== Brake / reverse =====
 
 local BRAKE_COLOR = Color3.fromRGB(255, 0, 0)
@@ -78,7 +133,7 @@ local REVERSE_COLOR = Color3.fromRGB(255, 255, 255)
 
 local BRAKE_PART_NAMES = { "BrakeLeft", "BrakeRight", "ReverseLeft", "ReverseRight" }
 
-local rigs = {} -- [vehicle] = { [partName] = { Part, Light, OffMaterial } }
+local rigs = {} -- [vehicle] = { [partName] = { { Part, Light, OffMaterial }, ... } }
 
 local function buildPointLight(part, color, name, brightnessMultiplier, rangeMultiplier)
 	local light = Instance.new("PointLight")
@@ -107,21 +162,36 @@ local function getRig(vehicle)
 	local range = lightRangeOf(vehicle)
 
 	rig = {}
+	-- Keyed by physical Part, not by name: when Left and Right fall back to
+	-- the same merged part(s) (see findPartsWithFallback), this reuses the
+	-- light(s) already built for them instead of stacking a second PointLight
+	-- on the same part.
+	local instanceByPart = {}
 	for _, name in BRAKE_PART_NAMES do
-		local part = brakeRear:FindFirstChild(name)
-		if not part then
+		local parts = findPartsWithFallback(brakeRear, name)
+		if #parts == 0 then
 			return nil
 		end
 		local isReverse = name:find("Reverse") ~= nil
-		rig[name] = {
-			Part = part,
-			Light = buildPointLight(part, if isReverse then REVERSE_COLOR else BRAKE_COLOR, "TailLight", brightness, range),
-			-- Whatever material the part was built with (Plastic, SmoothPlastic,
-			-- ...) - restored when the light turns back off, so the lit look
-			-- comes purely from switching to Neon plus the PointLight, without
-			-- ever touching the BrickColor that already makes these red/white.
-			OffMaterial = part.Material,
-		}
+		local color = if isReverse then REVERSE_COLOR else BRAKE_COLOR
+		local instances = {}
+		for _, part in parts do
+			local instance = instanceByPart[part]
+			if not instance then
+				instance = {
+					Part = part,
+					Light = buildPointLight(part, color, "TailLight", brightness, range),
+					-- Whatever material the part was built with (Plastic, SmoothPlastic,
+					-- ...) - restored when the light turns back off, so the lit look
+					-- comes purely from switching to Neon plus the PointLight, without
+					-- ever touching the BrickColor that already makes these red/white.
+					OffMaterial = part.Material,
+				}
+				instanceByPart[part] = instance
+			end
+			table.insert(instances, instance)
+		end
+		rig[name] = instances
 	end
 
 	rigs[vehicle] = rig
@@ -129,11 +199,8 @@ local function getRig(vehicle)
 end
 
 local function setPair(rig, leftName, rightName, on)
-	for _, name in { leftName, rightName } do
-		local entry = rig[name]
-		entry.Light.Enabled = on
-		entry.Part.Material = if on then Enum.Material.Neon else entry.OffMaterial
-	end
+	setInstancesLit(rig[leftName], on)
+	setInstancesLit(rig[rightName], on)
 end
 
 -- `isBraking` / `isReversing` should only be true for the car this client is
@@ -178,7 +245,7 @@ end
 local HEADLIGHT_SWITCH_SOUND = "129921942229278"
 local HEADLIGHT_PART_NAMES = { "HeadlightLeft", "HeadlightRight" }
 
-local headlightRigs = {} -- [vehicle] = { [partName] = { Part, Light, OffMaterial }, Connection }
+local headlightRigs = {} -- [vehicle] = { [partName] = { { Part, Light, OffMaterial }, ... }, Connection }
 
 -- A SpotLight, not a PointLight: a headlight throws a directed beam, not an
 -- even glow in every direction. Face defaults to Front (-Z locally) - if a
@@ -198,9 +265,7 @@ end
 
 local function applyHeadlights(rig, on)
 	for _, name in HEADLIGHT_PART_NAMES do
-		local entry = rig[name]
-		entry.Light.Enabled = on
-		entry.Part.Material = if on then Enum.Material.Neon else entry.OffMaterial
+		setInstancesLit(rig[name], on)
 	end
 end
 
@@ -219,16 +284,26 @@ local function getHeadlightRig(vehicle)
 	local brightness = lightBrightnessOf(vehicle)
 
 	rig = {}
+	local instanceByPart = {}
 	for _, name in HEADLIGHT_PART_NAMES do
-		local part = frontLights:FindFirstChild(name)
-		if not part then
+		local parts = findPartsWithFallback(frontLights, name)
+		if #parts == 0 then
 			return nil
 		end
-		rig[name] = {
-			Part = part,
-			Light = buildSpotlight(part, brightness),
-			OffMaterial = part.Material,
-		}
+		local instances = {}
+		for _, part in parts do
+			local instance = instanceByPart[part]
+			if not instance then
+				instance = {
+					Part = part,
+					Light = buildSpotlight(part, brightness),
+					OffMaterial = part.Material,
+				}
+				instanceByPart[part] = instance
+			end
+			table.insert(instances, instance)
+		end
+		rig[name] = instances
 	end
 
 	-- Sync immediately to whatever the switch is already set to - covers a
@@ -240,7 +315,7 @@ local function getHeadlightRig(vehicle)
 	rig.Connection = vehicle:GetAttributeChangedSignal("HeadlightsOn"):Connect(function()
 		local on = vehicle:GetAttribute("HeadlightsOn") == true
 		applyHeadlights(rig, on)
-		playOneShot(rig.HeadlightLeft.Part, HEADLIGHT_SWITCH_SOUND)
+		playOneShot(rig.HeadlightLeft[1].Part, HEADLIGHT_SWITCH_SOUND)
 	end)
 
 	headlightRigs[vehicle] = rig
@@ -272,31 +347,26 @@ local TURN_SIGNAL_SIDES = { "Left", "Right" }
 
 local turnSignalRigs = {} -- [vehicle] = { Left = {...}, Right = {...}, ActiveSide, BlinkGeneration, Connection }
 
-local function setSignalLit(entry, on)
-	entry.Light.Enabled = on
-	entry.Part.Material = if on then Enum.Material.Neon else entry.OffMaterial
-end
-
 -- Runs one side's blink cycle for as long as `generation` is still current -
 -- switching sides or turning the signal off bumps BlinkGeneration, which is
 -- this loop's only cue to stop; nothing ever needs to reach in and cancel it
 -- directly.
 local function runBlinkLoop(rig, side, generation)
-	local entry = rig[side]
+	local instances = rig[side]
 	task.spawn(function()
 		while rig.BlinkGeneration == generation do
-			setSignalLit(entry, true)
-			playOneShot(entry.Part, TURN_SIGNAL_TICK_SOUND, 0.5)
+			setInstancesLit(instances, true)
+			playOneShot(instances[1].Part, TURN_SIGNAL_TICK_SOUND, 0.5)
 			task.wait(TURN_SIGNAL_ON_TIME)
 			if rig.BlinkGeneration ~= generation then
 				break
 			end
-			setSignalLit(entry, false)
+			setInstancesLit(instances, false)
 			task.wait(TURN_SIGNAL_OFF_TIME)
 		end
 		-- However this loop is ending, never leave the light stuck on
 		-- mid-flash.
-		setSignalLit(entry, false)
+		setInstancesLit(instances, false)
 	end)
 end
 
@@ -319,16 +389,16 @@ local function onTurnSignalChanged(vehicle, rig)
 	rig.BlinkGeneration += 1
 
 	if previous and rig[previous] then
-		setSignalLit(rig[previous], false)
+		setInstancesLit(rig[previous], false)
 	end
 
 	if active == "Left" or active == "Right" then
 		if not firstObservation then
-			playOneShot(rig[active].Part, TURN_SIGNAL_ON_SOUND)
+			playOneShot(rig[active][1].Part, TURN_SIGNAL_ON_SOUND)
 		end
 		runBlinkLoop(rig, active, rig.BlinkGeneration)
 	elseif not firstObservation then
-		playOneShot(rig.Left.Part, TURN_SIGNAL_OFF_SOUND)
+		playOneShot(rig.Left[1].Part, TURN_SIGNAL_OFF_SOUND)
 	end
 end
 
@@ -348,16 +418,31 @@ local function getTurnSignalRig(vehicle)
 	local range = lightRangeOf(vehicle)
 
 	rig = { ActiveSide = nil, BlinkGeneration = 0 }
+	local instanceByPart = {}
 	for _, side in TURN_SIGNAL_SIDES do
-		local part = folder:FindFirstChild("TurnSignal" .. side)
-		if not part then
+		-- A merged single-part signal (no separate TurnSignalRight) ends up
+		-- shared between both sides here, so whichever side is active blinks
+		-- the one part - the closest a single indicator can get to a real
+		-- hazard-style shared signal. Multiple parts named e.g. "TurnSignalLeft"
+		-- (several light clusters on one side) all blink together.
+		local parts = findPartsWithFallback(folder, "TurnSignal" .. side)
+		if #parts == 0 then
 			return nil
 		end
-		rig[side] = {
-			Part = part,
-			Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight", brightness, range),
-			OffMaterial = part.Material,
-		}
+		local instances = {}
+		for _, part in parts do
+			local instance = instanceByPart[part]
+			if not instance then
+				instance = {
+					Part = part,
+					Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight", brightness, range),
+					OffMaterial = part.Material,
+				}
+				instanceByPart[part] = instance
+			end
+			table.insert(instances, instance)
+		end
+		rig[side] = instances
 	end
 
 	turnSignalRigs[vehicle] = rig
@@ -382,8 +467,10 @@ end
 function VehicleLights.Clear(vehicle)
 	local rig = rigs[vehicle]
 	if rig then
-		for _, entry in rig do
-			entry.Light:Destroy()
+		for _, instances in rig do
+			for _, instance in instances do
+				instance.Light:Destroy()
+			end
 		end
 		rigs[vehicle] = nil
 	end
@@ -392,7 +479,9 @@ function VehicleLights.Clear(vehicle)
 	if headlightRig then
 		headlightRig.Connection:Disconnect()
 		for _, name in HEADLIGHT_PART_NAMES do
-			headlightRig[name].Light:Destroy()
+			for _, instance in headlightRig[name] do
+				instance.Light:Destroy()
+			end
 		end
 		headlightRigs[vehicle] = nil
 	end
@@ -402,7 +491,9 @@ function VehicleLights.Clear(vehicle)
 		turnRig.Connection:Disconnect()
 		turnRig.BlinkGeneration += 1 -- lets any in-flight blink loop stop itself
 		for _, side in TURN_SIGNAL_SIDES do
-			turnRig[side].Light:Destroy()
+			for _, instance in turnRig[side] do
+				instance.Light:Destroy()
+			end
 		end
 		turnSignalRigs[vehicle] = nil
 	end

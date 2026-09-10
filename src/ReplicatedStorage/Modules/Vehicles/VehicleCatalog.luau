@@ -58,12 +58,27 @@ VehicleCatalog.Vehicles = {
 		RequiredDeliveries = 20,
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
+	BoxTruck = {
+		Id = "BoxTruck",
+		DisplayName = "Box Truck",
+		TemplateName = "BoxTruck", -- must exist under ServerStorage.VehicleTemplates
+		ImageId = "", -- no thumbnail rendered yet - shows the "Image Coming Soon" placeholder
+		-- Placeholder - adjust to taste. The next tier up from PickupTruck, so
+		-- priced/gated higher.
+		Price = 100,
+		-- 75 is the next CapMilestones step up from PickupTruck's 20 (see
+		-- ProgressionConfig.Contracts.CapMilestones), so this vehicle lands
+		-- alongside that milestone's own reward the same way PickupTruck lines
+		-- up with the 20 milestone.
+		RequiredDeliveries = 1,
+		DefaultOwned = false, -- purchasable from the shop tab instead
+	},
 }
 
 -- Stable display order (table iteration order is unspecified in Lua).
 -- StarterVehicle first: VehicleCatalog.Order[1] is what PlayerDataStore
 -- assigns as a fresh player's SelectedVehicleId.
-VehicleCatalog.Order = { "StarterVehicle", "PickupTruck" }
+VehicleCatalog.Order = { "StarterVehicle", "PickupTruck", "BoxTruck" }
 
 function VehicleCatalog.Get(vehicleId)
 	return VehicleCatalog.Vehicles[vehicleId]

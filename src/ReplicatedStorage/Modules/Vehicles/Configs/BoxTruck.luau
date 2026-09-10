@@ -1,7 +1,8 @@
--- Starting point - tune by feel. Neither suspension force nor Torque scale
--- with mass (see VehiclePhysics.Step), so a heavier truck chassis needs
--- proportionally more of both than DEFAULTS just to hold ride height and
--- accelerate at a normal rate - bumped up from DEFAULTS accordingly.
+-- Starting point - copied from PickupTruck.luau and not yet tuned for this
+-- truck's own chassis. Neither suspension force nor Torque scale with mass
+-- (see VehiclePhysics.Step), so a heavier/lighter chassis than the Pickup's
+-- will want proportionally different values than what's inherited here -
+-- tune by feel once the model and wheels are in.
 return {
 	-- The grindy per-car upgrade ladder (see VehicleUpgrades.luau for the
 	-- math, and PlayerDataStore.luau for how a player's purchased levels and
@@ -10,7 +11,7 @@ return {
 	-- There is NO Min here, on purpose. Every key in this table must also be
 	-- a plain numeric field further down the file, and that field IS the
 	-- ladder's Min - it's the level-0/no-upgrades-bought value a fresh
-	-- PickupTruck starts with, so the two are the same number by definition.
+	-- BoxTruck starts with, so the two are the same number by definition.
 	-- VehiclePhysics.GetUpgradeSpecs fills it in from there, which is why
 	-- re-tuning a stat below automatically re-bases its ladder here. Writing
 	-- it in both places made that a hand-maintained invariant, and it did
@@ -158,21 +159,6 @@ return {
 	-- too tame or too punishing overall - the two multipliers below only shape
 	-- braking and cornering, while this one drives the sag, the sluggishness
 	-- off the line and how hard the truck shoves in a collision.
-	--
-	-- Lowered from 0.10, which was tuned against a CAPACITY OF 10 - "a full
-	-- load of Parcels nearly doubles the mass" was true, and irrelevant to the
-	-- player it mattered to. Base capacity is 4, and that is the bed every new
-	-- player drives for their whole first session. At 0.10 a base-capacity load
-	-- of Sand & Gravel added 0.84 of the truck's own mass, and since drive force
-	-- is NOT mass-scaled (see CargoLoad's header) that is acceleration cut to
-	-- 54%: a beginner in a stock truck who picked the wrong job could barely pull
-	-- out of the bay.
-	--
-	-- At 0.07 the same load costs 63% of the truck's acceleration instead - still
-	-- clearly heavy, still a real decision, but drivable. A fully upgraded bed
-	-- of gravel is 1.47x the empty mass, which is where the genuinely punishing
-	-- end of the range now lives: earned, rather than handed to a new player on
-	-- their first board.
 	CargoMassFractionPerUnit = 0.07,
 	-- Deceleration is BrakeFriction * gravity, so 0.7 turns this truck's
 	-- 102-stud stop from 100 studs/s into a 146-stud one when fully laden.
@@ -187,29 +173,16 @@ return {
 	-- Where each mirror points, in degrees - see DEFAULT_MIRRORS in
 	-- VehiclePhysics for what the numbers mean and how they merge (per mirror,
 	-- then per field, so you can override just one value and keep the rest).
-	--
-	-- Yaw swings the view outward from straight-back; the sign that means
-	-- "outward" depends on the chassis' forward axis, and on this truck that
-	-- works out to negative on the left and positive on the right. Pitch tilts
-	-- it down toward the road. Tuned by eye from the driver's seat: enough yaw
-	-- to get the truck's own flank out of the way, enough pitch to see kerbs
-	-- rather than sky.
-	-- Multiplier on incoming crash/scrape damage to the bodywork: 1 is the
-	-- baseline every part's health is written against (see
-	-- VehicleCollision.DefaultPartHealth), 2 means panels take twice the
-	-- beating before they come off. Purely cosmetic - see the BodyStrength
-	-- entry in Upgrades above, and VehicleDamage.server.luau for where it is
-	-- applied. This plain value is the ladder's level-0, so retuning it
-	-- re-bases the upgrade.
+	-- Inherited from PickupTruck as a starting point - re-check by eye from
+	-- the driver's seat once this truck's own cab/mirror models are in place.
 	BodyStrength = 1,
 
 	-- Tail-light/turn-signal glow. DEFAULTS' Brightness (0.5, shared with the
 	-- headlights) and Range (1, i.e. the base 12 studs) are bright/far enough
-	-- to wash out the driver's cab from the rear brake lights on this truck's
-	-- short chassis, so both are cut further here - TailLightBrightness
-	-- overrides just the rear/turn-signal PointLights, leaving the headlights
-	-- at the normal LightBrightness.
-TailLightBrightness = 0.5,
+	-- to wash out a short cab from the rear brake lights, so both are cut
+	-- further here - TailLightBrightness overrides just the rear/turn-signal
+	-- PointLights, leaving the headlights at the normal LightBrightness.
+	TailLightBrightness = 0.5,
 	LightRange = 0.5,
 
 	-- Horn (H). Server-played and audible to every player in the game, from
@@ -227,70 +200,41 @@ TailLightBrightness = 0.5,
 	SteerAngle = 40,
 
 	-- Speed-sensitive steering, and the cure for the truck scrubbing off
-	-- speed the moment you turn while coasting. A steered tire's grip force
-	-- is perpendicular to the WHEEL, so sin(steer) of it points backwards
-	-- along the car - at 40 degrees that is 64% of a cornering force the tires
-	-- are allowed to make 1.5g of, which is more deceleration than the brake
-	-- pedal produces. Full lock stays available where this truck actually
-	-- needs it (threading gaps and backing onto driveways at walking pace) and
-	-- tapers to a cruising amount by 55 studs/s.
-	--
-	-- TUNING: still losing too much speed mid-corner? Lower HighSpeedSteerAngle
-	-- or SteerAngleFalloffSpeed. Turning circle at speed feel too lazy? Raise
-	-- them. Setting HighSpeedSteerAngle = nil restores the old behaviour.
+	-- speed the moment you turn while coasting. See VehiclePhysics'
+	-- OPTIONAL_KEYS comment for the full explanation - inherited unchanged
+	-- from PickupTruck.
 	HighSpeedSteerAngle = 12,
 	SteerAngleFalloffSpeed = 55,
 	DriveWheels = "Rear",
-	-- WheelModelName is the shared fallback wheel mesh (ReplicatedStorage.Wheels.<name>),
-	-- used for any axle that doesn't have its own override below. A truck
-	-- whose front and rear wheels are actually different meshes/sizes sets
-	-- FrontWheelModelName / RearWheelModelName instead (and, if the meshes are
-	-- different sizes, FrontWheelRadius / RearWheelRadius too) - e.g.:
-	--   FrontWheelModelName = "PickupTruckWheelFront",
-	--   RearWheelModelName = "PickupTruckWheelRear",
-	--   FrontWheelRadius = 1.5, -- half of that mesh's Size.Y/Z
-	--   RearWheelRadius = 1.8485,
-	-- Leaving both unset (as here) means every wheel uses WheelModelName/WheelRadius.
-	WheelModelName = "PickupTruckWheel",
-	WheelRadius = 1.8485, -- half of PickupTruckWheel's 3.697-stud Size.Y/Z - must track that mesh's actual size, not DEFAULTS' 1.5
+
+	-- BoxTruck uses two different wheel meshes - a front and a rear model -
+	-- rather than one shared WheelModelName, so each axle gets its own
+	-- override (see VehiclePhysics.GetWheelModelName/GetWheelRadius). These
+	-- name models under ReplicatedStorage.Wheels:
+	--   ReplicatedStorage.Wheels.BoxTruckFrontWheel
+	--   ReplicatedStorage.Wheels.BoxTruckRearWheel
+	FrontWheelModelName = "BoxTruckFrontWheel",
+	RearWheelModelName = "BoxTruckRearWheel",
+	-- Half of each mesh's Size.Y/Z (BoxTruckFrontWheel is 1.042, 3.653, 3.653;
+	-- BoxTruckRearWheel is 2.049, 3.653, 3.653 - same 3.653 diameter as the
+	-- front, just a wider tire on X, which doesn't affect radius).
+	FrontWheelRadius = 1.8265,
+	RearWheelRadius = 1.8265,
 	SuspensionMaxLength = 3.5, -- DEFAULTS is 2 - more travel to compress into, so accel/brake squat and bumps have room to show instead of instantly maxing out the spring
 	Stiffness = 70, -- softened back down now that SuspensionMaxLength gives it more room - still enough to hold the truck's weight without bottoming out at rest
 	Damper = 5, -- lowered relative to Stiffness (was matched 1:1-ish) so it's underdamped enough to actually bounce instead of just clamping to ride height
-	-- Torque is now the ROLLING acceleration knob only. It used to be both
-	-- that and the standstill shove, which is why 50 made the truck leap off
-	-- the line and blow through the first five gears in a couple of seconds.
-	-- The standstill shove now comes from Transmission.StallTorqueMultiplier
-	-- below, so this can be low for slow, deliberate driving in tight spaces
-	-- without leaving the truck unable to pull itself up a kerb.
-	-- 14 * 3.2 (1st) * 3.5 (stall) = 157 at a dead stop, on par with the
-	-- original 50 * 3.2 = 160, so kerb-climbing is untouched; once rolling
-	-- past StallSpeed it is 14 * 3.2 = 45, well under a third of the original.
-	--
-	-- TUNING: how long each gear lasts scales as (chassis mass / Torque), and
-	-- nothing else here changes it. Still shifting too eagerly? Halve Torque.
-	-- Too sluggish? Raise it. The standstill shove stays put either way as
-	-- long as you move StallTorqueMultiplier the opposite way.
+	-- Torque is the ROLLING acceleration knob only - the standstill shove
+	-- comes from Transmission.StallTorqueMultiplier below. See PickupTruck.luau
+	-- for the full derivation; inherited unchanged pending this truck's own mass.
 	Torque = 10,
-	-- Torque = 100,
 
 	-- studs/s in TOP gear, and the number every SpeedFraction below is
 	-- measured against - so this is the one knob that compresses or stretches
-	-- the whole gearbox at once. 100 studs/s is ~63 mph; for a game about
-	-- threading a truck through tight gaps, 60-70 is probably closer to what
-	-- you want, and it also makes top gear reachable in a sensible time
-	-- (drive force fades to zero AT MaxSpeed, so the last stretch of any
-	-- MaxSpeed always crawls - the higher this is, the longer that crawl).
+	-- the whole gearbox at once.
 	MaxSpeed = 100,
 
-	-- Steering feel. 1.3 winds on full lock in about 0.77 seconds - a bit
-	-- brisker than a dead-on 1 second, while still nowhere near DEFAULTS'
-	-- fifth-of-a-second snap, so the cab's steering wheel prop (which swings
-	-- past a full turn - see SteeringWheelMaxAngle below) doesn't whip
-	-- around unrealistically fast. Re-centring stays quicker than turning
-	-- in, which is what a real truck's castor does on its own.
-	--
-	-- This is separate from SteerAngle (how far the wheels actually point) -
-	-- turn this down for heavier steering, that one down for a wider circle.
+	-- Steering feel. Inherited from PickupTruck - re-tune once this truck's
+	-- own cab/steering wheel prop is in place.
 	SteerSpeed = 1.3,
 	SteerReturnSpeed = 2,
 
@@ -313,28 +257,15 @@ TailLightBrightness = 0.5,
 
 	-- Handbrake (Space). Rear-locking, which is what lets you flick the back
 	-- end out mid-corner rather than just stopping in a straight line.
-	HandbrakeGripMultiplier = 0.16, -- a heavy truck on locked rears should slide a long way once it goes - lower than DEFAULTS' 0.18. THIS is the number that controls the skid; the one below only controls how fast the handbrake slows you down
-	-- Dropped from 0.75 alongside BrakeFriction below. The handbrake locks
-	-- one axle, so the deceleration it produces is half this (0.20) - it has
-	-- to stay under BrakeFriction (0.25) or yanking the handbrake would stop
-	-- the truck quicker than the brake pedal, which feels wrong to drive.
-	-- The slide itself is unchanged: that comes from the grip multiplier.
+	HandbrakeGripMultiplier = 0.16,
 	HandbrakeLockFriction = 0.4,
 
-	-- Foot brake (S). The progression here: 1.7 stopped the truck from 100
-	-- studs/s in 0.30s over 15 studs (a wall), 0.45 gave 1.13s over 57 studs
-	-- (still abrupt), 0.25 gives 2.04s over 102 studs - a loaded truck you
-	-- have to plan a stop for. Formula is in VehiclePhysics' BrakeFriction
-	-- comment if you want to dial an exact stopping distance.
+	-- Foot brake (S). See PickupTruck.luau for the stopping-distance
+	-- derivation this was copied from.
 	BrakeFriction = 0.25,
 	BrakeRampTime = 0.45, -- pedal travel. Longer than DEFAULTS: heavy truck, soft pedal, so a tap is genuinely a tap rather than a stab
 
-	-- Gas pedal travel, and the main cure for the lurch out of reverse. Longer
-	-- than DEFAULTS' 0.35: a loaded truck leans into its power, it doesn't
-	-- snap into it. Full torque still arrives - it just takes half a second,
-	-- by which time the truck is already rolling and the stall multiplier has
-	-- faded, so the spike never lands. Pushing against a kerb you hold W for
-	-- far longer than this, so kerb-climbing is untouched.
+	-- Gas pedal travel, and the main cure for the lurch out of reverse.
 	ThrottleRampTime = 0.5,
 
 	-- Lifting off W should let the truck cruise, not brake. At 0.05 it sheds
@@ -345,45 +276,15 @@ TailLightBrightness = 0.5,
 	-- 6-speed automatic. See VehiclePhysics.DefaultTransmission for what every
 	-- key means; only the keys listed here override it, so the timing values
 	-- not mentioned (IdleRpm, RpmSmoothing, pitch range) come from there.
-	--
-	-- Reading the gear list: Ratio multiplies Torque, SpeedFraction is the
-	-- share of MaxSpeed that gear tops out at. They move in opposite
-	-- directions on purpose - 1st has over 3x the shove but runs out of pull
-	-- by 16 studs/s, top gear pulls softly but is the only one that can reach
-	-- MaxSpeed. That trade is what makes a gearbox feel like one instead of a
-	-- free power boost, and it's why the last gear MUST be SpeedFraction 1.0.
+	-- Gear ratios/speed fractions copied from PickupTruck unchanged - re-derive
+	-- once this truck's own MaxSpeed/Torque are tuned (see the Gears comment
+	-- in PickupTruck.luau for the formula that keeps shift points lined up).
 	Transmission = {
 		StartingGear = "D", -- sit down and press W. There is no neutral any more, and no lever to move
 		ShiftTime = 0.55, -- a truck's box is slow and deliberate; drive is fully cut for this whole window
-		-- Shift points, as a fraction of each gear's own top speed. Raised
-		-- from 0.62 so every gear is held noticeably longer before handing
-		-- over: shifts now land at 18.0 / 27.0 / 37.5 / 48.8 / 61.5 studs/s
-		-- instead of 14.9 / 22.3 / 31.0 / 40.3 / 50.8.
-		--
-		-- 0.75 is past the point where the next gear would out-pull this one
-		-- (~0.55), and that's deliberate - it's what makes the engine strain
-		-- and the revs climb near the top of a gear before the shift, rather
-		-- than swapping over the instant it becomes mathematically optimal.
-		-- The outgoing gear still has 25% of its torque left at that point,
-		-- so it never bogs. Don't push much past 0.85: torque fades to zero
-		-- AT a gear's top speed, so a very late shift means crawling the last
-		-- stretch of every gear on almost no power.
 		ShiftUpAt = 0.75,
 		ShiftDownAt = 0.42,
 
-
-		-- Strong shove from rest, gentle once rolling. See the Torque comment
-		-- above - these two numbers are what let that be a low number.
-		--
-		-- StallSpeed matters as much as the multiplier: at 6 the boost was
-		-- still helping at 6 studs/s, which is nearly half of 1st gear, so 1st
-		-- got shoved through before you noticed it. At 3 the boost is spent
-		-- almost immediately and 1st does its own work for the rest of it.
-		-- Dropped from 3.5. Combined with ThrottleRampTime below, this is what
-		-- stops the truck leaping forward the moment it drops into D with W
-		-- already held - the flip happens at a dead standstill, which is
-		-- exactly where the stall multiplier peaks, so it was the single
-		-- biggest force spike in the drivetrain landing at the worst moment.
 		StallTorqueMultiplier = 2.4,
 		StallSpeed = 3,
 
@@ -394,14 +295,6 @@ TailLightBrightness = 0.5,
 
 		MaxPitch = 1.35, -- a diesel truck should never sound like it is screaming; below DEFAULTS' 1.45
 
-		-- 1st stretched again (0.16 -> 0.20 -> 0.24) so it covers real ground:
-		-- it now runs to 14.9 studs/s before handing over, instead of 9.9 when
-		-- this started. Every later ratio is derived so the next gear starts
-		-- out-pulling the current one at 0.55 of its top speed - just under
-		-- ShiftUpAt, so each shift hands over to a gear that pulls HARDER,
-		-- never one that bogs. Change a SpeedFraction and the ratios need
-		-- re-deriving with it, or the shift points stop lining up with where
-		-- the next gear actually takes over.
 		Gears = {
 			{ Ratio = 3.20, SpeedFraction = 0.24 }, -- 1st: the kerb-climbing, pulling-away gear
 			{ Ratio = 2.27, SpeedFraction = 0.36 },
@@ -411,15 +304,6 @@ TailLightBrightness = 0.5,
 			{ Ratio = 0.86, SpeedFraction = 1.00 }, -- 6th: overdrive, and the only gear that reaches MaxSpeed
 		},
 
-		-- Reverse. Ratio 2.6 stays just under 1st gear's 3.2 so forward
-		-- pull-away is still the strongest launch in the car, but reverse now
-		-- gets real shove instead of the anemic 1.6 it had before (that value,
-		-- paired with a SpeedFraction that had drifted to 1 by accident, left
-		-- the engine barely revving in reverse - it sounded and felt weak even
-		-- though the actual speed cap was fine). SpeedFraction 0.45 caps
-		-- reverse at 45 studs/s: well under the truck's 100 studs/s forward
-		-- top speed, but a real speed you can build up to, with revs that
-		-- climb properly on the way there instead of sitting near idle.
 		Reverse = { Ratio = 2.6, SpeedFraction = 0.45 },
 	},
 }

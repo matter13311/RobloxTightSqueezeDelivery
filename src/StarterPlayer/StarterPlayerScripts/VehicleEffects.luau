@@ -156,7 +156,8 @@ function VehicleEffects.Update(vehicle, config, slip)
 		-- suspension travel and steering) without touching orientation, so
 		-- the anchor keeps puffing straight up regardless of how fast the
 		-- wheel itself is spinning - see the comment in buildSmoke.
-		smoke.Anchor.WorldPosition = smoke.WheelPart.Position - Vector3.new(0, config.WheelRadius * 0.8, 0)
+		local wheelRadius = VehiclePhysics.GetWheelRadius(config, wheelName)
+		smoke.Anchor.WorldPosition = smoke.WheelPart.Position - Vector3.new(0, wheelRadius * 0.8, 0)
 
 		-- 0-1 for this wheel, measured from the threshold rather than from
 		-- zero, so a tire that has only just let go smokes faintly.

@@ -371,14 +371,18 @@ local function AddCar(carModel)
 	-- wheels (purely cosmetic - a car can override its wheel mesh via a
 	-- "WheelModelName" attribute on the Chassis, or a WheelModelName entry in
 	-- its Configs/<name>.luau file, naming a different model in
-	-- ReplicatedStorage.Wheels)
-	local wheelModelName = VehiclePhysics.GetConfig(chassis).WheelModelName
-	local wheelModel = (wheelModelName and wheelsFolder:FindFirstChild(wheelModelName)) or defaultWheelModel
+	-- ReplicatedStorage.Wheels. FrontWheelModelName/RearWheelModelName override
+	-- WheelModelName per axle - see VehiclePhysics.GetWheelModelName - so a
+	-- truck whose front and rear wheels are different meshes needs only those
+	-- two set, with WheelModelName left as the shared fallback.)
+	local config = VehiclePhysics.GetConfig(chassis)
 
 	local wheelFolder = Instance.new("Folder", carModel)
 	wheelFolder.Name = "Wheels"
 	for _, wheelName in VehiclePhysics.WheelNames do
 		local attachment = attachments[wheelName]
+		local wheelModelName = VehiclePhysics.GetWheelModelName(config, wheelName)
+		local wheelModel = (wheelModelName and wheelsFolder:FindFirstChild(wheelModelName)) or defaultWheelModel
 		local clonedWheel = wheelModel:Clone()
 		clonedWheel.Parent = wheelFolder
 		clonedWheel.Name = wheelName

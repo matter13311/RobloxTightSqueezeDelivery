@@ -719,13 +719,27 @@ local OPTIONAL_KEYS = {
 	"HighSpeedSteerAngle",
 	"SteerAngleFalloffSpeed",
 	"TailLightBrightness",
+	-- Per-axle override of WheelRadius, for a chassis (e.g. a truck) whose
+	-- front and rear wheel meshes are genuinely different sizes. Falls back to
+	-- WheelRadius when unset - see GetWheelRadius below, which is what every
+	-- raycast/visual call site actually reads instead of config.WheelRadius
+	-- directly.
+	"FrontWheelRadius",
+	"RearWheelRadius",
 }
 
 -- Non-numeric per-car-type overrides that don't belong in DEFAULTS (they're
 -- not physics tuning). Same precedence as everything else: Attribute on the
 -- Chassis > Configs/<name>.luau > nil (falls back to Raycast.server.luau's
 -- own default wheel model).
-local OPTIONAL_STRING_KEYS = { "WheelModelName", "CargoBedAttachmentName" }
+--
+-- FrontWheelModelName/RearWheelModelName let a chassis use a different wheel
+-- mesh per axle (a truck's front and rear wheels, say) - see
+-- GetWheelModelName below, which is what Raycast.server.luau actually calls
+-- instead of reading config.WheelModelName directly. Either one left unset
+-- falls back to the plain WheelModelName, so a car that only ever had one
+-- wheel mesh needs no changes.
+local OPTIONAL_STRING_KEYS = { "WheelModelName", "FrontWheelModelName", "RearWheelModelName", "CargoBedAttachmentName" }
 
 -- Where each mirror POINTS, in degrees, consumed by VehicleMirrorViews on the
 -- client. Per car type, because it depends entirely on the cab: how wide the
@@ -880,6 +894,29 @@ function VehiclePhysics.GetWheelPrimaryPart(wheelInstance)
 	return wheelInstance
 end
 
+-- Which ReplicatedStorage.Wheels model to clone for this wheel, honouring the
+-- per-axle FrontWheelModelName/RearWheelModelName override before falling
+-- back to the plain WheelModelName (and, if that's nil too, whatever
+-- Raycast.server.luau's own default wheel model is).
+function VehiclePhysics.GetWheelModelName(config, wheelName)
+	local isFrontWheel = wheelName:sub(1, 1) == "F"
+	if isFrontWheel then
+		return config.FrontWheelModelName or config.WheelModelName
+	end
+	return config.RearWheelModelName or config.WheelModelName
+end
+
+-- Per-axle WheelRadius, for a chassis whose front and rear wheel meshes are
+-- different sizes (e.g. a truck) - falls back to the plain WheelRadius when
+-- no override is set, so an existing single-size car config is unaffected.
+function VehiclePhysics.GetWheelRadius(config, wheelName)
+	local isFrontWheel = wheelName:sub(1, 1) == "F"
+	if isFrontWheel then
+		return config.FrontWheelRadius or config.WheelRadius
+	end
+	return config.RearWheelRadius or config.WheelRadius
+end
+
 -- Each wheel's mount point is an Attachment named "Wheel" .. name (e.g.
 -- "WheelFL"), parented directly to the Chassis and positioned visually in
 -- Studio - its Position IS the wheel/raycast offset, nothing to type by hand.
@@ -991,14 +1028,15 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 
 	for _, wheelName in WHEEL_NAMES do
 		local attachment = attachments[wheelName]
+		local wheelRadius = VehiclePhysics.GetWheelRadius(config, wheelName)
 		local carCFrame = carPrim.CFrame
 		local rayOrigin = attachment.WorldPosition
-		local rayDirection = -carCFrame.UpVector * (config.SuspensionMaxLength + config.WheelRadius)
+		local rayDirection = -carCFrame.UpVector * (config.SuspensionMaxLength + wheelRadius)
 		local raycast = workspace:Raycast(rayOrigin, rayDirection, rayParams)
 
 		if raycast then
 			local raycastDistance = (rayOrigin - raycast.Position).Magnitude
-			local springLength = math.clamp(raycastDistance - config.WheelRadius, 0, config.SuspensionMaxLength)
+			local springLength = math.clamp(raycastDistance - wheelRadius, 0, config.SuspensionMaxLength)
 			-- Both suspension terms are scaled to the length of the frame,
 			-- against a 60fps reference so every existing Stiffness/Damper
 			-- number keeps exactly the meaning it was tuned with: at 60fps
@@ -1624,7 +1662,18 @@ function VehiclePhysics.GetSteeringWheelPart(carModel)
 	if found:IsA("Model") and found.PrimaryPart then
 		return found.PrimaryPart
 	end
-	return found:FindFirstChild("SteeringWheel") or found:FindFirstChildWhichIsA("BasePart")
+	-- Fallback for a wrapper Model with no PrimaryPart set: prefer a
+	-- descendant actually named "SteeringWheel" (checked with IsA, not just
+	-- FindFirstChild - a nested wrapper Model can share the same name, e.g.
+	-- an imported "SteeringWheel" Model containing another "SteeringWheel"
+	-- Model around the real mesh, and blindly returning that name match
+	-- previously handed back a Model instead of a BasePart), then fall back
+	-- to the first BasePart anywhere inside, however deep.
+	local inner = found:FindFirstChild("SteeringWheel", true)
+	if inner and inner:IsA("BasePart") then
+		return inner
+	end
+	return found:FindFirstChildWhichIsA("BasePart", true)
 end
 
 -- A named part under the car's Dashboard folder (SpeedNeedle, RPMNeedle,
@@ -1702,9 +1751,10 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 		local attachment = attachments[wheelName]
 		local wheelPart = wheelsFolder:FindFirstChild(wheelName)
 		if attachment and wheelPart then
+			local wheelRadius = VehiclePhysics.GetWheelRadius(config, wheelName)
 			local localOffset = attachment.Position
 			local rayOrigin = attachment.WorldPosition
-			local rayDirection = -carCFrame.UpVector * (config.SuspensionMaxLength + config.WheelRadius)
+			local rayDirection = -carCFrame.UpVector * (config.SuspensionMaxLength + wheelRadius)
 			local raycast = workspace:Raycast(rayOrigin, rayDirection, rayParams)
 
 			if raycast then
@@ -1720,7 +1770,7 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 					-- radius sinks its bottom half straight into the ground, since a
 					-- mesh extends both above and below its pivot by its own radius.
 					local raycastDistance = (rayOrigin - raycast.Position).Magnitude
-					local springLength = math.clamp(raycastDistance - config.WheelRadius, 0, config.SuspensionMaxLength)
+					local springLength = math.clamp(raycastDistance - wheelRadius, 0, config.SuspensionMaxLength)
 					weld.C0 = CFrame.new(localOffset - Vector3.new(0, springLength, 0))
 					if localOffset.X > 0 then
 						weld.C0 = weld.C0 * CFrame.Angles(0, math.rad(180), 0)
