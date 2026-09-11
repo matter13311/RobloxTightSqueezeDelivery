@@ -412,8 +412,8 @@ return {
 
 	-- Steering feel. Inherited from PickupTruck - re-tune once this truck's
 	-- own cab/steering wheel prop is in place.
-	SteerSpeed = 1.3,
-	SteerReturnSpeed = 2,
+	SteerSpeed = 2.2,
+	SteerReturnSpeed = 3.2,
 
 	-- Steering wheel prop in the cab. 400 degrees at full lock: a bit past
 	-- a full turn, so the rim passes its starting orientation and ends up

@@ -282,17 +282,18 @@ TailLightBrightness = 0.5,
 	-- MaxSpeed always crawls - the higher this is, the longer that crawl).
 	MaxSpeed = 100,
 
-	-- Steering feel. 1.3 winds on full lock in about 0.77 seconds - a bit
-	-- brisker than a dead-on 1 second, while still nowhere near DEFAULTS'
-	-- fifth-of-a-second snap, so the cab's steering wheel prop (which swings
-	-- past a full turn - see SteeringWheelMaxAngle below) doesn't whip
-	-- around unrealistically fast. Re-centring stays quicker than turning
-	-- in, which is what a real truck's castor does on its own.
+	-- Steering feel. 2.2 winds on full lock in about 0.45 seconds - snappier
+	-- than the old 1.3 (0.77s), matching StarterVehicle's brisker feel, while
+	-- still well short of DEFAULTS' fifth-of-a-second snap, so the cab's
+	-- steering wheel prop (which swings past a full turn - see
+	-- SteeringWheelMaxAngle below) doesn't whip around unrealistically fast.
+	-- Re-centring stays quicker than turning in, which is what a real
+	-- truck's castor does on its own.
 	--
 	-- This is separate from SteerAngle (how far the wheels actually point) -
 	-- turn this down for heavier steering, that one down for a wider circle.
-	SteerSpeed = 1.3,
-	SteerReturnSpeed = 2,
+	SteerSpeed = 2.2,
+	SteerReturnSpeed = 3.2,
 
 	-- Steering wheel prop in the cab. 400 degrees at full lock: a bit past
 	-- a full turn, so the rim passes its starting orientation and ends up

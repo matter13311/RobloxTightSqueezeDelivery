@@ -1689,6 +1689,21 @@ function VehiclePhysics.GetSteeringWheelPart(carModel)
 	if inner and inner:IsA("BasePart") then
 		return inner
 	end
+	-- A multi-part wheel (rim + a separately-modeled column/boss, e.g.
+	-- BoxTruck's Volante + Part) has more than one BasePart under here, so
+	-- FindFirstChildWhichIsA below is ambiguous - and this function runs
+	-- independently on the server (once, at spawn, to build the weld) and
+	-- on every client (every frame, in updateSteeringWheel), which are not
+	-- guaranteed to see the same descendant order. If they disagree on
+	-- which part is "the" steering wheel, the client looks for
+	-- SteeringWheelWeld on a part that never got one and the wheel just
+	-- never turns for that player, while everything else (e.g. the
+	-- first-person arms) keeps working since it doesn't go through this
+	-- function. Preferring the inner Model's own authored PrimaryPart keeps
+	-- that choice deterministic across server and client.
+	if inner and inner:IsA("Model") and inner.PrimaryPart then
+		return inner.PrimaryPart
+	end
 	return found:FindFirstChildWhichIsA("BasePart", true)
 end
 
