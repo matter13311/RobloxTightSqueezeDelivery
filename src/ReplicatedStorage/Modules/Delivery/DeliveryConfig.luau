@@ -118,7 +118,7 @@ DeliveryConfig.Payout = {
 	-- DistanceBonusAtMax on top. Linear below it, capped above. This is what
 	-- makes the far side of the map worth driving to without needing to
 	-- measure the route the player actually took - only where they ended up.
-	DistanceForMaxBonus = 1200,
+	DistanceForMaxBonus = 900,
 	DistanceBonusAtMax = 0.5,
 
 	-- Hard ceiling on a single delivery, as a multiple of the load's face

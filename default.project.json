@@ -38,8 +38,9 @@
           ],
           "Locked": true,
           "Position": [
- 113.5, -10, -606.5
+            0, -110, -500
           ],
+          "Transparency": 1,
           "Size": [
         2047, 20, 2047
           ]

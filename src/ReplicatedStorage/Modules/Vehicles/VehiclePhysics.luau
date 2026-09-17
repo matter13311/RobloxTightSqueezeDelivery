@@ -242,6 +242,16 @@ local DEFAULTS = {
 	DriveWheels = "All", -- "All", "Front", or "Rear" - which axle receives drive/brake force from the throttle
 	WheelSpinBoost = 0, -- 0 = off. Extra visual wheel-spin speed under throttle at low speed, for a burnout/wheelspin look on drive wheels
 	Torque = 10,
+	-- Hill assist: the fraction of gravity's downhill pull the drive wheels
+	-- cancel while the player is throttling UP a slope. Drive force is a fixed
+	-- impulse that does not scale with mass, so a ramp that gravity pulls on
+	-- with the car's whole weight used to stall anything short of a big Torque
+	-- number - and raising Torque also raises flat-ground acceleration, which
+	-- is the one thing tuning must not touch. This adds exactly
+	-- `mass * g * sin(slope) * HillAssist` and only when climbing, so on flat
+	-- ground it is zero and acceleration is unchanged. 0 = off (old
+	-- behaviour), 1 = slopes feel flat. Just under 1 keeps a hill noticeable.
+	HillAssist = 0.85,
 	MaxSpeed = 50,
 	SteerAngle = 45,
 
@@ -1483,6 +1493,22 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 					* frictionStopImpulse(config.BrakeFriction * cargoHandling.Brake * brakeAmount)
 			elseif input.Throttle and input.Throttle ~= 0 and isDriveWheel then
 				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
+
+				-- Hill assist (see DEFAULTS.HillAssist). LookVector.Y is
+				-- sin(pitch), so throttle * LookVector.Y is positive exactly
+				-- when the throttle is pushing the car uphill - forwards up a
+				-- ramp or reversing up one. Descents get nothing. Split across
+				-- the driven wheels so the total is the same for AWD and 2WD.
+				-- Deliberately outside the gear fade above: the fade is what
+				-- caps top speed, and a climb should be able to hold speed,
+				-- not stall at the point where drive force faded to nothing.
+				local climb = input.Throttle * wheelDirCFrame.LookVector.Y
+				local hillAssist = config.HillAssist or 0
+				if climb > 0 and hillAssist > 0 then
+					local drivenWheels = if config.DriveWheels == "All" then 4 else 2
+					local assistImpulse = wheelWeight * 4 / drivenWheels * delta * climb * hillAssist
+					longitudinalForce += wheelDirCFrame.LookVector * math.sign(input.Throttle) * assistImpulse
+				end
 			elseif input.Throttle and input.Throttle ~= 0 then
 				-- An UNDRIVEN wheel while the player is on the gas. It just
 				-- rolls: no drive force (that is the axle above), and

@@ -61,6 +61,21 @@ local handlers = {
 	end,
 }
 
+-- Express toll ticket (see ExpressToll.server.luau / ExpressGates.client.luau).
+-- Same stacking rule as third person. Added outside the table literal only
+-- because its id is 0 until the product is created, and a [0] key must not be
+-- registered for a product that does not exist.
+local ExpressAccessUntilAttribute = "ExpressAccessUntil"
+if ProgressionConfig.Monetization.ExpressTicketProductId ~= 0 then
+	handlers[ProgressionConfig.Monetization.ExpressTicketProductId] = function(player)
+		local now = os.time()
+		local current = player:GetAttribute(ExpressAccessUntilAttribute)
+		local base = if type(current) == "number" and current > now then current else now
+		player:SetAttribute(ExpressAccessUntilAttribute, base + ProgressionConfig.Monetization.ExpressTicketDurationSeconds)
+		return true
+	end
+end
+
 --=============================================================================
 -- ProcessReceipt
 --=============================================================================

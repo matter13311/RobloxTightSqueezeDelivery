@@ -256,6 +256,23 @@ TailLightBrightness = 0.5,
 	SuspensionMaxLength = 3.5, -- DEFAULTS is 2 - more travel to compress into, so accel/brake squat and bumps have room to show instead of instantly maxing out the spring
 	Stiffness = 70, -- softened back down now that SuspensionMaxLength gives it more room - still enough to hold the truck's weight without bottoming out at rest
 	Damper = 5, -- lowered relative to Stiffness (was matched 1:1-ish) so it's underdamped enough to actually bounce instead of just clamping to ride height
+	-- The bump jitter fix, and the same one BoxTruck.luau uses (read its
+	-- BodyLean note first). This truck was the only car still at the DEFAULTS
+	-- value of 1, and it has the longest lever of the three: at rest the
+	-- contact patch sits about 4.4 studs below the chassis plate (0.5 to the
+	-- front mounts, ~2.1 of sagged spring out of 3.5 travel, 1.85 of wheel
+	-- radius) against ~3.0 on the StarterVehicle and ~1.2 effective on the
+	-- BoxTruck. Grip and drive impulses applied that far down roll and pitch
+	-- the body hard, the struts answer the movement, and on a road full of
+	-- small debris that loop never gets a quiet frame to settle - it buzzes.
+	--
+	-- It is NOT the damper-to-spring ratio: heave damping here works out to
+	-- zeta ~0.42 against the StarterVehicle's ~0.49, close enough that neither
+	-- would jitter on its own, and both are upgrade stats whose base values
+	-- anchor saved upgrade levels. 0.65 brings the effective lever back to
+	-- about the StarterVehicle's. Lower toward 0.5 if it still shivers over
+	-- bumps; raise toward 0.8 if cornering feels too flat.
+	BodyLean = 0.65,
 	-- Torque is now the ROLLING acceleration knob only. It used to be both
 	-- that and the standstill shove, which is why 50 made the truck leap off
 	-- the line and blow through the first five gears in a couple of seconds.

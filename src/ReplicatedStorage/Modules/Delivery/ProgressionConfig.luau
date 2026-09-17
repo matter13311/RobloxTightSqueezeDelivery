@@ -271,6 +271,25 @@ ProgressionConfig.Monetization = {
 	-- session rather than waiting a full day for the exact same board they
 	-- already gave up on.
 	FreeRefreshCooldownSeconds = 6 * 60 * 60,
+
+	-- The express toll road (workspace.Map.Express - see ExpressToll.server
+	-- and ExpressGates.client). Two ways through the gate:
+	--
+	--   * a ticket: developer product, timed, stacks like third person does.
+	--     Timed rather than per-ride because a "ride" has no clean end - a
+	--     player can leave by any of three exits, or turn round on the deck -
+	--     and a ticket that expires mid-drive never traps anyone (the exit
+	--     gates only close on players OUTSIDE them).
+	--   * the pass: game pass, permanent.
+	--
+	-- Either id left at 0 is treated as "not set up yet": in a live server
+	-- that option is simply not offered, and in Studio the toll panel offers a
+	-- free test ticket instead so the route can be driven before the products
+	-- exist. Create the product/pass on the Creator Dashboard and paste the
+	-- ids here.
+	ExpressTicketProductId = 0,
+	ExpressTicketDurationSeconds = 15 * 60,
+	ExpressPassGamePassId = 0,
 }
 
 return ProgressionConfig
