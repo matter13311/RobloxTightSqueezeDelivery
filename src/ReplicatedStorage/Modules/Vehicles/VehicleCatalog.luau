@@ -77,12 +77,26 @@ VehicleCatalog.Vehicles = {
 		RequiredDeliveries = 75,
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
+	StraightTruck = {
+		Id = "StraightTruck",
+		DisplayName = "Straight Truck",
+		TemplateName = "StraightTruck", -- must exist under ServerStorage.VehicleTemplates
+		-- No thumbnail rendered yet - PlotTerminal.client.luau shows its
+		-- "Image Coming Soon" placeholder until an ImageId is set here.
+		-- Placeholder - adjust to taste. The tier above BoxTruck.
+		Price = 1000, --default 40,000
+		-- 200 is the next CapMilestones step up from BoxTruck's 75 (see
+		-- ProgressionConfig.Contracts.CapMilestones), same pairing as the
+		-- vehicles before it.
+		RequiredDeliveries = 20, --default 200
+		DefaultOwned = false, -- purchasable from the shop tab instead
+	},
 }
 
 -- Stable display order (table iteration order is unspecified in Lua).
 -- StarterVehicle first: VehicleCatalog.Order[1] is what PlayerDataStore
 -- assigns as a fresh player's SelectedVehicleId.
-VehicleCatalog.Order = { "StarterVehicle", "PickupTruck", "BoxTruck" }
+VehicleCatalog.Order = { "StarterVehicle", "PickupTruck", "BoxTruck", "StraightTruck" }
 
 function VehicleCatalog.Get(vehicleId)
 	return VehicleCatalog.Vehicles[vehicleId]

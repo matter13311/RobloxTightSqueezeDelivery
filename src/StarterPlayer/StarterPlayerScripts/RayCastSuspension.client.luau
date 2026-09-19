@@ -892,6 +892,9 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- pitch) would freeze at whatever it was the instant the driver
 			-- got out, instead of stopping.
 			ExhaustEffects.Update(vehicle, 0)
+			-- Same for the turbo whistle: it is a local looping sound the
+			-- server never stops, so it has to be faded out from here.
+			VehiclePhysics.UpdateParkedTurbo(vehicle)
 
 			-- The wheels have exactly the same problem, and it is far more
 			-- visible: the block below is what writes each wheel's weld C0

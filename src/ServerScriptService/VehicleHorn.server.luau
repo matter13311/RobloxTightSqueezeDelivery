@@ -71,7 +71,7 @@ local function setUpHorn(carModel)
 		warn("VehicleHorn: " .. carModel:GetFullName() .. " has no PrimaryPart set - it will have no horn")
 		return
 	end
-	if chassis:FindFirstChild(HORN_SOUND_NAME) then
+	if chassis:FindFirstChild(HORN_SOUND_NAME, true) then
 		return
 	end
 
@@ -91,7 +91,21 @@ local function setUpHorn(carModel)
 	sound.Volume = config.HonkSoundVolume
 	sound.RollOffMaxDistance = config.HonkSoundRollOffMaxDistance
 	sound.Looped = true
-	sound.Parent = chassis
+
+	-- A Sound is positioned at its parent part's centre, which on a long
+	-- chassis is nowhere near the cab. When the car sets HonkSoundOffsetZ the
+	-- sound hangs off an Attachment at that spot instead, so it is heard from
+	-- the front of the truck rather than from behind the seat.
+	local offsetZ = config.HonkSoundOffsetZ
+	if type(offsetZ) == "number" then
+		local attachment = Instance.new("Attachment")
+		attachment.Name = "HornPoint"
+		attachment.Position = Vector3.new(0, 0, offsetZ)
+		attachment.Parent = chassis
+		sound.Parent = attachment
+	else
+		sound.Parent = chassis
+	end
 end
 
 local function trySetUpHorn(carModel)
@@ -118,7 +132,7 @@ local function stopHorn(carModel)
 	hornGenerations[carModel] = (hornGenerations[carModel] or 0) + 1
 
 	local chassis = carModel.PrimaryPart
-	local sound = chassis and chassis:FindFirstChild(HORN_SOUND_NAME)
+	local sound = chassis and chassis:FindFirstChild(HORN_SOUND_NAME, true)
 	if sound and sound:IsA("Sound") then
 		sound:Stop()
 	end
@@ -126,7 +140,7 @@ end
 
 local function startHorn(carModel, player)
 	local chassis = carModel.PrimaryPart
-	local sound = chassis and chassis:FindFirstChild(HORN_SOUND_NAME)
+	local sound = chassis and chassis:FindFirstChild(HORN_SOUND_NAME, true)
 	if not sound or not sound:IsA("Sound") then
 		return
 	end

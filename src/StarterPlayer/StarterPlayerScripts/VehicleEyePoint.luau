@@ -42,9 +42,20 @@
 -- which is the view that did not need fixing.
 --
 -- So the eye is a real point in the world instead: a tiny invisible seat held
--- at the configured spot in the cab, made the camera's CameraSubject. Roblox
--- follows a BasePart subject exactly - no rig-derived head offset of its own -
--- so the eye lands precisely where the config says, for every avatar.
+-- at the configured spot in the cab, made the camera's CameraSubject. In third
+-- person Roblox orbits that subject and nothing else.
+--
+-- FIRST PERSON NEEDS ONE MORE STEP, AND IT IS THE ONE THAT MATTERS
+--
+-- Roblox's VehicleCamera (PlayerModule.CameraModule.VehicleCamera) does NOT
+-- use the subject in first person. `_GetFirstPersonLocalOffset` reads the
+-- local character's Head position every frame and puts the camera there,
+-- whatever the subject is - so for a long time this module looked like it
+-- worked (third person was right, and the subject really was the eye seat)
+-- while a short avatar driving in first person was still staring at the
+-- dashboard. See installFirstPersonOverride below: that one function is
+-- replaced so it answers with the eye instead of the head while the eye is
+-- attached, and falls through to Roblox's own answer otherwise.
 --
 -- WHY THE EYE IS A VehicleSeat AND NOT A PLAIN PART
 --
@@ -114,6 +125,7 @@ local EYE_ATTACHMENT_NAME = "EyePoint"
 -- it is welded to the seat, so physics carries it.
 local RENDER_NAME = "VehicleEyePoint"
 local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value - 1
+local FALLBACK_RENDER_NAME = "VehicleEyePointFallback"
 
 -- Roblox exposes no "am I in first person" flag, so it is measured as the
 -- distance between the camera and what it is looking at - the zoom distance.
@@ -227,6 +239,67 @@ local function setCharacterHidden(hidden)
 	characterHidden = hidden
 end
 
+-- Replaces VehicleCamera's first-person offset with the pinned eye - see the
+-- header. Patched on the module's shared table rather than forking the whole
+-- PlayerModule, so Roblox's camera updates keep arriving and only this one
+-- answer is changed. require() of the same ModuleScript returns the table the
+-- CameraModule itself is using, so the override is live immediately.
+--
+-- Backed up by correctFirstPersonCamera, which runs after the camera every
+-- frame regardless. When the override is working it finds the camera already
+-- at the eye and moves it by zero; if Roblox ever renames the function, moves
+-- the module, or require() hands back a different copy than the CameraModule
+-- uses, it is what still puts the eye in the right place. Cruder (it only acts
+-- in full first person) but it cannot silently stop working, which is how
+-- this bug came back the first time.
+local overrideInstalled = false
+
+local function findVehicleCameraModule()
+	local playerScripts = player:FindFirstChild("PlayerScripts")
+	local playerModule = (playerScripts and playerScripts:FindFirstChild("PlayerModule"))
+		or game:GetService("StarterPlayer"):FindFirstChild("PlayerModule")
+	local cameraModule = playerModule and playerModule:FindFirstChild("CameraModule")
+	return cameraModule and cameraModule:FindFirstChild("VehicleCamera")
+end
+
+local function installFirstPersonOverride()
+	if overrideInstalled then
+		return
+	end
+	overrideInstalled = true
+
+	local moduleScript = findVehicleCameraModule()
+	local ok, vehicleCamera = pcall(function()
+		return moduleScript and require(moduleScript)
+	end)
+	local original = ok and type(vehicleCamera) == "table" and vehicleCamera._GetFirstPersonLocalOffset
+	if type(original) ~= "function" then
+		warn("[VehicleEyePoint] VehicleCamera first-person offset not found; using post-camera correction")
+		return
+	end
+
+	vehicleCamera._GetFirstPersonLocalOffset = function(self, subjectCFrame, ...)
+		if eyePart and subjectCFrame then
+			return subjectCFrame:Inverse() * eyePart.Position
+		end
+		return original(self, subjectCFrame, ...)
+	end
+end
+
+-- The safety net (see above). Runs after Roblox's camera, and in full first
+-- person moves the camera and its Focus together from wherever the camera put
+-- them to the eye. Both are moved by the same amount so the zoom distance
+-- IsFirstPerson measures is unchanged.
+local function correctFirstPersonCamera()
+	local camera = workspace.CurrentCamera
+	if not (camera and eyePart and VehicleEyePoint.IsFirstPerson()) then
+		return
+	end
+	local shift = eyePart.Position - camera.Focus.Position
+	camera.CFrame += shift
+	camera.Focus += shift
+end
+
 local function updateCharacterVisibility()
 	if VehicleEyePoint.IsFirstPerson() then
 		-- Re-applied every frame while hidden rather than only on the
@@ -264,6 +337,7 @@ function VehicleEyePoint.Detach()
 		return -- nothing bound, and nothing to put back
 	end
 	RunService:UnbindFromRenderStep(RENDER_NAME)
+	RunService:UnbindFromRenderStep(FALLBACK_RENDER_NAME)
 
 	if characterHidden then
 		setCharacterHidden(false)
@@ -331,7 +405,9 @@ function VehicleEyePoint.Attach(seat)
 	eyePart = part
 	camera.CameraSubject = part
 
+	installFirstPersonOverride()
 	RunService:BindToRenderStep(RENDER_NAME, RENDER_PRIORITY, step)
+	RunService:BindToRenderStep(FALLBACK_RENDER_NAME, Enum.RenderPriority.Camera.Value + 1, correctFirstPersonCamera)
 end
 
 return VehicleEyePoint

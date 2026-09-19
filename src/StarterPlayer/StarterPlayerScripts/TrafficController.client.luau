@@ -1,22 +1,22 @@
--- Moving NPC traffic. Routes and tuning live in Modules/Traffic/TrafficConfig.
+-- Draws the NPC traffic that TrafficServer.server.luau simulates, so every
+-- player sees the same cars. Routes and tuning: Modules/Traffic/TrafficConfig.
+-- Wire format: Modules/Traffic/TrafficNet.
 --
--- Entirely client-side. Each player's machine creates its own traffic cars,
--- so the server never simulates or replicates them. That works because a
--- player's own car is physically simulated by that player's client: it
--- collides with the local traffic, and VehicleCrashDetector reports the hit
--- to the server like any other crash (the server does not validate WHAT was
--- hit). The cost is that two players do not see exactly the same traffic.
--- Traffic stops for every player's vehicle it can see, which keeps the
--- mismatch from being obvious.
+-- The server sends a snapshot of every car (route, distance along it, speed,
+-- how far it may go before stopping) about ten times a second. This script
+-- keeps a local model per car and moves it along the same path every frame
+-- (wrapping round at the end of a circuit), steering its distance toward where
+-- the latest snapshot says the car should be by now. Cars never drive
+-- backwards to correct: one that is ahead of the server just slows until the
+-- server catches up, and it never passes the stopping point the server sent,
+-- so a queue never visibly overlaps.
 --
--- Cars are anchored and placed with one BulkMoveTo per frame. They never
--- take part in physics: a player hitting one hits a wall, and the car plays
--- a small scripted "bump" (rocks away, settles, honks, waits) instead of
--- being shoved.
---
--- Sensing is plain vector maths, no raycasts: every SENSE_INTERVAL each car checks
--- every other car, every player vehicle and every character for anything
--- inside its lane ahead of it. Movement runs every frame against the result.
+-- Cars are anchored and moved with one BulkMoveTo per frame. The local
+-- player's own vehicle collides with these local copies (this client
+-- simulates that vehicle), and VehicleCrashDetector reports the crash like
+-- any other. When the local player's vehicle touches a traffic car, the bump
+-- is shown here immediately and reported to the server, which stops the car
+-- for everyone and tells the other clients to play the same bump.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -24,6 +24,10 @@ local RunService = game:GetService("RunService")
 
 local TrafficConfig = require(ReplicatedStorage.Modules.Traffic.TrafficConfig)
 local TrafficPath = require(ReplicatedStorage.Modules.Traffic.TrafficPath)
+local TrafficNet = require(ReplicatedStorage.Modules.Traffic.TrafficNet)
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+
+local player = Players.LocalPlayer
 
 local templatesFolder = ReplicatedStorage:WaitForChild("TrafficCars", 30)
 if not templatesFolder then
@@ -31,63 +35,48 @@ if not templatesFolder then
 	return
 end
 local vehicleFolder = workspace:WaitForChild("Vehicles")
+local snapshotRemote = ReplicatedStorage:WaitForChild(TrafficNet.SnapshotRemote)
+local eventRemote = ReplicatedStorage:WaitForChild(TrafficNet.EventRemote)
+local bumpRemote = ReplicatedStorage:WaitForChild(TrafficNet.BumpRemote)
+local cameraRemote = ReplicatedStorage:WaitForChild(TrafficNet.CameraRemote)
 
-local SENSE_INTERVAL = 0.1
-local AHEAD_SAMPLE = 4 -- studs ahead of the car centre it points at, smooths corners
-
-local rng = Random.new()
-
-local function randRange(min, max)
-	return rng:NextNumber(min, max)
-end
+local AHEAD_SAMPLE = 4 -- studs ahead of the centre a car points at, smooths corners
+local SNAP_DISTANCE = 25 -- further than this from the server and the car just jumps
+local CORRECTION_GAIN = 2 -- extra studs/s per stud behind the server
+-- Ceiling on that correction. Catching up a big gap at full gain looks like a
+-- car sprinting; at 12 studs/s it closes ~25 studs in two seconds instead.
+local MAX_CATCHUP = 12
+local PREDICTION_SLACK = 1.5 -- studs a car may run ahead of the predicted position
+local CAMERA_REPORT_INTERVAL = 0.5
 
 local function flat(v)
 	return Vector3.new(v.X, 0, v.Z)
 end
 
---=============================================================================
--- Routes and templates
---=============================================================================
+local templates = TrafficNet.SortedTemplates(templatesFolder)
 
 local routes = {}
-local totalWeight = 0
-for _, route in TrafficConfig.Routes do
-	local path = TrafficPath.Build(TrafficConfig, route)
-	table.insert(routes, { Name = route.Name, Weight = route.Weight or 1, Path = path })
-	totalWeight += route.Weight or 1
+for index, route in TrafficConfig.Routes do
+	routes[index] = TrafficPath.Build(TrafficConfig, route)
+	routes[index].Closed = route.Closed
 end
-
-local function pickRoute()
-	local roll = rng:NextNumber(0, totalWeight)
-	for _, route in routes do
-		roll -= route.Weight
-		if roll <= 0 then
-			return route
-		end
-	end
-	return routes[#routes]
-end
-
-local templates = templatesFolder:GetChildren()
 
 local trafficFolder = Instance.new("Folder")
 trafficFolder.Name = "NpcTraffic"
 trafficFolder.Parent = workspace
 
 --=============================================================================
--- Car records
+-- Car models
 --=============================================================================
 
--- Defined with the bump reaction below; the Touched handler needs it first.
+local visuals = {} -- [id] = visual
+local pools = {} -- [templateIndex] = { model record }
+
+-- Defined with the bump handling below; Touched needs it first.
 local onTouched
 
-local cars = {} -- active, in no particular order
-local pool = {} -- recycled records, ready to reuse
-local nextId = 0
-
-local function newCarRecord()
-	local template = templates[rng:NextInteger(1, #templates)]
-	local model = template:Clone()
+local function buildModel(templateIndex)
+	local model = templates[templateIndex]:Clone()
 	local root = model.PrimaryPart
 
 	local parts, offsets, lights = { root }, { CFrame.identity }, {}
@@ -108,144 +97,156 @@ local function newCarRecord()
 	horn.Volume = TrafficConfig.HornVolume
 	horn.RollOffMode = Enum.RollOffMode.InverseTapered
 	horn.RollOffMaxDistance = TrafficConfig.HornRollOffMaxDistance
-	horn.PlaybackSpeed = randRange(TrafficConfig.HornPitchMin, TrafficConfig.HornPitchMax)
 	horn.Parent = root
 
-	nextId += 1
-	local car = {
-		Id = nextId,
+	local record = {
+		TemplateIndex = templateIndex,
 		Model = model,
 		Root = root,
 		Parts = parts,
 		Offsets = offsets,
 		Lights = lights,
 		Horn = horn,
-		HalfLength = model:GetAttribute("HalfLength") or root.Size.Z / 2,
-		HalfWidth = model:GetAttribute("HalfWidth") or root.Size.X / 2,
 		Height = root.Size.Y / 2,
+		Visual = nil, -- the car currently using this model
 	}
-
 	root.Touched:Connect(function(hit)
-		if car.Active then
-			onTouched(car, hit)
+		if record.Visual then
+			onTouched(record.Visual, hit)
 		end
 	end)
-
-	return car
+	return record
 end
 
-local function setBrakeLights(car, on)
-	if car.LightsOn == on then
+local function setBrakeLights(visual, on)
+	if visual.LightsOn == on then
 		return
 	end
-	car.LightsOn = on
-	for _, light in car.Lights do
+	visual.LightsOn = on
+	for _, light in visual.Record.Lights do
 		light.Material = if on then Enum.Material.Neon else Enum.Material.SmoothPlastic
 		light.Color = if on then TrafficConfig.BrakeLightOnColor else TrafficConfig.BrakeLightOffColor
 	end
 end
 
-local function rollHonkDelays(car)
-	car.PlayerHonkDelay = randRange(TrafficConfig.HonkAtPlayerDelayMin, TrafficConfig.HonkAtPlayerDelayMax)
-	car.QueueHonkDelay = randRange(TrafficConfig.HonkInQueueDelayMin, TrafficConfig.HonkInQueueDelayMax)
+local function createVisual(entry)
+	local pool = pools[entry.TemplateIndex]
+	local record = pool and table.remove(pool) or buildModel(entry.TemplateIndex)
+	local visual = {
+		Id = entry.Id,
+		RouteIndex = entry.RouteIndex,
+		TemplateIndex = entry.TemplateIndex,
+		Path = routes[entry.RouteIndex],
+		Record = record,
+		S = entry.S,
+		Cursor = 1,
+		Snap = nil,
+		Bump = nil,
+		LocalBumpAt = 0,
+		HoldUntil = 0,
+		LastCFrame = nil,
+		LightsOn = nil,
+	}
+	record.Visual = visual
+	record.Horn.PlaybackSpeed = TrafficNet.HornPitch(TrafficConfig, entry.Id)
+	record.Model.Parent = trafficFolder
+	visuals[entry.Id] = visual
+	return visual
 end
 
-local function placeCar(car, route, s, speed)
-	car.Active = true
-	car.Route = route
-	car.S = s
-	car.Cursor = 1
-	car.Speed = speed
-	car.Limit = math.huge
-	car.Leader = nil
-	car.LeaderIsPlayer = false
-	car.StoppedFor = 0
-	car.EndWait = randRange(TrafficConfig.QueueWaitMin, TrafficConfig.QueueWaitMax)
-	car.NextHonkAt = 0
-	car.HoldUntil = 0
-	car.Bump = nil
-	car.IgnoreCar = nil
-	car.LightsOn = nil
-	car.LastCFrame = nil
-	-- A pooled record still holds where it was last life; sensing and the
-	-- spawn clearance check read these before the first movement step.
-	local position, direction = TrafficPath.Sample(route.Path, s, 1)
-	car.Position = position
-	car.Forward = direction
-	car.Right = Vector3.new(-direction.Z, 0, direction.X)
-	rollHonkDelays(car)
-	setBrakeLights(car, false)
-	car.Model.Parent = trafficFolder
-	table.insert(cars, car)
-end
-
-local function recycle(index)
-	local car = cars[index]
-	cars[index] = cars[#cars]
-	cars[#cars] = nil
-	car.Active = false
-	car.Horn:Stop()
-	car.Model.Parent = nil
-	table.insert(pool, car)
-end
-
-local function takeCar()
-	return table.remove(pool) or newCarRecord()
+local function releaseVisual(visual)
+	visuals[visual.Id] = nil
+	local record = visual.Record
+	record.Visual = nil
+	record.Horn:Stop()
+	record.Model.Parent = nil
+	pools[record.TemplateIndex] = pools[record.TemplateIndex] or {}
+	table.insert(pools[record.TemplateIndex], record)
 end
 
 --=============================================================================
--- Visibility
+-- Snapshots
 --=============================================================================
 
-local function isHidden(position)
-	local camera = workspace.CurrentCamera
-	if not camera then
-		return true
+local lastSnapshotTime = -math.huge
+local currentSeq = nil
+local seenThisSnapshot = {}
+local chunksOutstanding = 0
+
+snapshotRemote.OnClientEvent:Connect(function(payload)
+	local serverTime, entries, seq, _chunkIndex, chunkCount = TrafficNet.Decode(payload)
+	-- Unreliable: a late chunk can arrive after a newer snapshot. Drop it.
+	if not serverTime or serverTime < lastSnapshotTime then
+		return
 	end
-	local distance = (camera.CFrame.Position - position).Magnitude
-	if distance > TrafficConfig.HiddenDistance then
-		return true
+
+	if serverTime > lastSnapshotTime or seq ~= currentSeq then
+		-- A new snapshot. Anything still outstanding from the previous one was
+		-- lost, so that snapshot never gets to decide what disappeared.
+		lastSnapshotTime = serverTime
+		currentSeq = seq
+		seenThisSnapshot = {}
+		chunksOutstanding = chunkCount
 	end
-	-- Right behind the camera is one quick turn away from being seen.
-	if distance < 60 then
-		return false
+
+	local seen = seenThisSnapshot
+	for _, entry in entries do
+		local path = routes[entry.RouteIndex]
+		if not path or not templates[entry.TemplateIndex] then
+			continue
+		end
+		seen[entry.Id] = true
+
+		local visual = visuals[entry.Id]
+		-- Ids wrap; a reused id on a different route or body is a different car.
+		if visual and (visual.RouteIndex ~= entry.RouteIndex or visual.TemplateIndex ~= entry.TemplateIndex) then
+			releaseVisual(visual)
+			visual = nil
+		end
+		if not visual then
+			visual = createVisual(entry)
+		end
+
+		-- Room at the cap means nothing is in front of it: no stop point at all.
+		-- Anything less is a real distance from `S` to where it must stop.
+		local unlimited = entry.Room >= TrafficNet.MaxRoom - 1
+		visual.Snap = {
+			Time = serverTime,
+			S = entry.S,
+			Unlimited = unlimited,
+			Stop = if unlimited
+				then nil
+				else entry.S + (if path.Closed then entry.Room else math.min(path.Length - entry.S, entry.Room)),
+			Speed = entry.Speed,
+		}
+		setBrakeLights(visual, entry.Braking)
 	end
-	local viewport = camera.ViewportSize
-	local point, inFront = camera:WorldToViewportPoint(position + Vector3.new(0, 3, 0))
-	if not inFront then
-		return true
+
+	-- Only once every chunk of this snapshot has arrived is the "seen" set
+	-- complete enough to retire the cars missing from it.
+	chunksOutstanding -= 1
+	if chunksOutstanding <= 0 then
+		for id, visual in visuals do
+			if not seen[id] then
+				releaseVisual(visual)
+			end
+		end
 	end
-	-- Generous margin: a car is ~20 studs long, so its centre can be off
-	-- screen while its bumper is not.
-	local margin = 120
-	return point.X < -margin or point.X > viewport.X + margin or point.Y < -margin or point.Y > viewport.Y + margin
-end
+end)
 
 --=============================================================================
 -- Horn
 --=============================================================================
 
-local lastGlobalHonk = 0
-
-local function honk(car, pattern)
-	local now = os.clock()
-	local camera = workspace.CurrentCamera
-	if not camera or (camera.CFrame.Position - car.Root.Position).Magnitude > TrafficConfig.HornAudibleDistance then
-		return false
-	end
-	if now - lastGlobalHonk < TrafficConfig.HornGlobalGap then
-		return false
-	end
-	lastGlobalHonk = now
-	car.NextHonkAt = now + randRange(TrafficConfig.HonkCooldownMin, TrafficConfig.HonkCooldownMax)
-
+local function playHonk(visual, pattern)
 	-- {on, off, on, ...} in seconds.
 	local beeps = if pattern == "long" then { 0.7 } elseif pattern == "double" then { 0.18, 0.12, 0.22 } else { 0.25 }
-	local horn = car.Horn
+	local record = visual.Record
+	local horn = record.Horn
 	task.spawn(function()
 		for i, duration in beeps do
-			if not car.Active then
-				break
+			if record.Visual ~= visual then
+				return
 			end
 			if i % 2 == 1 then
 				horn:Play()
@@ -254,52 +255,30 @@ local function honk(car, pattern)
 			end
 			task.wait(duration)
 		end
-		horn:Stop()
+		if record.Visual == visual then
+			horn:Stop()
+		end
 	end)
-	return true
 end
 
 --=============================================================================
--- Bump reaction
+-- Bumps
 --=============================================================================
 
-onTouched = function(car, hit)
-	if not hit:IsDescendantOf(vehicleFolder) then
-		return
-	end
-	local now = os.clock()
-	if car.Bump and now - car.Bump.Start < 0.4 then
-		return
-	end
-
-	local carVelocity = car.Forward and car.Forward * car.Speed or Vector3.zero
-	local relative = flat(hit.AssemblyLinearVelocity - carVelocity)
-	local relativeSpeed = relative.Magnitude
-	if relativeSpeed < TrafficConfig.BumpMinSpeed then
-		return
-	end
-
-	local away = flat(car.Root.Position - hit.Position)
-	if away.Magnitude < 0.1 then
-		away = relative
-	end
-
-	car.Bump = {
-		Start = now,
-		Direction = away.Unit,
-		Strength = math.clamp(relativeSpeed / 35, 0.25, 1),
-		YawSign = if rng:NextNumber() < 0.5 then -1 else 1,
+local function startBump(visual, direction, strength, yawSign)
+	visual.Bump = {
+		Start = os.clock(),
+		Direction = direction,
+		Strength = strength,
+		YawSign = yawSign,
 	}
-	car.Speed = 0
-	car.HoldUntil = now + randRange(TrafficConfig.BumpHoldMin, TrafficConfig.BumpHoldMax)
-	honk(car, "long")
 end
 
-local function bumpOffset(car, now)
-	local bump = car.Bump
+local function bumpOffset(visual, now)
+	local bump = visual.Bump
 	local k = (now - bump.Start) / TrafficConfig.BumpSettleSeconds
 	if k >= 1 then
-		car.Bump = nil
+		visual.Bump = nil
 		return nil
 	end
 	-- Quick shove out over the first 15%, then an eased settle back.
@@ -309,176 +288,79 @@ local function bumpOffset(car, now)
 	return offset, yaw
 end
 
---=============================================================================
--- Sensing
---=============================================================================
-
-local extentsCache = setmetatable({}, { __mode = "k" })
-
--- Player vehicles and on-foot characters, as oriented boxes.
-local function gatherPlayerObstacles()
-	local obstacles = {}
-	for _, model in vehicleFolder:GetChildren() do
-		local root = model:IsA("Model") and model.PrimaryPart
-		if root then
-			local size = extentsCache[model]
-			if not size then
-				size = model:GetExtentsSize()
-				extentsCache[model] = size
-			end
-			local cf = root.CFrame
-			table.insert(obstacles, {
-				Position = flat(cf.Position),
-				Look = flat(cf.LookVector).Unit,
-				Right = flat(cf.RightVector).Unit,
-				HalfLength = size.Z / 2,
-				HalfWidth = size.X / 2,
-			})
-		end
+local function vehicleModelOf(part)
+	local node = part
+	while node and node.Parent ~= vehicleFolder do
+		node = node.Parent
 	end
-	for _, player in Players:GetPlayers() do
-		local character = player.Character
-		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-		if rootPart and humanoid and not humanoid.SeatPart and humanoid.Health > 0 then
-			table.insert(obstacles, {
-				Position = flat(rootPart.Position),
-				Look = Vector3.zAxis,
-				Right = Vector3.xAxis,
-				HalfLength = 1.5,
-				HalfWidth = 1.5,
-			})
-		end
-	end
-	return obstacles
+	return node
 end
 
--- Returns the bumper-to-bumper gap to `other` if it is in this car's lane
--- ahead of it, else nil.
-local function gapTo(car, position, look, right, halfLength, halfWidth)
-	local d = position - car.Position
-	local ahead = d:Dot(car.Forward)
-	if ahead <= 0 then
-		return nil
-	end
-	local otherAlong = math.abs(look:Dot(car.Forward)) * halfLength + math.abs(right:Dot(car.Forward)) * halfWidth
-	if ahead - otherAlong > TrafficConfig.LookAhead + car.HalfLength then
-		return nil
-	end
-	local otherAcross = math.abs(look:Dot(car.Right)) * halfLength + math.abs(right:Dot(car.Right)) * halfWidth
-	if math.abs(d:Dot(car.Right)) > car.HalfWidth + otherAcross + TrafficConfig.LateralSlack then
-		return nil
-	end
-	return ahead - car.HalfLength - otherAlong
-end
-
-local function sense(now)
-	local playerObstacles = gatherPlayerObstacles()
-
-	for _, car in cars do
-		local best, leader, leaderIsPlayer = math.huge, nil, false
-
-		for _, other in cars do
-			if other ~= car and not (car.IgnoreCar == other and now < car.IgnoreUntil) then
-				local gap = gapTo(car, other.Position, other.Forward, other.Right, other.HalfLength, other.HalfWidth)
-				if gap and gap < best then
-					best, leader, leaderIsPlayer = gap, other, false
-				end
-			end
-		end
-		for _, obstacle in playerObstacles do
-			local gap = gapTo(car, obstacle.Position, obstacle.Look, obstacle.Right, obstacle.HalfLength, obstacle.HalfWidth)
-			if gap and gap < best then
-				best, leader, leaderIsPlayer = gap, obstacle, true
-			end
-		end
-
-		car.Limit = best - TrafficConfig.StopGap
-		car.Leader = leader
-		car.LeaderIsPlayer = leaderIsPlayer
-	end
-
-	-- Two cars that each think the other is in the way (crossing paths at a
-	-- junction) would wait forever. After a moment, the older one goes.
-	for _, car in cars do
-		local other = car.Leader
-		if
-			other
-			and not car.LeaderIsPlayer
-			and other.Leader == car
-			and car.StoppedFor > 1.5
-			and other.StoppedFor > 1.5
-			and car.Id < other.Id
-		then
-			car.IgnoreCar = other
-			car.IgnoreUntil = now + 3
-		end
-	end
-
-	-- Honking.
-	for _, car in cars do
-		if car.StoppedFor <= 0 or now < car.NextHonkAt or now < car.HoldUntil then
-			continue
-		end
-		if car.LeaderIsPlayer then
-			if car.StoppedFor > car.PlayerHonkDelay then
-				honk(car, if rng:NextNumber() < 0.5 then "double" else "tap")
-			end
-		elseif car.StoppedFor > car.QueueHonkDelay then
-			if rng:NextNumber() < TrafficConfig.HonkInQueueChance then
-				honk(car, "tap")
-			end
-			-- Whether or not it honked, wait a while before thinking about it again.
-			car.QueueHonkDelay = car.StoppedFor
-				+ randRange(TrafficConfig.HonkInQueueDelayMin, TrafficConfig.HonkInQueueDelayMax)
-		end
-	end
-end
-
---=============================================================================
--- Spawning and recycling
---=============================================================================
-
-local function isClear(position, clearance)
-	for _, car in cars do
-		if car.Position and (car.Position - position).Magnitude < clearance then
-			return false
-		end
-	end
-	for _, model in vehicleFolder:GetChildren() do
-		local root = model:IsA("Model") and model.PrimaryPart
-		if root and (flat(root.Position) - position).Magnitude < clearance then
-			return false
-		end
-	end
-	return true
-end
-
-local function trySpawn()
-	if #cars >= TrafficConfig.MaxCars then
+onTouched = function(visual, hit)
+	-- Every client sees every vehicle touch every car; only the driver of the
+	-- vehicle reports it, so a crash is reported once.
+	if not hit:IsDescendantOf(vehicleFolder) then
 		return
 	end
-	local route = pickRoute()
-	local start = route.Path.Points[1]
-	if not isHidden(start) or not isClear(start, TrafficConfig.SpawnClearance) then
+	local vehicle = vehicleModelOf(hit)
+	if not vehicle or VehicleSeats.GetDriverPlayer(vehicle) ~= player then
 		return
 	end
-	placeCar(takeCar(), route, 0, TrafficConfig.CruiseSpeed * 0.6)
+
+	local now = os.clock()
+	if now - visual.LocalBumpAt < 0.5 or not visual.Snap then
+		return
+	end
+	local carVelocity = (visual.Forward or Vector3.zero) * visual.Snap.Speed
+	local relativeSpeed = flat(hit.AssemblyLinearVelocity - carVelocity).Magnitude
+	if relativeSpeed < TrafficConfig.BumpMinSpeed then
+		return
+	end
+
+	visual.LocalBumpAt = now
+	local away = flat(visual.Record.Root.Position - hit.Position)
+	local direction = if away.Magnitude > 0.1 then away.Unit else flat(hit.AssemblyLinearVelocity).Unit
+	startBump(visual, direction, math.clamp(relativeSpeed / 35, 0.25, 1), if math.random() < 0.5 then -1 else 1)
+	-- Stop it here straight away; the server's stop arrives a round-trip later.
+	visual.HoldUntil = now + 0.6
+	bumpRemote:FireServer(visual.Id, relativeSpeed)
 end
 
--- Fill the streets at load so the city doesn't start empty and fill up from
--- the jams outward.
-local function initialFill()
-	local attempts = 0
-	while #cars < TrafficConfig.MaxCars and attempts < TrafficConfig.MaxCars * 20 do
-		attempts += 1
-		local route = pickRoute()
-		local s = rng:NextNumber(0, math.max(0, route.Path.Length - 2))
-		local position = TrafficPath.Sample(route.Path, s, 1)
-		if isClear(position, 26) then
-			placeCar(takeCar(), route, s, rng:NextNumber(0, TrafficConfig.CruiseSpeed))
-		end
+eventRemote.OnClientEvent:Connect(function(kind, id, ...)
+	local visual = visuals[id]
+	if not visual then
+		return
 	end
+	if kind == "honk" then
+		playHonk(visual, ...)
+	elseif kind == "bump" then
+		local dx, dz, strength, yawSign, bumper = ...
+		-- The player who hit it already played this bump locally.
+		if bumper == player and os.clock() - visual.LocalBumpAt < 1.5 then
+			return
+		end
+		startBump(visual, Vector3.new(dx, 0, dz), strength, yawSign)
+	end
+end)
+
+--=============================================================================
+-- Camera reports (the server only recycles cars nobody can see)
+--=============================================================================
+
+local cameraTimer = 0
+
+local function reportCamera(dt)
+	cameraTimer += dt
+	if cameraTimer < CAMERA_REPORT_INTERVAL then
+		return
+	end
+	cameraTimer = 0
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local viewport = camera.ViewportSize
+	cameraRemote:FireServer(camera.CFrame, camera.FieldOfView, viewport.X / math.max(1, viewport.Y))
 end
 
 --=============================================================================
@@ -486,75 +368,83 @@ end
 --=============================================================================
 
 local moveParts, moveCFrames = {}, {}
-local senseTimer, spawnTimer = 0, 0
 
-local function step(dt)
+RunService.Heartbeat:Connect(function(dt)
 	local now = os.clock()
+	local serverNow = workspace:GetServerTimeNow()
 
-	-- Movement.
-	for _, car in cars do
-		local path = car.Route.Path
-		local remaining = path.Length - car.S
+	for _, visual in visuals do
+		local snap = visual.Snap
+		if not snap then
+			continue
+		end
+		local path = visual.Path
 
-		local target = TrafficConfig.CruiseSpeed
-		if now < car.HoldUntil then
-			target = 0
-		else
-			-- Slow for corners ahead: v^2 = cap^2 + 2*a*d.
-			local cap, at = TrafficPath.UpcomingCap(path, car.S, 40, car.Cursor)
-			if cap < math.huge then
-				target = math.min(target, math.sqrt(cap * cap + 2 * TrafficConfig.Braking * 0.6 * at))
+		-- Where the server's car should be by now.
+		local length = path.Length
+		local expected = snap.S + snap.Speed * math.max(0, serverNow - snap.Time)
+		if snap.Stop then
+			expected = math.min(snap.Stop, expected)
+		end
+		local behind, room
+		if path.Closed then
+			-- Distances run round the loop, so compare the short way round.
+			behind = (expected - visual.S) % length
+			if behind > length / 2 then
+				behind -= length
 			end
-			-- Stop for whatever is ahead, or the end of the route.
-			local room = math.min(car.Limit, remaining)
-			target = math.min(target, math.sqrt(2 * TrafficConfig.Braking * 0.7 * math.max(0, room)))
-		end
-
-		local previous = car.Speed
-		if target > previous then
-			car.Speed = math.min(target, previous + TrafficConfig.Acceleration * dt)
 		else
-			car.Speed = math.max(target, previous - TrafficConfig.Braking * 2 * dt)
+			behind = expected - visual.S
 		end
-
-		local travel = car.Speed * dt
-		car.Limit -= travel
-		car.S = math.min(path.Length, car.S + travel)
-
-		if car.Speed < 0.5 then
-			car.StoppedFor += dt
-		else
-			if car.StoppedFor > 0 then
-				rollHonkDelays(car)
+		-- How far it may advance this frame. Measured against `expected` rather
+		-- than the raw stop point: `expected` slides forward continuously
+		-- between snapshots, so a slowly creeping car keeps creeping instead of
+		-- hopping once per snapshot, while a car the server has stopped still
+		-- comes to rest within SLACK of where the server put it.
+		local target = expected + PREDICTION_SLACK
+		if path.Closed then
+			room = (target - visual.S) % length
+			if room > length / 2 then
+				room = 0 -- the target is behind us: hold still
 			end
-			car.StoppedFor = 0
+		else
+			room = math.max(0, target - visual.S)
 		end
-		setBrakeLights(car, car.Speed < 0.5 or car.Speed < previous - 0.2 * dt * TrafficConfig.Braking)
 
-		local position, direction, cursor = TrafficPath.Sample(path, car.S, car.Cursor)
-		car.Cursor = cursor
-		local aheadPosition = TrafficPath.Sample(path, car.S + AHEAD_SAMPLE, cursor)
+		if math.abs(behind) > SNAP_DISTANCE then
+			visual.S = if path.Closed then expected % length else expected
+		elseif now >= visual.HoldUntil then
+			local speed = math.max(0, snap.Speed + math.min(behind * CORRECTION_GAIN, MAX_CATCHUP))
+			visual.S += math.min(speed * dt, room)
+			if path.Closed then
+				visual.S %= length
+			end
+		end
+		visual.S = if path.Closed then visual.S % length else math.clamp(visual.S, 0, length)
+
+		local position, direction, cursor = TrafficPath.Sample(path, visual.S, visual.Cursor)
+		visual.Cursor = cursor
+		local aheadPosition = TrafficPath.Sample(path, visual.S + AHEAD_SAMPLE, cursor)
 		local look = aheadPosition - position
 		if look.Magnitude < 0.5 then
 			look = direction
 		end
 		look = flat(look).Unit
-		car.Position = position
-		car.Forward = look
-		car.Right = Vector3.new(-look.Z, 0, look.X)
+		visual.Forward = look
 
-		local centre = position + Vector3.new(0, TrafficConfig.RoadY + car.Height, 0)
+		local record = visual.Record
+		local centre = position + Vector3.new(0, TrafficConfig.RoadY + record.Height, 0)
 		local cf = CFrame.lookAt(centre, centre + look)
-		if car.Bump then
-			local offset, yaw = bumpOffset(car, now)
+		if visual.Bump then
+			local offset, yaw = bumpOffset(visual, now)
 			if offset then
 				cf = (cf + offset) * CFrame.Angles(0, yaw, 0)
 			end
 		end
 
-		if cf ~= car.LastCFrame then
-			car.LastCFrame = cf
-			local parts, offsets = car.Parts, car.Offsets
+		if cf ~= visual.LastCFrame then
+			visual.LastCFrame = cf
+			local parts, offsets = record.Parts, record.Offsets
 			for i = 1, #parts do
 				table.insert(moveParts, parts[i])
 				table.insert(moveCFrames, cf * offsets[i])
@@ -568,33 +458,5 @@ local function step(dt)
 		table.clear(moveCFrames)
 	end
 
-	senseTimer += dt
-	if senseTimer >= SENSE_INTERVAL then
-		senseTimer = 0
-		sense(now)
-
-		-- Recycling, checked at the sensing rate.
-		for i = #cars, 1, -1 do
-			local car = cars[i]
-			-- Any car waiting in a queue, not just the front one: routes feed
-			-- their jams faster than one car at a time could drain them, and
-			-- a hidden queue shrinking from the middle is never seen.
-			local atEnd = car.Route.Path.Length - car.S < 0.5
-			local queued = atEnd or (car.Leader and not car.LeaderIsPlayer)
-			local done = (queued and car.StoppedFor > car.EndWait)
-				or car.StoppedFor > TrafficConfig.StuckRecycleSeconds
-			if done and isHidden(car.Position) then
-				recycle(i)
-			end
-		end
-	end
-
-	spawnTimer += dt
-	if spawnTimer >= TrafficConfig.SpawnInterval then
-		spawnTimer = 0
-		trySpawn()
-	end
-end
-
-initialFill()
-RunService.Heartbeat:Connect(step)
+	reportCamera(dt)
+end)

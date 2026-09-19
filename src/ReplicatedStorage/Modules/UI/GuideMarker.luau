@@ -436,6 +436,13 @@ function GuideMarker:_step()
 	end
 
 	local viewport = camera.ViewportSize
+	-- A viewport narrower than the margins (a minimised window, the first
+	-- frames of a Studio playtest) has nowhere to put the marker, and would
+	-- make the clamps below throw every frame.
+	if viewport.X < SCREEN_MARGIN * 2 or viewport.Y < SCREEN_MARGIN + SCREEN_MARGIN_TOP then
+		self._screen.Visible = false
+		return
+	end
 	local camCFrame = camera.CFrame
 	local toTarget = centre - camCFrame.Position
 

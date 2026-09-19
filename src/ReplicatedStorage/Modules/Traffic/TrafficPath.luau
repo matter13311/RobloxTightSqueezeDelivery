@@ -112,6 +112,10 @@ function TrafficPath.Sample(path, s, cursor)
 	local points, dist = path.Points, path.Dist
 	local i = math.max(1, cursor or 1)
 	local last = #points
+	-- A car on a closed circuit wraps back past its cursor.
+	if dist[i] > s then
+		i = 1
+	end
 	if s >= path.Length then
 		local dir = (points[last] - points[last - 1]).Unit
 		return points[last], dir, last - 1
