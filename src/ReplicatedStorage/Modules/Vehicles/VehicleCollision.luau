@@ -86,6 +86,12 @@ VehicleCollision.Groups = {
 	Cosmetic = "VehicleCosmetic", -- body mesh parts once hulls exist: collide with nothing at all
 	Attached = "VehicleAttached", -- doors, mirrors, seats, frame, steering wheel, wheels: collide with the world, never with vehicle geometry
 	Debris = "VehicleDebris", -- knocked-off panels: bounce on the ground, never shove a car
+	-- A towed trailer's own shape: collides with the WORLD, never with any
+	-- vehicle. See TrailerHitch.server.luau for why it needs a group of its
+	-- own rather than sharing Vehicle - in short, a trailer's nose overlaps
+	-- the tractor that is towing it by design, so the two can never be allowed
+	-- to resolve against each other.
+	Trailer = "VehicleTrailer",
 	ExitGrace = "VehicleExitGrace", -- a character in the instant after leaving a seat - see VehicleDoors.server.luau
 	Seated = "VehicleSeated", -- a character while it is welded into a car - see the seated-occupant section of VehicleDoors.server.luau
 }

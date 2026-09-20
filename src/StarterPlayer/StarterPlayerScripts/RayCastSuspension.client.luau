@@ -19,6 +19,9 @@ local VehicleZoom = require(script.Parent.VehicleZoom)
 local VehicleViewMode = require(script.Parent.VehicleViewMode)
 local VehicleThirdPersonShop = require(script.Parent.VehicleThirdPersonShop)
 local VehicleTouchControls = require(script.Parent.VehicleTouchControls)
+-- PROTOTYPE: articulated vehicles. Steps a coupled trailer alongside the truck
+-- in this same loop - see TrailerDrive.luau for why it has to be this loop.
+local TrailerDrive = require(script.Parent.TrailerDrive)
 -- Temporary instrumentation; see the module header. Remove with the rest of it.
 local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntryDebug)
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
@@ -540,6 +543,10 @@ local function endDrive(expected)
 	if session.HandbrakeSound then
 		session.HandbrakeSound:Destroy()
 	end
+	-- Clears the two bodies' ray filters as well as the cached trailer state.
+	-- Leaving those set would have the truck ignoring ground wherever its last
+	-- trailer happened to be for the rest of the session.
+	session.TrailerDrive:Destroy()
 
 	if drivingStates[session.CarModel] == session.State then
 		drivingStates[session.CarModel] = nil
@@ -571,6 +578,9 @@ local function beginDrive(humanoid, seatPart)
 		Config = config,
 		State = state,
 		Gearbox = Gearbox.new(config),
+		-- Does nothing at all until the server couples something to this
+		-- truck, so every non-towing car pays one nil check per frame for it.
+		TrailerDrive = TrailerDrive.new(carModel),
 		Dashboard = VehicleDashboard.new(player),
 		ControlsHint = VehicleControlsHint.new(player),
 		TouchControls = VehicleTouchControls.new(player, {
@@ -781,6 +791,12 @@ local function beginDrive(humanoid, seatPart)
 			GearMaxSpeed = drive.GearMaxSpeed,
 			Rpm = drive.Rpm,
 		})
+
+		-- Same frame, same delta, immediately after the truck's own step. A
+		-- trailer stepped on a different event or with a different delta is
+		-- two bodies integrating out of step with each other across a stiff
+		-- constraint, which is the classic way a coupled rig detonates.
+		mySession.TrailerDrive:Step(delta)
 
 		-- Re-checked every frame rather than once on entry: a third-person
 		-- perk can expire mid-drive and a player who has one can freely
