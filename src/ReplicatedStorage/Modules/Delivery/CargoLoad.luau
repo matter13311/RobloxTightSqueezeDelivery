@@ -329,9 +329,10 @@ CargoLoad.MinConditionPayFactor = 0.4
 -- rate-limits `severity` (0-1) before anything sees it, so this only has to
 -- decide how much a given severity is worth against a given fragility.
 --
--- Tuned so an ordinary kerb scrape on Parcels is nearly free, while a solid
--- wall hit carrying Glassware (Fragility 3.2) costs about a third of the
--- load's condition - two of those and the run is at the pay floor.
+-- `severity` is the crash's deltaV mapped from ImpactMinDeltaV..ImpactSevereDeltaV
+-- onto 0-1 (see VehicleDamage's severityOf). Tuned so a light knock on Parcels
+-- costs a few percent, a severe wall hit costs Parcels about a third of the
+-- load's condition, and the same hit wrecks Glassware (Fragility 3.2) outright.
 CargoLoad.ConditionLossPerSeverity = 0.35
 
 function CargoLoad.ConditionAfterImpact(condition, severity, typeId)

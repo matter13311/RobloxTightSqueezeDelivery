@@ -395,6 +395,27 @@ local function applyDamage(carModel, position, amount, radius)
 	end
 end
 
+-- How hard a crash was, 0-1, on the same deltaV scale the reporting client uses
+-- for its own crash sound (ImpactMinDeltaV -> 0, ImpactSevereDeltaV -> 1).
+--
+-- Recovered from the impulse by dividing the car's mass back out. The old
+-- scale, impulse / MaxImpulse, is an anti-cheat ceiling and not a severity: a
+-- truck's impulse is mass * deltaV, in the tens of thousands, against a
+-- ceiling of 5e6, so even a wall hit at full speed came out around 0.01 and
+-- cost cargo well under 1% - too small to ever show on the HUD. Going through
+-- deltaV also makes severity mean the same thing for every truck, however
+-- heavy it or its load is.
+local function severityOf(carModel, impulse)
+	local chassis = carModel.PrimaryPart
+	local mass = chassis and chassis.AssemblyMass or 0
+	if mass <= 0 then
+		return 0
+	end
+	local deltaV = impulse / mass
+	local range = VehicleCollision.ImpactSevereDeltaV - VehicleCollision.ImpactMinDeltaV
+	return math.clamp((deltaV - VehicleCollision.ImpactMinDeltaV) / range, 0, 1)
+end
+
 -- The car (if any) that a hit part belongs to. Walks up rather than checking
 -- Parent, because the part reported is a hull box or a panel several folders
 -- deep, not a direct child of the car.
@@ -431,19 +452,16 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 	)
 	applyDamage(carModel, position, amount, VehicleCollision.DamageRadius)
 
-	-- Same 0-1 scale CargoManager.ApplyImpact uses just below - impulse as a
-	-- fraction of the largest one validate() will accept - so a bystander's
-	-- copy of the crash sound is scaled the same way the reporting client
-	-- scaled its own local one (see severity in VehicleCrashDetector's
-	-- onImpact), without the server needing to know deltaV at all.
-	local severity = math.clamp(impulse / VehicleCollision.MaxImpulse, 0, 1)
+	-- The same 0-1 scale the reporting client scaled its own local crash sound
+	-- with (see severity in VehicleCrashDetector's onImpact), so a bystander's
+	-- copy of the sound matches it.
+	local severity = severityOf(carModel, impulse)
 	impactSoundRemote:FireAllClients(position, severity, player)
 
-	-- ...and the same crash, applied to whatever is in the bed. Severity is
-	-- the impulse as a fraction of the largest one validate() will accept, so
-	-- CargoTypes' Fragility numbers are calibrated against a known 0-1 scale
-	-- rather than against raw impulses whose range depends on vehicle mass.
-	CargoManager.ApplyImpact(carModel, impulse / VehicleCollision.MaxImpulse)
+	-- ...and the same crash, applied to whatever is in the bed. On this scale
+	-- CargoTypes' Fragility numbers are calibrated against a known 0-1 range
+	-- that does not depend on vehicle mass.
+	CargoManager.ApplyImpact(carModel, severity)
 
 	-- Hitting another player's truck damages theirs too. Halved because only
 	-- one of the two clients is going to report this crash (whichever one was
@@ -458,7 +476,7 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 			-- two clients reports this crash, and the driver who got hit
 			-- should not lose a full load's worth of condition to a collision
 			-- they may not have caused.
-			CargoManager.ApplyImpact(otherCar, (impulse * 0.5) / VehicleCollision.MaxImpulse)
+			CargoManager.ApplyImpact(otherCar, severityOf(otherCar, impulse * 0.5))
 		end
 	end
 end)
