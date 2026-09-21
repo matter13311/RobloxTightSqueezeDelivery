@@ -396,13 +396,20 @@ local function AddCar(carModel)
 	-- WheelModelName per axle - see VehiclePhysics.GetWheelModelName - so a
 	-- truck whose front and rear wheels are different meshes needs only those
 	-- two set, with WheelModelName left as the shared fallback.)
+	--
+	-- VisualWheels also carries any CosmeticWheel* attachments - see
+	-- VehiclePhysics.GetWheelAttachments. Those are made Massless below: the
+	-- suspension maths assumes the mass it was tuned on, and a heavy truck
+	-- wheel hung off the back would drag the centre of mass off the four real
+	-- attachments' centroid (see AmericanHitchTruck.luau's BALANCE note).
 	local config = VehiclePhysics.GetConfig(chassis)
 
 	local wheelFolder = Instance.new("Folder", carModel)
 	wheelFolder.Name = "Wheels"
-	for _, wheelName in VehiclePhysics.WheelNames do
-		local attachment = attachments[wheelName]
-		local wheelModelName = VehiclePhysics.GetWheelModelName(config, wheelName)
+	for _, wheel in attachments.VisualWheels do
+		local wheelName = wheel.Name
+		local attachment = wheel.Attachment
+		local wheelModelName = VehiclePhysics.GetVisualWheelModelName(config, wheel)
 		local wheelModel = (wheelModelName and wheelsFolder:FindFirstChild(wheelModelName)) or defaultWheelModel
 		local clonedWheel = wheelModel:Clone()
 		clonedWheel.Parent = wheelFolder
@@ -416,6 +423,9 @@ local function AddCar(carModel)
 			if part:IsA("BasePart") then
 				part.CanCollide = false
 				part.Anchored = false
+				if wheel.IsCosmetic then
+					part.Massless = true
+				end
 			end
 		end
 

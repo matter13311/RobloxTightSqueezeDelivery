@@ -771,6 +771,10 @@ local OPTIONAL_KEYS = {
 	-- directly.
 	"FrontWheelRadius",
 	"RearWheelRadius",
+	-- Radius of the CosmeticWheel* wheels (see GetWheelAttachments). Unset
+	-- falls back to the radius of the axle the cosmetic wheel is tagged as -
+	-- see GetVisualWheelRadius.
+	"CosmeticWheelRadius",
 	-- Where along the chassis' Z axis the horn sounds from, in studs (negative
 	-- is toward the front on this game's trucks). Unset leaves the horn at the
 	-- chassis centre, which is right for a short car but sounds like it is
@@ -789,7 +793,16 @@ local OPTIONAL_KEYS = {
 -- instead of reading config.WheelModelName directly. Either one left unset
 -- falls back to the plain WheelModelName, so a car that only ever had one
 -- wheel mesh needs no changes.
-local OPTIONAL_STRING_KEYS = { "WheelModelName", "FrontWheelModelName", "RearWheelModelName", "CargoBedAttachmentName" }
+--
+-- CosmeticWheelModelName is the mesh for every CosmeticWheel* attachment (see
+-- GetWheelAttachments); unset, a cosmetic wheel uses its axle's model.
+local OPTIONAL_STRING_KEYS = {
+	"WheelModelName",
+	"FrontWheelModelName",
+	"RearWheelModelName",
+	"CosmeticWheelModelName",
+	"CargoBedAttachmentName",
+}
 
 -- Where each mirror POINTS, in degrees, consumed by VehicleMirrorViews on the
 -- client. Per car type, because it depends entirely on the cab: how wide the
@@ -986,16 +999,96 @@ function VehiclePhysics.GetWheelRadius(config, wheelName)
 	return config.RearWheelRadius or config.WheelRadius
 end
 
+-- Which model a VisualWheels entry (see GetWheelAttachments) clones, and its
+-- radius. A real wheel is exactly GetWheelModelName/GetWheelRadius. A cosmetic
+-- one checks, in order: a WheelModelName/WheelRadius Attribute on its own
+-- attachment (so one odd axle can differ), the config's CosmeticWheelModelName/
+-- CosmeticWheelRadius, then whichever axle it's tagged as.
+function VehiclePhysics.GetVisualWheelModelName(config, wheel)
+	if wheel.IsCosmetic then
+		local override = wheel.Attachment:GetAttribute("WheelModelName")
+		if override ~= nil then
+			return override
+		end
+		if config.CosmeticWheelModelName then
+			return config.CosmeticWheelModelName
+		end
+	end
+	return VehiclePhysics.GetWheelModelName(config, if wheel.IsFront then "FL" else "RL")
+end
+
+function VehiclePhysics.GetVisualWheelRadius(config, wheel)
+	if wheel.IsCosmetic then
+		local override = wheel.Attachment:GetAttribute("WheelRadius")
+		if override ~= nil then
+			return override
+		end
+		if config.CosmeticWheelRadius then
+			return config.CosmeticWheelRadius
+		end
+	end
+	return VehiclePhysics.GetWheelRadius(config, if wheel.IsFront then "FL" else "RL")
+end
+
+local COSMETIC_WHEEL_PREFIX = "CosmeticWheel"
+
 -- Each wheel's mount point is an Attachment named "Wheel" .. name (e.g.
 -- "WheelFL"), parented directly to the Chassis and positioned visually in
 -- Studio - its Position IS the wheel/raycast offset, nothing to type by hand.
+-- Those four are the ONLY wheels the physics knows about: Step reads
+-- attachments.FL/FR/RL/RR and nothing else.
+--
+-- COSMETIC WHEELS. Any other Chassis attachment whose name starts with
+-- "CosmeticWheel" (CosmeticWheelLeft1, CosmeticWheelRight1, ...) gets a wheel
+-- too, which rides its own visual-only suspension ray and spins with the road
+-- exactly like a real one - but applies no force, has no grip and is Massless,
+-- so adding one changes nothing about how the car drives or balances. For a
+-- truck's second rear axle, a trailer's bogie, and so on.
+--   Side      from the attachment's X, same as the real wheels (X > 0 is right).
+--   Axle      Attribute Axle = "Front" makes it steer, and follow DriveWheels/
+--             HandbrakeWheels, as a front wheel. Anything else (or unset) is
+--             treated as a rear wheel - the usual case, a tandem axle.
+--   Model     see GetVisualWheelModelName/GetVisualWheelRadius above.
+--
+-- attachments.VisualWheels lists every wheel that gets drawn, real four first,
+-- as { Name, Attachment, IsFront, IsCosmetic }. Name is also the name of the
+-- wheel's instance in the car's Wheels folder.
 function VehiclePhysics.GetWheelAttachments(chassis)
 	local attachments = {}
+	local visualWheels = {}
 	for _, name in WHEEL_NAMES do
 		local attachment = chassis:FindFirstChild("Wheel" .. name)
 		assert(attachment ~= nil, "Chassis " .. chassis:GetFullName() .. " is missing a 'Wheel" .. name .. "' Attachment")
 		attachments[name] = attachment
+		table.insert(visualWheels, {
+			Name = name,
+			Attachment = attachment,
+			IsFront = name:sub(1, 1) == "F",
+			IsCosmetic = false,
+		})
 	end
+
+	local cosmetic = {}
+	for _, child in chassis:GetChildren() do
+		if child:IsA("Attachment") and child.Name:sub(1, #COSMETIC_WHEEL_PREFIX) == COSMETIC_WHEEL_PREFIX then
+			table.insert(cosmetic, child)
+		end
+	end
+	-- Sorted so every client and the server agree on the order, and two
+	-- attachments accidentally given the same name are at least stable.
+	table.sort(cosmetic, function(a, b)
+		return a.Name < b.Name
+	end)
+	for _, attachment in cosmetic do
+		table.insert(visualWheels, {
+			Name = attachment.Name,
+			Attachment = attachment,
+			IsFront = attachment:GetAttribute("Axle") == "Front",
+			IsCosmetic = true,
+		})
+	end
+
+	attachments.VisualWheels = visualWheels
 	return attachments
 end
 
@@ -1952,11 +2045,14 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 	-- driver's own car is ignoring.
 	rayParams.RespectCanCollide = true
 
-	for _, wheelName in WHEEL_NAMES do
-		local attachment = attachments[wheelName]
+	-- Cosmetic wheels (see GetWheelAttachments) go through the same loop: their
+	-- ray here is the only suspension they have, and it only moves the mesh.
+	for _, wheel in attachments.VisualWheels do
+		local wheelName = wheel.Name
+		local attachment = wheel.Attachment
 		local wheelPart = wheelsFolder:FindFirstChild(wheelName)
 		if attachment and wheelPart then
-			local wheelRadius = VehiclePhysics.GetWheelRadius(config, wheelName)
+			local wheelRadius = VehiclePhysics.GetVisualWheelRadius(config, wheel)
 			local localOffset = attachment.Position
 			local rayOrigin = attachment.WorldPosition
 			local rayDirection = -carCFrame.UpVector * (config.SuspensionMaxLength + wheelRadius)
@@ -1965,7 +2061,7 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 			if raycast then
 				local weld = VehiclePhysics.GetWheelPrimaryPart(wheelPart):FindFirstChild("Weld")
 				if weld then
-					local isFrontWheel = wheelName:sub(1, 1) == "F"
+					local isFrontWheel = wheel.IsFront
 					local isDriveWheel = config.DriveWheels == "All"
 						or (config.DriveWheels == "Front" and isFrontWheel)
 						or (config.DriveWheels == "Rear" and not isFrontWheel)
@@ -2071,7 +2167,9 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 					--   lengthwise only a LOCKED wheel slides along its
 					--             rolling direction - a rolling one is, by
 					--             definition, not sliding that way.
-					if input.SlipOut then
+					-- Real wheels only: smoke and screech are keyed to the four
+					-- physics wheels (see VehicleEffects).
+					if input.SlipOut and not wheel.IsCosmetic then
 						local lateralSlip = math.abs(localVelocity.X)
 						local longitudinalSlip = if isLocked then math.abs(localVelocity.Z) else 0
 						local slip = math.sqrt(lateralSlip * lateralSlip + longitudinalSlip * longitudinalSlip)

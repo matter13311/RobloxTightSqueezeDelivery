@@ -21,6 +21,13 @@
 -- The front pair is at z = -10.6, in the arch. Both are where the model draws
 -- the wheels - do not move them to fix handling; move MASS instead (below).
 --
+-- The tandem's FRONT axle is drawn by two cosmetic wheels on Chassis
+-- attachments CosmeticWheelLeft1/CosmeticWheelRight1 at (+-3.5, -0.5, +9.6).
+-- They ride and spin but carry no load and are Massless (see
+-- VehiclePhysics.GetWheelAttachments), so the balance maths below ignores them.
+-- They use the rear wheel model/radius; set CosmeticWheelModelName /
+-- CosmeticWheelRadius here to give them their own.
+--
 -- BALANCE. VehiclePhysics.Step supports every strut with cornerMass =
 -- AssemblyMass / 4, i.e. it assumes the centre of mass sits at the CENTROID
 -- of the four Wheel attachments (here z = +2.0). When it doesn't, the loaded
@@ -71,7 +78,35 @@ config.HonkSoundOffsetZ = -12
 config.CargoCapacity = 0
 config.Upgrades = table.clone(base.Upgrades)
 config.Upgrades.CargoCapacity = nil
+
+-- TORQUE. 25 (StraightTruck: 16.5) is the rolling acceleration, and it also
+-- shortens every gear's dwell by 16.5 / 25 - see the Torque note in
+-- PickupTruck.luau - so the box shifts about a third sooner than StraightTruck's.
 config.Torque = 25
+
+-- POTHOLES. A truck that rolls into a deep hole stops in it, so the thing that
+-- has to get it out is the STANDSTILL shove, not Torque: launch force is
+--     Torque * 1st Ratio * StallTorqueMultiplier = 25 * 3.2 * 2.4 = 192 per
+--     drive wheel per frame, x2 rear wheels = 0.33 g at 60fps
+-- and that fades to plain Torque (0.14 g) by StallSpeed (3 studs/s), so the
+-- moment the truck creeps up the wall it loses the boost and stalls halfway.
+-- The wall is worse than a hill, too: the strut pushes along the GROUND's
+-- normal, so a wall at angle a sends tan(a) of the front axle's load (~half the
+-- truck) straight back at the drive force, which is where 0.33 g runs out at
+-- about 33 degrees.
+--
+-- Raising the multiplier fixes that without touching flat-ground driving: on
+-- open road the boost is gone in a few frames (it fades over 3 studs/s, and
+-- 0.5 g covers that in ~0.03 s), so the launch feels the same. It only shows
+-- when the truck is held against something. 4 gives 25 * 3.2 * 4 * 2 = 0.54 g
+-- from a standstill, good for roughly a 47 degree wall. If it still can't
+-- climb out, raise StallSpeed (keeps the boost alive for longer while it
+-- crawls) before raising Torque again.
+--
+-- Transmission is cloned first because table.clone(base) is shallow and would
+-- otherwise edit BoxTruck's (and StraightTruck's, which shares it).
+config.Transmission = table.clone(base.Transmission)
+config.Transmission.StallTorqueMultiplier = 4
 
 -- SUSPENSION. Stiffness 200 -> 260 (Damper 12.5 -> 14, scaled by sqrt(1.3)
 -- to hold the damping ratio) for less roll: sag 1.465 -> 1.13, about 4 deg
@@ -99,6 +134,8 @@ config.Upgrades.Stiffness = table.clone(base.Upgrades.Stiffness)
 config.Upgrades.Stiffness.Max = 350 -- 260 + 15 * 6 levels
 config.Upgrades.Damper = table.clone(base.Upgrades.Damper)
 config.Upgrades.Damper.Max = 17 -- 14 + 0.75 * 4 levels
+config.Upgrades.Torque = table.clone(base.Upgrades.Torque)
+config.Upgrades.Torque.Max = 43 -- 25 + 3 * 6 levels (Step 3 is StraightTruck's)
 config.Upgrades.SuspensionMaxLength = table.clone(base.Upgrades.SuspensionMaxLength)
 config.Upgrades.SuspensionMaxLength.Max = 2.9 -- 2.1 + 0.2 * 4 levels
 return config
