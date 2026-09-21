@@ -22,6 +22,7 @@
 --     FreeRefreshAvailableAt = number, -- os.time() the free board refresh comes back; 0/past = available now
 --     TutorialDone = boolean,         -- false only for a player who has never been through the guided first delivery
 --     Settings = { [key] = boolean|number }, -- client display settings (GameSettings), see SanitizeSettings
+--     Permits = { [permitId] = true }, -- zone permits bought (ProgressionConfig.Permits)
 --   }
 --
 -- Deliveries/Contracts are persisted for one reason: contracts are sold. A
@@ -32,6 +33,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
@@ -141,6 +143,7 @@ local function newDefaultData()
 		TutorialDone = false,
 		-- Empty means "all defaults" - GameSettings owns what those are.
 		Settings = {},
+		Permits = {},
 	}
 end
 
@@ -157,6 +160,18 @@ local function reconcile(data)
 	data.UpgradeLevels = type(data.UpgradeLevels) == "table" and data.UpgradeLevels or {}
 	data.CarConfigs = type(data.CarConfigs) == "table" and data.CarConfigs or {}
 	data.Settings = PlayerDataStore.SanitizeSettings(data.Settings)
+	-- Only permit ids that still exist, and only `true`. A permit retired from
+	-- ProgressionConfig simply drops out rather than lingering as a key that
+	-- means nothing.
+	local permits = {}
+	if type(data.Permits) == "table" then
+		for id, owned in data.Permits do
+			if owned == true and type(id) == "string" and ProgressionConfig.Permits[id] then
+				permits[id] = true
+			end
+		end
+	end
+	data.Permits = permits
 
 	-- Defaults to TRUE for a save that predates the field, not false: an
 	-- existing player already knows how the game works, and dropping every one

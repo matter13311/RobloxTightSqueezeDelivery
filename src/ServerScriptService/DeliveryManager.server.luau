@@ -314,6 +314,7 @@ local function completeDelivery(player, carModel, contract, space, grade)
 	local multiplier = ParkGrade.Multiplier(grade)
 		* spaceMultiplier
 		* (1 + (destination and destination.DistanceBonus or 0))
+		* (destination and destination.ZoneMultiplier or 1)
 	-- The ceiling from DeliveryConfig. Cargo condition is derived from
 	-- client-reported impacts, so this is the backstop on how much a client
 	-- that simply never reports a crash can be worth.

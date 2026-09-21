@@ -118,14 +118,27 @@ DeliveryConfig.Payout = {
 	-- DistanceBonusAtMax on top. Linear below it, capped above. This is what
 	-- makes the far side of the map worth driving to without needing to
 	-- measure the route the player actually took - only where they ended up.
-	DistanceForMaxBonus = 900,
-	DistanceBonusAtMax = 0.5,
+	--
+	-- Scaled for the three-zone city (the far end of the Harbour is ~3600 in a
+	-- straight line from the loading bay), so an Old Town job earns only a
+	-- sliver of it.
+	DistanceForMaxBonus = 3600,
+	DistanceBonusAtMax = 0.4,
+
+	-- Multiplier on the load's value by the destination's zone (see
+	-- ProgressionConfig.Permits). This, not distance, is what makes a new zone
+	-- feel like a new level: the first Mill District job pays visibly more than
+	-- the last Old Town one, which is what the permit was bought for.
+	ZoneMultipliers = { 1, 1.5, 2.2 },
 
 	-- Hard ceiling on a single delivery, as a multiple of the load's face
 	-- value. Cargo condition comes from client-reported impacts, so a cheating
 	-- client's best case is arriving pristine every time; this caps how much
 	-- that can ever be worth. See docs/CargoDesign.md section 6.
-	MaxMultiplier = 3,
+	--
+	-- Raised from 3 with the zone multipliers: a pristine reverse park in the
+	-- Harbour is 1.5 (park) x 1.4 (distance) x 2.2 (zone) = 4.6.
+	MaxMultiplier = 5,
 }
 
 --=============================================================================

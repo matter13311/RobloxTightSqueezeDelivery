@@ -120,8 +120,22 @@ end
 -- anti-repeat work identically for every caller: Reconcile and Refresh both
 -- append to that list as they fill it, so each successive job is generated
 -- against the ones already placed.
+-- Destinations in zones this player's permits reach. Old Town (zone 1) is
+-- always open, so this is never empty on a built map.
+local function reachableNames(data)
+	local zone = ProgressionConfig.UnlockedZone(data.Permits)
+	local names = {}
+	for _, name in Destinations.Names() do
+		local destination = Destinations.Get(name)
+		if destination and destination.Zone <= zone then
+			table.insert(names, name)
+		end
+	end
+	return names
+end
+
 local function generate(data)
-	local names = Destinations.Names()
+	local names = reachableNames(data)
 	if #names == 0 then
 		return nil
 	end
@@ -144,7 +158,7 @@ end
 -- Reconciling a save
 --=============================================================================
 
-local function isUsableContract(contract)
+local function isUsableContract(contract, data)
 	return type(contract) == "table"
 		and type(contract.Id) == "number"
 		and type(contract.Stop) == "string"
@@ -155,6 +169,11 @@ local function isUsableContract(contract)
 		-- something that no longer exists. Dropping it here is what keeps that
 		-- from surfacing much later as a nil index at accept time.
 		and Destinations.Get(contract.Stop) ~= nil
+		-- Unlike a cargo type (see ProgressionConfig.CargoTypesFor), a job in
+		-- a zone the player cannot enter is not merely early - it cannot be
+		-- driven at all. The map rebuild moved several stops behind permits,
+		-- so boards saved before it would otherwise hold undeliverable jobs.
+		and Destinations.Get(contract.Stop).Zone <= ProgressionConfig.UnlockedZone(data and data.Permits)
 		and CargoTypes.Get(contract.TypeId) ~= nil
 end
 
@@ -177,7 +196,7 @@ function ContractPool.Reconcile(data, now)
 	local fresh = type(data.Contracts) ~= "table"
 	local kept = {}
 	for _, contract in (fresh and {} or data.Contracts) do
-		if isUsableContract(contract) then
+		if isUsableContract(contract, data) then
 			table.insert(kept, {
 				Id = contract.Id,
 				Stop = contract.Stop,
@@ -428,7 +447,8 @@ local function draw(contract, config, capacity)
 		Stops = { contract.Stop },
 		TypeId = contract.TypeId,
 		Units = units,
-		QuotedValue = math.floor(baseValue * (1 + destination.DistanceBonus)),
+		QuotedValue = math.floor(baseValue * (1 + destination.DistanceBonus) * destination.ZoneMultiplier),
+		Zone = destination.Zone,
 		Distance = destination.Distance,
 		-- How much this load adds to the truck, as a fraction of its empty
 		-- mass. Computed here rather than on the client because the client has

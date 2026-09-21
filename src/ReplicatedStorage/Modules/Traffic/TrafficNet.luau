@@ -20,6 +20,8 @@
 --                 capped at MaxRoom, which means "no limit"
 --   u8  speed    - studs/s, 1/4 stud
 --   u8  flags    - bit 0 braking
+--   i8  lateral  - sideways offset from the route line, 1/8 stud, + = the car's
+--                 left (a lane change; see TrafficSim's lane logic)
 
 local TrafficNet = {}
 
@@ -55,7 +57,7 @@ local function fixed16(value)
 	return math.clamp(math.floor(value * 16 + 0.5), 0, 65535)
 end
 
--- cars: array of { Id, RouteIndex, TemplateIndex, S, Room, Speed, Braking }
+-- cars: array of { Id, RouteIndex, TemplateIndex, S, Room, Speed, Braking, Lane }
 -- seq: a per-snapshot counter (wraps at 256) tying this snapshot's chunks
 -- together. Returns an array of buffers to send.
 function TrafficNet.Encode(serverTime, cars, seq)
@@ -82,7 +84,7 @@ function TrafficNet.Encode(serverTime, cars, seq)
 			buffer.writeu16(b, offset + 6, fixed16(math.min(car.Room, TrafficNet.MaxRoom)))
 			buffer.writeu8(b, offset + 8, math.clamp(math.floor(car.Speed * 4 + 0.5), 0, 255))
 			buffer.writeu8(b, offset + 9, if car.Braking then FLAG_BRAKING else 0)
-			-- offset + 10 reserved
+			buffer.writei8(b, offset + 10, math.clamp(math.floor((car.Lane or 0) * 8 + 0.5), -127, 127))
 			offset += CAR_BYTES
 		end
 		chunks[chunk] = b
@@ -92,7 +94,7 @@ end
 
 -- Returns serverTime, entries, seq, chunkIndex, chunkCount - or nil for a
 -- malformed buffer. Entries are { Id, RouteIndex, TemplateIndex, S, Room,
--- Speed, Braking }.
+-- Speed, Braking, Lateral }.
 function TrafficNet.Decode(b)
 	if typeof(b) ~= "buffer" or buffer.len(b) < HEADER_BYTES then
 		return nil
@@ -116,6 +118,7 @@ function TrafficNet.Decode(b)
 			Room = buffer.readu16(b, offset + 6) / 16,
 			Speed = buffer.readu8(b, offset + 8) / 4,
 			Braking = bit32.band(buffer.readu8(b, offset + 9), FLAG_BRAKING) ~= 0,
+			Lateral = buffer.readi8(b, offset + 10) / 8,
 		}
 		offset += CAR_BYTES
 	end

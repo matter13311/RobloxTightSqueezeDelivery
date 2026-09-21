@@ -41,6 +41,8 @@ local bumpRemote = ReplicatedStorage:WaitForChild(TrafficNet.BumpRemote)
 local cameraRemote = ReplicatedStorage:WaitForChild(TrafficNet.CameraRemote)
 
 local AHEAD_SAMPLE = 4 -- studs ahead of the centre a car points at, smooths corners
+-- studs/s a car's drawn position may slide sideways toward its lane offset
+local LATERAL_RATE = 9
 local SNAP_DISTANCE = 25 -- further than this from the server and the car just jumps
 local CORRECTION_GAIN = 2 -- extra studs/s per stud behind the server
 -- Ceiling on that correction. Catching up a big gap at full gain looks like a
@@ -218,6 +220,7 @@ snapshotRemote.OnClientEvent:Connect(function(payload)
 				then nil
 				else entry.S + (if path.Closed then entry.Room else math.min(path.Length - entry.S, entry.Room)),
 			Speed = entry.Speed,
+			Lateral = entry.Lateral or 0,
 		}
 		setBrakeLights(visual, entry.Braking)
 	end
@@ -432,8 +435,15 @@ RunService.Heartbeat:Connect(function(dt)
 		look = flat(look).Unit
 		visual.Forward = look
 
+		-- Sideways offset for a lane change: eased toward the server's value so a
+		-- change reads as a smooth drift across, not a hop per snapshot.
+		local lateral = visual.Lateral or snap.Lateral
+		lateral += math.clamp(snap.Lateral - lateral, -LATERAL_RATE * dt, LATERAL_RATE * dt)
+		visual.Lateral = lateral
+		local right = Vector3.new(-look.Z, 0, look.X)
+
 		local record = visual.Record
-		local centre = position + Vector3.new(0, TrafficConfig.RoadY + record.Height, 0)
+		local centre = position - right * lateral + Vector3.new(0, TrafficConfig.RoadY + record.Height, 0)
 		local cf = CFrame.lookAt(centre, centre + look)
 		if visual.Bump then
 			local offset, yaw = bumpOffset(visual, now)

@@ -22,7 +22,7 @@ local Destinations = {}
 
 local world = DeliveryConfig.World
 
--- [name] = { Name, Model, Spaces, Distance, DistanceBonus }
+-- [name] = { Name, Model, Spaces, Distance, DistanceBonus, Zone, ZoneMultiplier }
 Destinations.ByName = {}
 -- Sorted names. Sorted rather than left in GetChildren order because contract
 -- generation indexes into it, and Lua does not promise a stable table order -
@@ -112,7 +112,17 @@ function Destinations.Build()
 		-- drove - see DeliveryManager's header for why the route is
 		-- deliberately never measured.
 		local distance = (spaces[1].Position - depotPosition).Magnitude
+		-- Which zone of the city it is in (set by the map generator). A model
+		-- with no attribute counts as Old Town, so a hand-placed test
+		-- destination is always offered.
+		local zone = model:GetAttribute("Zone")
+		if type(zone) ~= "number" or zone < 1 then
+			zone = 1
+		end
+		zone = math.floor(zone)
 		Destinations.ByName[model.Name] = {
+			Zone = zone,
+			ZoneMultiplier = DeliveryConfig.Payout.ZoneMultipliers[zone] or 1,
 			Name = model.Name,
 			Model = model,
 			Spaces = spaces,

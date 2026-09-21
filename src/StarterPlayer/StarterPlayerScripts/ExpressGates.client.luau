@@ -87,18 +87,24 @@ end
 
 -- [descriptionPart] = { Box, Wall, Outward, Solid }
 local gates = {}
-local payZone = nil
-local boom = nil
+-- Every TollPayZone (the terminal entrance and one beside each street
+-- opening) and every boom, each with its own BoomLength attribute.
+local payZones = {}
+local booms = {}
 
 local function trackGate(part)
 	if gates[part] or not part:IsA("BasePart") then
 		return
 	end
 	if part.Name == ExpressAccess.PAY_ZONE_NAME then
-		payZone = part
+		table.insert(payZones, part)
+		gates[part] = false
 		return
 	end
 	if part.Name == "TollBoomPivot" then
+		gates[part] = false
+		local length = part:GetAttribute("BoomLength")
+		length = if type(length) == "number" and length > 0 then length else 15
 		local arm = Instance.new("Part")
 		arm.Name = "TollBoomArm"
 		arm.Anchored = true
@@ -108,14 +114,14 @@ local function trackGate(part)
 		arm.CastShadow = false
 		arm.Material = Enum.Material.SmoothPlastic
 		arm.Color = Color3.fromRGB(220, 40, 35)
-		arm.Size = Vector3.new(15, 0.5, 0.5)
+		arm.Size = Vector3.new(length, 0.5, 0.5)
 		arm.Parent = wallFolder
 		local stripe = arm:Clone()
 		stripe.Name = "TollBoomStripe"
 		stripe.Color = Color3.fromRGB(245, 245, 245)
 		stripe.Size = Vector3.new(4, 0.52, 0.52)
 		stripe.Parent = wallFolder
-		boom = { Pivot = part, Arm = arm, Stripe = stripe, Angle = 0 }
+		table.insert(booms, { Pivot = part, Arm = arm, Stripe = stripe, Angle = 0, Length = length })
 		return
 	end
 	local outward = part:GetAttribute("Outward")
@@ -167,14 +173,13 @@ local function updateGate(entry, hasAccess, models, point)
 end
 
 local function updateBoom(hasAccess, deltaTime)
-	if not boom then
-		return
-	end
 	local target = hasAccess and BOOM_UP or 0
-	boom.Angle += math.clamp(target - boom.Angle, -2.5 * deltaTime, 2.5 * deltaTime)
-	local hinge = boom.Pivot.CFrame * CFrame.Angles(0, 0, boom.Angle)
-	boom.Arm.CFrame = hinge * CFrame.new(7.5, 0, 0)
-	boom.Stripe.CFrame = hinge * CFrame.new(7.5, 0, 0)
+	for _, boom in booms do
+		boom.Angle += math.clamp(target - boom.Angle, -2.5 * deltaTime, 2.5 * deltaTime)
+		local hinge = boom.Pivot.CFrame * CFrame.Angles(0, 0, boom.Angle)
+		boom.Arm.CFrame = hinge * CFrame.new(boom.Length / 2, 0, 0)
+		boom.Stripe.CFrame = hinge * CFrame.new(boom.Length / 2, 0, 0)
+	end
 end
 
 --=============================================================================
@@ -280,7 +285,7 @@ if not ticketMode and not passMode then
 	body.Text = "The express road isn't open yet. Take the streets - or find a shortcut through the alleys."
 else
 	body.Text = string.format(
-		"Skip the traffic. The express road flies over Market Ave with exits at Canal St, Foundry St and Northside. A ticket lasts %d minutes.",
+		"Skip the traffic. The express deck flies over Market Ave through every zone - take the ramp in the middle of the road. Zone permits still apply. A ticket lasts %d minutes.",
 		minutes
 	)
 end
@@ -347,12 +352,17 @@ local function setMouseFree(free)
 end
 
 local function inPayZone(point)
-	if not payZone or not point then
+	if not point then
 		return false
 	end
-	local localPoint = payZone.CFrame:PointToObjectSpace(point)
-	local half = payZone.Size / 2 + Vector3.new(3, 6, 3)
-	return math.abs(localPoint.X) <= half.X and math.abs(localPoint.Y) <= half.Y and math.abs(localPoint.Z) <= half.Z
+	for _, payZone in payZones do
+		local localPoint = payZone.CFrame:PointToObjectSpace(point)
+		local half = payZone.Size / 2 + Vector3.new(3, 6, 3)
+		if math.abs(localPoint.X) <= half.X and math.abs(localPoint.Y) <= half.Y and math.abs(localPoint.Z) <= half.Z then
+			return true
+		end
+	end
+	return false
 end
 
 --=============================================================================
@@ -364,7 +374,9 @@ RunService.Heartbeat:Connect(function(deltaTime)
 	local models, point = localBodies()
 
 	for _, entry in gates do
-		updateGate(entry, hasAccess, models, point)
+		if entry then
+			updateGate(entry, hasAccess, models, point)
+		end
 	end
 	updateBoom(hasAccess, deltaTime)
 

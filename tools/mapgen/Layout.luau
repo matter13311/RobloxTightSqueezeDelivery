@@ -1,0 +1,333 @@
+-- The city, as data. Everything the builders place comes from here, so the
+-- layout can be tuned (and the city regenerated) without touching geometry
+-- code. Ground top at Y = 0.
+--
+-- THE SHAPE (v4). Three zones strung together like a snake, each one narrow
+-- and long, joined by curving "connectors" (see the user's sketch):
+--
+--     Harbour  <-  (hairpin + rail tunnels)  <-  Mill District
+--                                                     ^
+--                                   (bridges, then turn left)
+--                                                     |
+--                                                 Old Town
+--                                                     |
+--                                                 Terminal
+--
+-- Every zone is built in its own LOCAL frame, identical in shape: local
+-- north = -Z, Market Ave down the middle (x = 0), West St at x = -290, East St
+-- at x = +290, alley blocks between, the zone entered at local z = 0 and
+-- exited at its far end. The zone's Frame then rotates/moves the whole thing
+-- into the world. Old Town's frame is the identity, so its local coordinates
+-- ARE world coordinates (and the Terminal is south of it, at +Z).
+--
+-- The world outside the zones and connectors is sea, so nothing can drive
+-- around a permit crossing: the only ways between zones are the connector
+-- roads, and each crosses one gated bridge or tunnel.
+--
+-- WIDTHS (measured vehicles: starter 8.2, pickup 10.3, box 11.3, straight
+-- 11.6, hitch truck ~12 x 34, +trailer ~75 long):
+--   Market Ave 76 = 4 x 12 lanes + a 28-wide centre strip that carries the
+--   elevated express deck (and its ramps, which split the road). Streets 34.
+--   Alleys: 11.5 tight (starter/pickup), 14 snug (box/straight squeeze),
+--   20-24 standard and 26-32 wide (with clutter/parked-car bands that keep a
+--   13-16 stud channel). No alley is designed for the rig.
+
+local L = {}
+
+L.Version = 4
+
+L.HalfWidth = 380 -- zone land, local x -380..380
+L.SidewalkWidth = 6
+L.WestSt = { x = -290, x1 = -307, x2 = -273, w = 34 }
+L.Market = { x = 0, x1 = -38, x2 = 38, w = 76 }
+L.EastSt = { x = 290, x1 = 273, x2 = 307, w = 34 }
+L.Strip = 14 -- Market centre strip half-width (x -14..14)
+
+-- Market lanes (local x): southbound on the west half, northbound on the east.
+L.MarketLanes = { SBOuter = -32, SBInner = -20, NBInner = 20, NBOuter = 32 }
+L.StreetLanes = { WestSB = -294, WestNB = -284, EastSB = 284, EastNB = 294, WestPark = -303, EastPark = 303 }
+
+-- Elevated express: a 2-lane deck over Market's centre strip in every zone,
+-- with a two-way ramp at each end of the zone that drops into the strip.
+L.Express = { deckTop = 24, deckThick = 2, width = 28, rampLength = 200, pillarEvery = 44 }
+-- The express LINK between zones: branches off the deck at a zone's connector
+-- end, runs over Market's west (local -x) lanes to the zone edge, then over
+-- the connector's Market road to the next zone. Centre line at local x
+-- LinkX inside a zone; high walls all the way; it climbs to LinkFlyoverTop to
+-- clear the railway. LinkMerge = how long the deck and link run side by side.
+L.LinkX = -28.5
+L.LinkWallHeight = 12
+L.LinkFlyoverTop = 34
+L.LinkMerge = 80
+-- Connector roads narrow to tight local streets once they leave a zone.
+L.ConnectorWidths = { Market = 36, Street = 26 }
+
+L.SpaceSize = Vector2.new(16, 42)
+L.RigSpaceSize = Vector2.new(18, 82)
+L.WarehouseDepth = 30
+
+L.SeaY = -6 -- water surface
+L.LandBottom = -9 -- land slabs reach down past the water, so their sides read as quay walls
+L.World = { x1 = -2400, z1 = -3900, x2 = 900, z2 = 800 } -- the sea
+
+--=============================================================================
+-- Zones
+--=============================================================================
+
+-- Alley spec: { Name, Theme, w, Path = { {x=, z=?}, ... } from the south end
+-- of the segment to the north end (first/last z default to the segment ends),
+-- Branches = { { z, w, to = "market"|"street", Name, Theme } } }.
+-- Path legs: same x = straight north-south; same z = a sharp dog-leg; both
+-- differ = an angled "curve".
+
+L.Zones = {
+	{
+		Id = 1,
+		Key = "OldTown",
+		Name = "Old Town",
+		Style = "OldTown",
+		Permit = nil,
+		Frame = CFrame.new(),
+		Entry = 20, -- local z of the south edge (Terminal Rd's south edge)
+		Exit = -990, -- local z of the north edge (Canal Walk's north edge)
+		CrossRoads = {
+			{ Name = "Terminal Rd", zc = 0, w = 40 },
+			{ Name = "Brick St", zc = -313, w = 34 },
+			{ Name = "Ropewalk", zc = -633, w = 34 },
+			{ Name = "Canal Walk", zc = -973, w = 34 },
+		},
+		Segments = {
+			{
+				z1 = -296, z2 = -20,
+				West = { Name = "Pigeon Pass", Theme = "pigeon", w = 11.5,
+					Path = { { x = -160 }, { x = -160, z = -150 }, { x = -140, z = -178 }, { x = -140 } },
+					Branches = { { z = -90, w = 11.5, to = "street", Name = "Whisker Way", Theme = "tight" },
+						{ z = -250, w = 18, to = "market", Name = "Soup Spoon Slip", Theme = "market" } } },
+				East = { Name = "Bin Juice Row", Theme = "garbage", w = 24,
+					Path = { { x = 150 }, { x = 150, z = -120 }, { x = 176, z = -120 }, { x = 176 } },
+					Branches = { { z = -70, w = 18, to = "market", Name = "Gutter Run", Theme = "garbage" },
+						{ z = -230, w = 14, to = "street", Name = "Elbow Room", Theme = "junk" } } },
+			},
+			{
+				z1 = -616, z2 = -330,
+				West = { Name = "Laundry Row", Theme = "laundry", w = 22,
+					Path = { { x = -130 }, { x = -130, z = -440 }, { x = -170, z = -440 }, { x = -170 } },
+					Branches = { { z = -500, w = 16, to = "market", Name = "Tangle Alley", Theme = "laundry" },
+						{ z = -600, w = 11.5, to = "street", Name = "Bottleneck", Theme = "tight" } } },
+				East = { Name = "Mirror Snapper", Theme = "tight", w = 11.5,
+					Path = { { x = 132 }, { x = 132, z = -470 }, { x = 158, z = -500 }, { x = 158 } },
+					Branches = { { z = -380, w = 11.5, to = "market", Name = "Paper Doll Pass", Theme = "tight" },
+						{ z = -575, w = 20, to = "street", Name = "Grease Trap", Theme = "garbage" } } },
+			},
+			{
+				z1 = -956, z2 = -650,
+				West = { Name = "Rat Run", Theme = "rats", w = 20,
+					Path = { { x = -150 }, { x = -150, z = -760 }, { x = -122, z = -790 }, { x = -122 } },
+					Branches = { { z = -700, w = 16, to = "market", Name = "Crooked Mile", Theme = "junk" },
+						{ z = -830, w = 14, to = "street", Name = "Puddle Jump", Theme = "cardboard" },
+						{ z = -940, w = 11.5, to = "street", Name = "Hairpin Hollow", Theme = "tight" } } },
+				East = { Name = "Noodle Row", Theme = "noodle", w = 30,
+					Path = { { x = 150 }, { x = 150 } },
+					Branches = { { z = -680, w = 18, to = "market", Name = "Lantern Lane", Theme = "noodle" },
+						{ z = -900, w = 14, to = "street", Name = "Chopstick Cut", Theme = "noodle" } } },
+			},
+		},
+		Destinations = {
+			{ Name = "Textile Works", rect = { 175, -500, 267, -420 }, access = "E", spaces = 2 },
+			{ Name = "Lumber Yard", rect = { -267, -560, -184, -380 }, access = "W", spaces = 2, rig = true },
+			{ Name = "Night Market", rect = { 58, -820, 135, -740 }, access = "E", spaces = 2 },
+			{ Name = "Brick Lane Supply", rect = { -110, -930, -44, -850 }, access = "W", spaces = 2, depth = 20 },
+			{ Name = "Cold Storage", rect = { -267, -770, -185, -690 }, access = "W", spaces = 2 },
+		},
+		Landmarks = {
+			{ Kind = "ClockTower", x = 75, z = -262, Label = "Clock Tower" },
+			{ Kind = "Theatre", x = -80, z = -560, Label = "Grand Theatre" },
+			{ Kind = "Paifang", x = 150, z = -656, Label = "Noodle Row Gate" },
+			{ Kind = "Church", x = 215, z = -780, Label = "Canal Church" },
+		},
+		Roadworks = { { lane = "NBInner", z1 = -480, z2 = -440 } },
+		Ramps = { South = -40, North = -950 },
+	},
+	{
+		Id = 2,
+		Key = "Mill",
+		Name = "Mill District",
+		Style = "Mill",
+		Permit = "CanalBridge",
+		-- local north -> world west
+		Frame = CFrame.new(-420, 0, -1840) * CFrame.Angles(0, math.rad(90), 0),
+		Entry = 0,
+		Exit = -1000,
+		CrossRoads = {
+			{ Name = "Mill Rd", zc = -17, w = 34 },
+			{ Name = "Foundry St", zc = -337, w = 34 },
+			{ Name = "Tannery Rd", zc = -667, w = 34 },
+			{ Name = "Sidings Rd", zc = -983, w = 34 },
+		},
+		Segments = {
+			{
+				z1 = -320, z2 = -34,
+				West = { Name = "Close Shave", Theme = "tight", w = 11.5,
+					Path = { { x = -150 }, { x = -150, z = -200 }, { x = -176, z = -228 }, { x = -176 } },
+					Branches = { { z = -90, w = 11.5, to = "market", Name = "Sparky's Squeeze", Theme = "tight" },
+						{ z = -290, w = 11.5, to = "street", Name = "Paper Cut", Theme = "tight" } } },
+				East = { Name = "Tin Can Alley", Theme = "recycling", w = 24,
+					Path = { { x = 160 }, { x = 160, z = -150 }, { x = 130, z = -150 }, { x = 130 } },
+					Branches = { { z = -80, w = 16, to = "market", Name = "Cog Lane", Theme = "scrap" },
+						{ z = -290, w = 14, to = "street", Name = "Bucket Row", Theme = "recycling" } } },
+			},
+			{
+				z1 = -650, z2 = -354,
+				West = { Name = "Fishbone Cut", Theme = "scrap", w = 22,
+					Path = { { x = -126 }, { x = -126, z = -500 }, { x = -150, z = -530 }, { x = -150 } },
+					Branches = { { z = -400, w = 16, to = "market", Name = "Smokestack Slip", Theme = "scrap" },
+						{ z = -620, w = 18, to = "market", Name = "Rust Bucket Row", Theme = "junk" },
+						{ z = -470, w = 14, to = "street", Name = "Wonky Way", Theme = "cardboard" } } },
+				East = { Name = "Scrape Street", Theme = "scrap", w = 14,
+					Path = { { x = 150 }, { x = 150, z = -560 }, { x = 176, z = -560 }, { x = 176 } },
+					Branches = { { z = -420, w = 14, to = "street", Name = "Knuckle Lane", Theme = "junk" },
+						{ z = -600, w = 20, to = "market", Name = "Soot Row", Theme = "garbage" } } },
+			},
+			{
+				z1 = -966, z2 = -684,
+				West = { Name = "Muddy Boots", Theme = "cardboard", w = 26,
+					Path = { { x = -160 }, { x = -160 } },
+					Branches = { { z = -740, w = 11.5, to = "street", Name = "Tight Spot", Theme = "tight" },
+						{ z = -900, w = 11.5, to = "market", Name = "Squeaky Gap", Theme = "tight" } } },
+				East = { Name = "Rattle Row", Theme = "scrap", w = 20,
+					Path = { { x = 140 }, { x = 140, z = -820 }, { x = 166, z = -850 }, { x = 166 } },
+					Branches = { { z = -720, w = 18, to = "market", Name = "Anvil Alley", Theme = "junk" },
+						{ z = -930, w = 16, to = "street", Name = "Clatter Cut", Theme = "recycling" } } },
+			},
+		},
+		Destinations = {
+			{ Name = "Paper Mill", rect = { 185, -260, 267, -60 }, access = "E", spaces = 2, rig = true },
+			{ Name = "Foundry Supply", rect = { -112, -560, -44, -470 }, access = "W", spaces = 2, depth = 20 },
+			{ Name = "Tire Depot", rect = { 44, -900, 125, -820 }, access = "W", spaces = 2 },
+			{ Name = "Scrap Yard", rect = { -267, -960, -185, -860 }, access = "W", spaces = 2 },
+		},
+		Landmarks = {
+			{ Kind = "WaterTower", x = -80, z = -200, Label = "Water Tower" },
+			{ Kind = "Chimneys", x = 200, z = -170, Label = "Twin Chimneys", OnRoof = true },
+			{ Kind = "GasHolder", x = 90, z = -760, Label = "Gas Holder" },
+		},
+		Roadworks = { { lane = "NBInner", z1 = -520, z2 = -480 } },
+		Ramps = { South = -54, North = -946 },
+	},
+	{
+		Id = 3,
+		Key = "Harbour",
+		Name = "Harbour",
+		Style = "Harbour",
+		Permit = "HarbourTunnel",
+		-- local north -> world east
+		Frame = CFrame.new(-1440, 0, -3110) * CFrame.Angles(0, math.rad(-90), 0),
+		Entry = 0,
+		Exit = -760, -- quay edge
+		QuayFrom = -674, -- apron starts north of Quay Rd
+		CrossRoads = {
+			{ Name = "Harbour Rd", zc = -17, w = 34 },
+			{ Name = "Chandler St", zc = -337, w = 34, Dirt = true },
+			{ Name = "Quay Rd", zc = -657, w = 34 },
+		},
+		DirtStreets = { West = true }, -- West St is a gravel road in the Harbour
+		Segments = {
+			{
+				z1 = -320, z2 = -34,
+				West = { Name = "Soggy Box Lane", Theme = "cardboard", w = 24,
+					Path = { { x = -150 }, { x = -150, z = -170 }, { x = -124, z = -200 }, { x = -124 } },
+					Branches = { { z = -260, w = 16, to = "street", Name = "Barnacle Bend", Theme = "docks" },
+						{ z = -110, w = 18, to = "market", Name = "Net Mender's Walk", Theme = "fish" } } },
+				East = { Name = "Dock Hop", Theme = "docks", w = 28,
+					Path = { { x = 155 }, { x = 155 } },
+					Branches = { { z = -140, w = 18, to = "market", Name = "Chowder Chute", Theme = "fish" },
+						{ z = -250, w = 18, to = "street", Name = "Rope Walk", Theme = "docks" } } },
+			},
+			{
+				z1 = -640, z2 = -354,
+				West = { Name = "Stinky Pete's", Theme = "fish", w = 26,
+					Path = { { x = -170 }, { x = -170, z = -470 }, { x = -140, z = -470 }, { x = -140 } },
+					Branches = { { z = -420, w = 20, to = "market", Name = "Gull Alley", Theme = "fish" },
+						{ z = -600, w = 11.5, to = "street", Name = "Eel Squeeze", Theme = "tight" } } },
+				East = { Name = "Salt Lane", Theme = "docks", w = 22,
+					Path = { { x = 140 }, { x = 140, z = -500 }, { x = 166, z = -530 }, { x = 166 } },
+					Branches = { { z = -400, w = 18, to = "market", Name = "Tide Cut", Theme = "docks" },
+						{ z = -600, w = 18, to = "street", Name = "Anchor Row", Theme = "junk" } } },
+			},
+		},
+		Destinations = {
+			{ Name = "Rail Depot", rect = { -267, -140, -185, -40 }, access = "W", spaces = 2 },
+			{ Name = "Fish Market", rect = { 44, -560, 123, -470 }, access = "W", spaces = 2 },
+			{ Name = "North Docks", rect = { 150, -760, 300, -674 }, access = "S", spaces = 3 },
+			{ Name = "Container Terminal", rect = { -140, -760, 130, -674 }, access = "S", spaces = 3, rig = true },
+		},
+		Landmarks = {
+			{ Kind = "BigFish", x = -90, z = -230, Label = "Big Fish" },
+			{ Kind = "Lighthouse", x = 340, z = -735, Label = "Lighthouse" },
+			{ Kind = "Cranes", x = -250, z = -720, Label = "Quay Cranes" },
+		},
+		Roadworks = { { lane = "NBInner", z1 = -470, z2 = -430 } },
+		Ramps = { South = -54, North = -620 },
+	},
+}
+
+--=============================================================================
+-- Connectors
+--=============================================================================
+
+-- Each connector carries the three roads (plus one tight lane) from the end of
+-- one zone to the start of the next. Roads are built along smooth curves from
+-- a list of "stations": world position + heading for each road. Between the
+-- zones the roads pinch into a bundle 100 apart, cross a gated bridge or
+-- tunnel together, then fan back out.
+--
+-- `Lane` is the tight lane's lateral position in the bundle (the alley spine
+-- line it continues): the canal footbridge in C1, the low rail tunnel in C2.
+L.Bundle = { West = -100, Market = 0, East = 100 }
+
+L.Connectors = {
+	{
+		Key = "Canal",
+		From = 1,
+		To = 2,
+		Permit = "CanalBridge",
+		Crossing = "Bridge",
+		TightLane = { from = "West", bundle = -60, w = 11.5 },
+		-- bundle centre line: heading north along x = 0
+		Bundle = { origin = Vector3.new(0, 0, -1240), dir = Vector3.new(0, 0, -1), length = 80 },
+		ConvergeLength = 250, -- zone exit -> bundle start
+		Gap = { from = 0, to = 80 }, -- the water gap, along the bundle
+	},
+	{
+		Key = "Rail",
+		From = 2,
+		To = 3,
+		Permit = "HarbourTunnel",
+		Crossing = "Tunnel",
+		TightLane = { from = "East", bundle = 60, w = 11.5, clear = 9 },
+		-- bundle heading north along x = -1760
+		Bundle = { origin = Vector3.new(-1760, 0, -2360), dir = Vector3.new(0, 0, -1), length = 240 },
+		Gap = { from = 80, to = 160 }, -- the embankment, along the bundle
+	},
+}
+
+L.Permits = {
+	CanalBridge = { DisplayName = "Canal Bridge Permit", ZoneName = "Mill District" },
+	HarbourTunnel = { DisplayName = "Harbour Tunnel Permit", ZoneName = "Harbour" },
+}
+
+--=============================================================================
+-- Terminal (Old Town frame = world)
+--=============================================================================
+
+L.Terminal = {
+	Yard = { x1 = -300, z1 = 20, x2 = 300, z2 = 400 },
+	-- 16 workshops in one row, all facing north onto the yard
+	Garage = { bays = 16, pitch = 26, doorZ = 318, backZ = 382, height = 26 },
+	Dock = { x1 = -300, x2 = -262, z1 = 60, z2 = 270, spaces = 8 },
+	Freight = { x1 = 262, x2 = 300, z1 = 120, z2 = 270, bays = 3 },
+	TrailerStalls = { x1 = 190, x2 = 252, firstZ = 50, pitch = 22, count = 3 },
+	Gate = { x1 = -70, x2 = 70 }, -- the main exit onto Terminal Rd
+}
+
+return L

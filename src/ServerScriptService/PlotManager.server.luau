@@ -32,6 +32,7 @@ local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.Progression
 local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
 local ContractPool = require(script.Parent.Modules.ContractPool)
 local PassOwnership = require(script.Parent.Modules.PassOwnership)
+local PermitAccess = require(ReplicatedStorage.Modules.Permits.PermitAccess)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -140,6 +141,13 @@ tutorialFinishedEvent.Parent = ReplicatedStorage
 local saveSettingsEvent = Instance.new("RemoteEvent")
 saveSettingsEvent.Name = "SaveSettings"
 saveSettingsEvent.Parent = ReplicatedStorage
+
+-- Client -> server: buy a zone permit (see ProgressionConfig.Permits). A
+-- RemoteFunction so the permit panel can show the result without guessing -
+-- it returns (true) or (false, reason).
+local buyPermitFunction = Instance.new("RemoteFunction")
+buyPermitFunction.Name = "BuyPermit"
+buyPermitFunction.Parent = ReplicatedStorage
 
 --============================================================================
 -- Plot discovery + the "who owns this" nameplate
@@ -583,6 +591,12 @@ local function initPlayerData(player)
 	deliveries.Parent = leaderstats
 
 	syncLeaderstatProgress(player, saved)
+
+	-- Mirrored onto the Player so the crossing barriers (PermitGates.client)
+	-- can answer on the client. The save stays the source of truth.
+	for permitId in saved.Permits or {} do
+		player:SetAttribute(PermitAccess.AttributeName(permitId), true)
+	end
 end
 
 -- Tears a player's session down and writes their save, and is the ONLY place
@@ -785,6 +799,23 @@ buyVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
 	-- so leaving it empty here is safe; SetCarConfigValue below also treats a
 	-- missing entry as "at the default" for exactly this reason.
 end)
+
+buyPermitFunction.OnServerInvoke = function(player, permitId)
+	local data = playerData[player.UserId]
+	if not data or typeof(permitId) ~= "string" then
+		return false, "Not ready"
+	end
+	data.Permits = data.Permits or {}
+	local reason = PermitAccess.BlockReason(permitId, data.Permits, data.Money, data.Deliveries or 0)
+	if reason then
+		return false, reason
+	end
+	local def = ProgressionConfig.Permits[permitId]
+	setMoney(player, data, data.Money - def.Price)
+	data.Permits[permitId] = true
+	player:SetAttribute(PermitAccess.AttributeName(permitId), true)
+	return true
+end
 
 buyUpgradeEvent.OnServerInvoke = function(player, vehicleId, statName)
 	local data = playerData[player.UserId]
