@@ -91,12 +91,26 @@ VehicleCatalog.Vehicles = {
 		RequiredDeliveries = 20, --default 200
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
+	AmericanHitchTruck = {
+		Id = "AmericanHitchTruck",
+		DisplayName = "American Hitch Truck",
+		TemplateName = "AmericanHitchTruck", -- must exist under ServerStorage.VehicleTemplates
+		-- No thumbnail rendered yet - PlotTerminal.client.luau shows its
+		-- "Image Coming Soon" placeholder until an ImageId is set here.
+		-- Placeholder - adjust to taste. The top of the ladder, above StraightTruck.
+		Price = 1000, --default 100,000
+		-- 450 is the next CapMilestones step up from StraightTruck's 200 (see
+		-- ProgressionConfig.Contracts.CapMilestones), same pairing as the
+		-- vehicles before it.
+		RequiredDeliveries = 4, --default 450
+		DefaultOwned = false, -- purchasable from the shop tab instead
+	},
 }
 
 -- Stable display order (table iteration order is unspecified in Lua).
 -- StarterVehicle first: VehicleCatalog.Order[1] is what PlayerDataStore
 -- assigns as a fresh player's SelectedVehicleId.
-VehicleCatalog.Order = { "StarterVehicle", "PickupTruck", "BoxTruck", "StraightTruck" }
+VehicleCatalog.Order = { "StarterVehicle", "PickupTruck", "BoxTruck", "StraightTruck", "AmericanHitchTruck" }
 
 function VehicleCatalog.Get(vehicleId)
 	return VehicleCatalog.Vehicles[vehicleId]
