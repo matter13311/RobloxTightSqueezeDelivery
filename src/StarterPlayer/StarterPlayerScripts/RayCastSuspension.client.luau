@@ -796,7 +796,7 @@ local function beginDrive(humanoid, seatPart)
 		-- trailer stepped on a different event or with a different delta is
 		-- two bodies integrating out of step with each other across a stiff
 		-- constraint, which is the classic way a coupled rig detonates.
-		mySession.TrailerDrive:Step(delta)
+		mySession.TrailerDrive:Step(delta, drive.Throttle)
 
 		-- Re-checked every frame rather than once on entry: a third-person
 		-- perk can expire mid-drive and a player who has one can freely

@@ -125,14 +125,22 @@ local function setUpTrailerCollision(trailerModel)
 	end
 end
 
+-- Wheels are drawn for every entry in attachments.VisualWheels: the four real
+-- ray points, then any CosmeticWheel* attachments (a tandem/tri-axle group's
+-- extra axles - see VehiclePhysics.GetWheelAttachments). The cosmetic ones are
+-- Massless for the same reason Raycast.server.luau makes them so: the mass
+-- tuneSuspension measures, and the centre of mass it derives the bogie's share
+-- from, must stay that of the four wheels that actually carry load. The client
+-- poses all of them (TrailerWheels.client.luau -> UpdateWheelVisuals walks the
+-- same list), keyed by the instance name used here.
 local function attachWheels(trailerModel, chassis, attachments, config)
 	local wheelFolder = Instance.new("Folder")
 	wheelFolder.Name = "Wheels"
 	wheelFolder.Parent = trailerModel
 
-	for _, wheelName in VehiclePhysics.WheelNames do
-		local attachment = attachments[wheelName]
-		local wheelModelName = VehiclePhysics.GetWheelModelName(config, wheelName)
+	for _, wheel in attachments.VisualWheels do
+		local attachment = wheel.Attachment
+		local wheelModelName = VehiclePhysics.GetVisualWheelModelName(config, wheel)
 		local wheelModel = wheelModelName and wheelsFolder:FindFirstChild(wheelModelName)
 		if not wheelModel then
 			warn("TrailerHitch: no wheel model '" .. tostring(wheelModelName) .. "' for " .. trailerModel:GetFullName())
@@ -140,7 +148,7 @@ local function attachWheels(trailerModel, chassis, attachments, config)
 		end
 
 		local cloned = wheelModel:Clone()
-		cloned.Name = wheelName
+		cloned.Name = wheel.Name
 		cloned.Parent = wheelFolder
 
 		local parts = cloned:IsA("Model") and cloned:GetDescendants() or { cloned }
@@ -149,6 +157,9 @@ local function attachWheels(trailerModel, chassis, attachments, config)
 				part.CanCollide = false
 				part.Anchored = false
 				part.CollisionGroup = VehicleCollision.Groups.Attached
+				if wheel.IsCosmetic then
+					part.Massless = true
+				end
 			end
 		end
 

@@ -83,7 +83,7 @@ end
 -- after both regardless. What DOES matter is that they happen in the same
 -- frame with the same delta, which is the whole reason this is here rather
 -- than on its own RunService connection.
-function TrailerDrive:Step(delta)
+function TrailerDrive:Step(delta, tractorThrottle)
 	local linked = TrailerHitch.GetHitchedTrailer(self.CarModel)
 
 	-- Coupled or uncoupled mid-drive. Re-read every frame rather than cached
@@ -108,12 +108,28 @@ function TrailerDrive:Step(delta)
 		return
 	end
 
-	-- No throttle, no steering, no brake pedal: everything that makes this a
-	-- trailer rather than a second car is the absence of driver input, plus
-	-- Torque = 0 in its config. What it DOES get is suspension, lateral grip
-	-- and the low-speed stabiliser, which is the whole of trailer physics.
+	-- No steering and no brake pedal: everything that makes this a trailer
+	-- rather than a second car is the absence of driver input, plus Torque = 0
+	-- in its config. What it DOES get is suspension, lateral grip and the
+	-- low-speed stabiliser.
+	--
+	-- THROTTLE is the one input it borrows, and only as "somebody is on the
+	-- gas". With Throttle 0 a wheel falls through to the coast/stabiliser
+	-- branches in Step, and under CoastSpeedThreshold (3 studs/s - which is
+	-- every launch) that branch is a velocity-cancelling brake. Measured on
+	-- AmericanHitchTruck: 50 studs in 3 s from rest alone, 6.4 with the
+	-- trailer behind it, against ~25 for a plain doubling of the mass. Any
+	-- non-zero Throttle sends the trailer's wheels down the "undriven wheel
+	-- while the player is on the gas" path instead: no drive force (Torque is
+	-- 0) and, crucially, no drag. It is only the sign-less fact that matters,
+	-- so the value is passed straight through rather than mapped.
+	--
+	-- The trailer's own Torque is 0, so the drive branch adds nothing - but
+	-- HillAssist would, since it is driven off Throttle and the pitch alone. A
+	-- trailer must not push itself up a hill, hence the override below.
+	self.Config.HillAssist = 0
 	VehiclePhysics.Step(self.Trailer, self.Attachments, self.Config, self.State, delta, {
-		Throttle = 0,
+		Throttle = tractorThrottle or 0,
 		Steer = 0,
 		Brake = 0,
 		Handbrake = false,
