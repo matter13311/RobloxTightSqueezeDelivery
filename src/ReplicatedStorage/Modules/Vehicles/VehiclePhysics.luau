@@ -211,6 +211,35 @@ function VehiclePhysics.ConsumeSuspensionDeltaV(carModel)
 	return pending
 end
 
+-- Extra instances a car's suspension rays must ignore, on top of the car
+-- itself. Exactly one caller today: a hitched trailer, whose body sits right
+-- where the tractor's rear rays are cast (and vice versa). Without this the
+-- tractor's rear struts read the trailer's nose as ROAD and hold the truck up
+-- on it - the whole rig climbs itself.
+--
+-- A registry keyed by car model rather than an argument to Step, for the same
+-- reason pendingSuspensionDeltaV is one: Step has five call sites across the
+-- client and server, and threading a parameter that is nil at four of them
+-- through all of them is more places to get it wrong than this is. Weak keys
+-- so a destroyed car can't be held alive by it.
+--
+-- OPT-IN, like the deltaV table: no entry means the plain single-model filter,
+-- which is every vehicle that isn't towing.
+local extraRayIgnore = setmetatable({}, { __mode = "k" })
+
+-- `instances` is an array, or nil to clear. Set by whatever owns the coupling
+-- (TrailerHitch.server.luau on the server, the drive loop on the client) and
+-- cleared on uncoupling - a stale entry here only ever ignores MORE than it
+-- should, which reads as suspension falling through a trailer that is no
+-- longer attached.
+function VehiclePhysics.SetExtraRayIgnore(carModel, instances)
+	extraRayIgnore[carModel] = instances
+end
+
+function VehiclePhysics.ClearExtraRayIgnore(carModel)
+	extraRayIgnore[carModel] = nil
+end
+
 -- Base defaults every car falls back to if nothing else overrides a value.
 local DEFAULTS = {
 	-- 2 empirically holds ground contact reliably - 1.3 was just barely too
@@ -1165,7 +1194,20 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = { carModel }
+	-- The car itself always, plus anything rigidly dragged along with it that
+	-- is nonetheless a separate model - see SetExtraRayIgnore. Built fresh each
+	-- step rather than cached because a trailer can be coupled and uncoupled
+	-- mid-drive, and a filter that outlived the coupling would be wrong in the
+	-- direction that matters (ignoring real ground).
+	local ignoreExtra = extraRayIgnore[carModel]
+	if ignoreExtra then
+		local filter = table.create(#ignoreExtra + 1)
+		filter[1] = carModel
+		table.move(ignoreExtra, 1, #ignoreExtra, 2, filter)
+		rayParams.FilterDescendantsInstances = filter
+	else
+		rayParams.FilterDescendantsInstances = { carModel }
+	end
 	-- RaycastParams defaults this to FALSE, which means a plain workspace
 	-- raycast happily hits parts that nothing can physically touch. For a
 	-- suspension ray that is flatly wrong: a wheel cannot rest on something
@@ -2039,7 +2081,20 @@ function VehiclePhysics.UpdateWheelVisuals(vehicle, attachments, config, rotatio
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.FilterDescendantsInstances = { vehicle }
+	-- Whatever Step ignores for this vehicle, so do the visuals. The two rays
+	-- have to agree - a towed trailer's body sits exactly where the tractor's
+	-- rear rays are cast (see SetExtraRayIgnore), so a visual ray that did not
+	-- share the filter would pose the wheels up on a surface the physics is
+	-- correctly ignoring, and the wheels would float away from the chassis.
+	local ignoreExtra = extraRayIgnore[vehicle]
+	if ignoreExtra then
+		local filter = table.create(#ignoreExtra + 1)
+		filter[1] = vehicle
+		table.move(ignoreExtra, 1, #ignoreExtra, 2, filter)
+		rayParams.FilterDescendantsInstances = filter
+	else
+		rayParams.FilterDescendantsInstances = { vehicle }
+	end
 	-- Same reason as the physics ray in Step - and it has to match it, or a
 	-- bystander would see wheels ride up over trigger volumes that the
 	-- driver's own car is ignoring.
