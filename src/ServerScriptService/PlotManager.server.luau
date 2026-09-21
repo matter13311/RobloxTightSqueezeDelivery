@@ -473,6 +473,48 @@ freeRefreshContractsFunction.OnInvoke = function(player)
 	return true
 end
 
+-- Third-person time is published to the client as an expiry timestamp on a
+-- Player attribute (VehicleViewMode reads it), but SAVED as seconds left. The
+-- two are converted at the edges: on join the saved seconds become
+-- now + seconds, and on leave whatever is left on the clock is written back.
+-- That is what makes the 20 minutes play time rather than wall-clock time - a
+-- player who buys it and leaves with 10 minutes on the clock has 10 minutes
+-- when they join any server, however long they were away.
+local THIRD_PERSON_ATTRIBUTE = ProgressionConfig.Monetization.ThirdPersonAttribute
+
+local function thirdPersonSecondsLeft(player)
+	local expiresAt = player:GetAttribute(THIRD_PERSON_ATTRIBUTE)
+	if type(expiresAt) ~= "number" then
+		return 0
+	end
+	return math.max(0, math.floor(expiresAt - os.time()))
+end
+
+-- What the third-person developer product buys. Returns false only if the
+-- player's data has not loaded, so the receipt handler leaves the purchase
+-- unprocessed and Roblox presents it again.
+local grantThirdPersonFunction = Instance.new("BindableFunction")
+grantThirdPersonFunction.Name = "GrantThirdPerson"
+grantThirdPersonFunction.Parent = script.Parent
+
+grantThirdPersonFunction.OnInvoke = function(player, seconds)
+	local data = playerData[player.UserId]
+	if not data or type(seconds) ~= "number" then
+		return false
+	end
+	-- Stacks on whatever is left rather than resetting - buying again while
+	-- it is still running is never wasted.
+	local total = thirdPersonSecondsLeft(player) + seconds
+	player:SetAttribute(THIRD_PERSON_ATTRIBUTE, os.time() + total)
+	data.ThirdPersonSecondsLeft = total
+
+	-- Written through immediately, for the same reason as the contract
+	-- refresh above: this was paid for in Robux and the receipt is consumed
+	-- the moment this returns true.
+	PlayerDataStore.Save(player, data)
+	return true
+end
+
 local function despawnVehicle(session)
 	if session.SpawnedVehicle and session.SpawnedVehicle.Parent then
 		session.SpawnedVehicle:Destroy()
@@ -597,6 +639,13 @@ local function initPlayerData(player)
 	for permitId in saved.Permits or {} do
 		player:SetAttribute(PermitAccess.AttributeName(permitId), true)
 	end
+
+	-- Bought third-person time carries over from the last server. Starts
+	-- counting down now, from the moment they are actually here.
+	local thirdPersonLeft = saved.ThirdPersonSecondsLeft or 0
+	if thirdPersonLeft > 0 then
+		player:SetAttribute(THIRD_PERSON_ATTRIBUTE, os.time() + thirdPersonLeft)
+	end
 end
 
 -- Tears a player's session down and writes their save, and is the ONLY place
@@ -642,6 +691,10 @@ local function flushPlayerData(player)
 	-- deliberately from the settings menu (see GameSettings' ReplayTutorial
 	-- action).
 	data.TutorialDone = true
+
+	-- Whatever is left on the third-person clock goes into the save, so the
+	-- time they have not used is still theirs next join.
+	data.ThirdPersonSecondsLeft = thirdPersonSecondsLeft(player)
 
 	PlayerDataStore.Save(player, data)
 	PlayerDataStore.Release(player)

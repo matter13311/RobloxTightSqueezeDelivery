@@ -23,6 +23,7 @@
 --     TutorialDone = boolean,         -- false only for a player who has never been through the guided first delivery
 --     Settings = { [key] = boolean|number }, -- client display settings (GameSettings), see SanitizeSettings
 --     Permits = { [permitId] = true }, -- zone permits bought (ProgressionConfig.Permits)
+--     ThirdPersonSecondsLeft = number, -- bought third-person time still unspent; only ticks down while the player is in a server
 --   }
 --
 -- Deliveries/Contracts are persisted for one reason: contracts are sold. A
@@ -144,6 +145,7 @@ local function newDefaultData()
 		-- Empty means "all defaults" - GameSettings owns what those are.
 		Settings = {},
 		Permits = {},
+		ThirdPersonSecondsLeft = 0,
 	}
 end
 
@@ -172,6 +174,8 @@ local function reconcile(data)
 		end
 	end
 	data.Permits = permits
+	-- A save that predates the field simply has no third-person time banked.
+	data.ThirdPersonSecondsLeft = sanitizeCount(data.ThirdPersonSecondsLeft)
 
 	-- Defaults to TRUE for a save that predates the field, not false: an
 	-- existing player already knows how the game works, and dropping every one

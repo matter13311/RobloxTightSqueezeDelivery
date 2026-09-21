@@ -254,7 +254,8 @@ ProgressionConfig.Permits = {
 		DisplayName = "Canal Bridge Permit",
 		ZoneName = "Mill District",
 		Zone = 2,
-		Price = 7500,
+		-- TEMP: testing price (real value 7500). Restore before release.
+		Price = 50,
 		RequiredDeliveries = 30,
 		-- Each permit needs the one before it: the Harbour is past the Mill
 		-- District, so a Harbour permit without a bridge permit reaches nothing.
@@ -265,7 +266,8 @@ ProgressionConfig.Permits = {
 		DisplayName = "Harbour Tunnel Permit",
 		ZoneName = "Harbour",
 		Zone = 3,
-		Price = 40000,
+		-- TEMP: testing price (real value 40000). Restore before release.
+		Price = 100,
 		RequiredDeliveries = 150,
 		Requires = "CanalBridge",
 	},
@@ -312,6 +314,12 @@ ProgressionConfig.Monetization = {
 	-- active adds this on top of whatever time is left rather than
 	-- overwriting it - see the grant handler in Monetization.server.luau.
 	ThirdPersonDurationSeconds = 20 * 60,
+	-- The Player attribute the perk is published on: a unix time the perk
+	-- runs out at, read by VehicleViewMode on the client. What is SAVED is
+	-- not this timestamp but the seconds left (PlayerDataStore's
+	-- ThirdPersonSecondsLeft), so the time only ticks down while the player
+	-- is actually in a server - see PlotManager's GrantThirdPerson.
+	ThirdPersonAttribute = "ThirdPersonExpiresAt",
 
 	-- The free path to the same refresh (see ContractPool.FreeRefresh): one
 	-- always-available refresh on a rolling cooldown, not "N free per calendar
