@@ -146,6 +146,12 @@ L.Zones = {
 			{ Kind = "Church", x = 215, z = -780, Label = "Canal Church" },
 		},
 		Roadworks = { { lane = "NBInner", z1 = -480, z2 = -440 } },
+		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
+		-- for where they are allowed: never on a stretch a Block circuit drives).
+		Incidents = {
+			{ kind = "crash", side = "East", z = -760 },
+			{ kind = "breakdown", side = "West", z = -895 },
+		},
 		Ramps = { South = -40, North = -950 },
 	},
 	{
@@ -212,6 +218,13 @@ L.Zones = {
 			{ Kind = "GasHolder", x = 90, z = -760, Label = "Gas Holder" },
 		},
 		Roadworks = { { lane = "NBInner", z1 = -520, z2 = -480 } },
+		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
+		-- for where they are allowed: never on a stretch a Block circuit drives).
+		Incidents = {
+			{ kind = "delivery", side = "West", z = -150 },
+			{ kind = "roadblock", side = "East", z = -800 },
+			{ kind = "breakdown", side = "West", z = -812 },
+		},
 		Ramps = { South = -54, North = -946 },
 	},
 	{
@@ -267,6 +280,14 @@ L.Zones = {
 			{ Kind = "Cranes", x = -250, z = -720, Label = "Quay Cranes" },
 		},
 		Roadworks = { { lane = "NBInner", z1 = -470, z2 = -430 } },
+		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
+		-- for where they are allowed: never on a stretch a Block circuit drives).
+		Incidents = {
+			{ kind = "crash", side = "East", z = -120 },
+			{ kind = "breakdown", side = "West", z = -195 },
+			{ kind = "delivery", side = "West", z = -470 },
+			{ kind = "roadblock", side = "East", z = -470 },
+		},
 		Ramps = { South = -54, North = -620 },
 	},
 }
@@ -321,9 +342,9 @@ L.Permits = {
 --=============================================================================
 
 L.Terminal = {
-	Yard = { x1 = -300, z1 = 20, x2 = 300, z2 = 400 },
+	Yard = { x1 = -300, z1 = 20, x2 = 300, z2 = 330 },
 	-- 16 workshops in one row, all facing north onto the yard
-	Garage = { bays = 16, pitch = 26, doorZ = 318, backZ = 382, height = 26 },
+	Garage = { bays = 16, pitch = 26, doorZ = 248, backZ = 312, height = 26 }, -- pulled 70 closer to the gate (2026-09-21)
 	Dock = { x1 = -300, x2 = -262, z1 = 60, z2 = 270, spaces = 8 },
 	Freight = { x1 = 262, x2 = 300, z1 = 120, z2 = 270, bays = 3 },
 	TrailerStalls = { x1 = 190, x2 = 252, firstZ = 50, pitch = 22, count = 3 },

@@ -166,11 +166,11 @@ function Terminal.Build(map, kit, deliveryDepot, plotsFolder)
 	end
 	-- lane lines leading to the gate
 	for _, x in { T.Gate.x1, 0, T.Gate.x2 } do
-		paint(f, U.rect(x - 0.3, yard.z1 + 6, x + 0.3, 250), x == 0 and YELLOW or WHITE)
+		paint(f, U.rect(x - 0.3, yard.z1 + 6, x + 0.3, G.doorZ - 33), x == 0 and YELLOW or WHITE)
 	end
 	floorText(f, -150, 180, 50, 10, "<  LOADING BAY", WHITE, north)
 	floorText(f, 150, 100, 44, 10, "FREIGHT  >", WHITE, north)
-	floorText(f, 0, 280, 40, 10, "GARAGES", WHITE, 0) -- read when driving in, facing the bays
+	floorText(f, 0, G.doorZ - 38, 40, 10, "GARAGES", WHITE, 0) -- read when driving in, facing the bays
 
 	------------------------------------------------------------- workshops
 	local x0 = -(G.bays * G.pitch) / 2
@@ -297,7 +297,7 @@ function Terminal.Build(map, kit, deliveryDepot, plotsFolder)
 	U.box(f, "DispatchOffice", U.rect(yard.x1 + 2, yard.z1 + 8, yard.x1 + 34, D.z1 - 4), 0, 12, { Material = Enum.Material.SmoothPlastic, Color = Color3.fromRGB(225, 225, 218) })
 	local sign = U.part(f, "DispatchSign", Vector3.new(0.3, 3, 20), CFrame.new(yard.x1 + 34.3, 9, (yard.z1 + 8 + D.z1 - 4) / 2), { Material = Enum.Material.SmoothPlastic, Color = TRIM, CanCollide = false })
 	U.label(sign, Enum.NormalId.Right, "DISPATCH", { PixelsPerStud = 20 })
-	for _, p in { { yard.x1 + 50, yard.z1 + 40 }, { yard.x2 - 60, yard.z1 + 40 }, { -200, 290 }, { 200, 290 } } do
+	for _, p in { { yard.x1 + 50, yard.z1 + 40 }, { yard.x2 - 60, yard.z1 + 40 }, { -200, G.doorZ - 28 }, { 200, G.doorZ - 28 } } do
 		U.part(f, "FloodPole", Vector3.new(1, 30, 1), CFrame.new(p[1], 15, p[2]), { Material = Enum.Material.Metal, Color = METAL })
 		local head = U.part(f, "FloodHead", Vector3.new(4, 1.5, 2), CFrame.new(p[1], 30, p[2]), { Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 245, 220), CanCollide = false })
 		local spot = Instance.new("SpotLight")

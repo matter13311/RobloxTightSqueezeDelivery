@@ -19,6 +19,7 @@ local Zone = require(script.Parent.Zone)
 local Connector = require(script.Parent.Connector)
 local Terminal = require(script.Parent.Terminal)
 local Traffic = require(script.Parent.Traffic)
+local Incidents = require(script.Parent.Incidents)
 
 local Main = {}
 
@@ -166,6 +167,7 @@ function Main.Run(seed)
 		m.WorldPivot = CFrame.new()
 		m:PivotTo(z.spec.Frame)
 		m.Parent = map
+		Incidents.Build(z.spec, m, kit.Root)
 		for _, g in res.gates do
 			gatePart(expressGates, z.spec.Frame, g)
 		end

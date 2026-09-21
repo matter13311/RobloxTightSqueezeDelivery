@@ -19,6 +19,15 @@
 -- boxes (junctions, turn-arounds) it always returns to the route line. The
 -- check only runs for cars that are actually held up, so it costs next to
 -- nothing when traffic is flowing.
+--
+-- A lane change is DRIVEN, never slid: the sideways offset follows an S-curve
+-- over a stretch of forward travel (steer out, cross, straighten), and it
+-- only advances as the car moves forward, so a stopped car never drifts
+-- sideways. A car boxed in behind something steers out more sharply over a
+-- shorter stretch, and senses what is ahead from where its NOSE will be, so
+-- it can pull out of a queue rather than wait behind the thing it is
+-- steering round. Cars on lane routes also stop a little further back
+-- (LaneStopGap) to leave themselves room to pull out, like real drivers do.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -30,11 +39,28 @@ TrafficSim.__index = TrafficSim
 local SENSE_INTERVAL = 0.1
 local AHEAD_SAMPLE = 4 -- studs ahead of the centre a car points at, smooths corners
 
+-- Lane changes: forward studs of travel per stud of sideways offset when the
+-- road ahead is open, and the shortest stretch a boxed-in car will use.
+local LANE_STUDS_PER_OFFSET = 3.6
+local LANE_MIN_LENGTH = 16
+-- Extra stopping distance on lane routes, so a car queued behind something
+-- has room to steer out of the queue.
+local LANE_STOP_GAP = 8
+
+-- 0..1 -> 0..1 with zero slope at both ends: steer out, then straighten.
+local function smoothstep(t)
+	return t * t * (3 - 2 * t)
+end
+
 local function flat(v)
 	return Vector3.new(v.X, 0, v.Z)
 end
 
--- templates: array of { HalfLength, HalfWidth }, in TrafficNet.SortedTemplates order.
+-- templates: array of { HalfLength, HalfWidth, Weight, Routes }, in
+-- TrafficNet.SortedTemplates order. Weight (default 1) is how often it is
+-- picked; Routes, if set, is a plain substring a route's Name must contain
+-- (the buses and big trucks only run the "Market" circuits, whose 12-stud
+-- lanes have no kerb parking for them to clip).
 -- maxCars: already capped to what a snapshot can carry.
 function TrafficSim.new(config, templates, maxCars)
 	local self = setmetatable({}, TrafficSim)
@@ -173,8 +199,35 @@ function TrafficSim:_rollHonkDelays(car)
 	car.QueueHonkDelay = self:_rand(config.HonkInQueueDelayMin, config.HonkInQueueDelayMax)
 end
 
-function TrafficSim:_place(route, s, speed)
-	local templateIndex = self.Rng:NextInteger(1, #self.Templates)
+-- A body for a new car on `route`, weighted, from the templates allowed there.
+function TrafficSim:_pickTemplate(route)
+	local total = 0
+	for _, t in self.Templates do
+		if not t.Routes or string.find(route.Name, t.Routes, 1, true) then
+			total += t.Weight or 1
+		end
+	end
+	local roll = self.Rng:NextNumber(0, total)
+	local last = 1
+	for index, t in self.Templates do
+		if not t.Routes or string.find(route.Name, t.Routes, 1, true) then
+			last = index
+			roll -= t.Weight or 1
+			if roll <= 0 then
+				return index
+			end
+		end
+	end
+	return last
+end
+
+-- Extra spawn clearance for a body longer than an ordinary car.
+function TrafficSim:_extraClearance(templateIndex)
+	return math.max(0, self.Templates[templateIndex].HalfLength - 9.5) * 2
+end
+
+function TrafficSim:_place(route, s, speed, templateIndex)
+	templateIndex = templateIndex or self:_pickTemplate(route)
 	local template = self.Templates[templateIndex]
 	local position, direction = TrafficPath.Sample(route.Path, s, 1)
 	local car = {
@@ -204,6 +257,12 @@ function TrafficSim:_place(route, s, speed)
 		Lane = 0,
 		LaneTarget = 0,
 		LaneSince = 0,
+		-- the change in progress: from which offset, how far along (0..1) and
+		-- over how many studs of forward travel
+		LaneFrom = 0,
+		LaneGoal = 0,
+		LaneProgress = 1,
+		LaneLength = LANE_MIN_LENGTH,
 	}
 	self:_rollHonkDelays(car)
 	route.Count += 1
@@ -229,7 +288,7 @@ end
 -- of it, else nil.
 function TrafficSim:_gapTo(car, position, look, right, halfLength, halfWidth)
 	local config = self.Config
-	local d = position - car.Position
+	local d = position - (car.SensePosition or car.Position)
 	local ahead = d:Dot(car.Forward)
 	if ahead <= 0 then
 		return nil
@@ -252,6 +311,16 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 	local cars = self.Cars
 
 	for _, car in cars do
+		-- Mid lane change, look ahead from where the nose will be once it has
+		-- covered the stopping distance, not from the body's current offset:
+		-- otherwise a car pulling out from behind a stopped car keeps
+		-- "seeing" it and can never move forward to finish the manoeuvre.
+		car.SensePosition = nil
+		if car.LaneProgress < 1 then
+			local p = math.min(1, car.LaneProgress + (car.HalfLength + config.StopGap) / car.LaneLength)
+			local noseLane = car.LaneFrom + (car.LaneGoal - car.LaneFrom) * smoothstep(p)
+			car.SensePosition = car.Base - car.Right * noseLane
+		end
 		local best, leader, leaderIsPlayer = math.huge, nil, false
 		for _, other in cars do
 			if other ~= car and not (car.IgnoreCar == other and now < car.IgnoreUntil) then
@@ -270,7 +339,8 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 				end
 			end
 		end
-		car.Limit = best - config.StopGap
+		car.Limit = best - config.StopGap - (if car.Route.Lanes then LANE_STOP_GAP else 0)
+		car.SensePosition = nil
 		car.Leader = leader
 		car.LeaderIsPlayer = leaderIsPlayer
 	end
@@ -430,8 +500,10 @@ function TrafficSim:Fill(isClear)
 		end
 		local s = self.Rng:NextNumber(0, math.max(0, route.Path.Length - 2))
 		local position = TrafficPath.Sample(route.Path, s, 1)
-		if self:IsClear(position, 26) and isClear(position, 26) then
-			self:_place(route, s, self.Rng:NextNumber(0, self.Config.CruiseSpeed))
+		local templateIndex = self:_pickTemplate(route)
+		local clearance = 26 + self:_extraClearance(templateIndex)
+		if self:IsClear(position, clearance) and isClear(position, clearance) then
+			self:_place(route, s, self.Rng:NextNumber(0, self.Config.CruiseSpeed), templateIndex)
 		end
 	end
 end
@@ -537,10 +609,25 @@ function TrafficSim:Step(dt, now, world)
 		car.Forward = look
 		car.Right = Vector3.new(-look.Z, 0, look.X)
 		car.Base = position
-		if car.Lane ~= car.LaneTarget then
-			-- slide across at a rate tied to speed, so a change looks driven
-			local rate = math.max(2, car.Speed * 0.3) * dt
-			car.Lane += math.clamp(car.LaneTarget - car.Lane, -rate, rate)
+		if car.LaneTarget ~= car.LaneGoal then
+			-- a new change (or a change of mind part-way): start a fresh
+			-- S-curve from wherever the car is now
+			local offset = math.abs(car.LaneTarget - car.Lane)
+			car.LaneFrom = car.Lane
+			car.LaneGoal = car.LaneTarget
+			car.LaneProgress = if offset < 0.05 then 1 else 0
+			-- the open-road length, cut short when boxed in (but never so
+			-- short it becomes a sideways hop)
+			local open = math.max(LANE_MIN_LENGTH, offset * LANE_STUDS_PER_OFFSET)
+			car.LaneLength = math.clamp(math.max(0, car.Limit) + LANE_MIN_LENGTH, LANE_MIN_LENGTH, open)
+		end
+		if car.LaneProgress < 1 then
+			-- only forward travel moves it across
+			car.LaneProgress = math.min(1, car.LaneProgress + travel / car.LaneLength)
+			car.Lane = car.LaneFrom + (car.LaneGoal - car.LaneFrom) * smoothstep(car.LaneProgress)
+			if car.LaneProgress >= 1 then
+				car.Lane = car.LaneGoal
+			end
 		end
 		car.Position = position - car.Right * car.Lane
 	end
@@ -573,15 +660,17 @@ function TrafficSim:Step(dt, now, world)
 				-- On a circuit there is no single entry point, so try a few
 				-- places around it and take the first one nobody can see.
 				local tries = if route.Closed then 6 else 1
+				local templateIndex = self:_pickTemplate(route)
+				local clearance = config.SpawnClearance + self:_extraClearance(templateIndex)
 				for _ = 1, tries do
 					local s = if route.Closed then self.Rng:NextNumber(0, route.Path.Length) else 0
 					local point = TrafficPath.Sample(route.Path, s, 1)
 					if
 						world.IsHidden(point)
-						and self:IsClear(point, config.SpawnClearance)
-						and world.IsClear(point, config.SpawnClearance)
+						and self:IsClear(point, clearance)
+						and world.IsClear(point, clearance)
 					then
-						self:_place(route, s, config.CruiseSpeed * 0.6)
+						self:_place(route, s, config.CruiseSpeed * 0.6, templateIndex)
 						break
 					end
 				end

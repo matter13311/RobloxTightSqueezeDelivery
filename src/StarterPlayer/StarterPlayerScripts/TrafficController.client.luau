@@ -41,8 +41,16 @@ local bumpRemote = ReplicatedStorage:WaitForChild(TrafficNet.BumpRemote)
 local cameraRemote = ReplicatedStorage:WaitForChild(TrafficNet.CameraRemote)
 
 local AHEAD_SAMPLE = 4 -- studs ahead of the centre a car points at, smooths corners
--- studs/s a car's drawn position may slide sideways toward its lane offset
-local LATERAL_RATE = 9
+-- Lane changes are steered, not slid (the server drives the offset along an
+-- S-curve tied to forward travel - see TrafficSim). Here the drawn offset may
+-- only move this many studs sideways per stud the car moves forward, so a
+-- car that is stopped or hopping to catch up never drifts sideways, and the
+-- body is yawed along the direction it is actually travelling in.
+local LATERAL_PER_FORWARD = 1.3
+-- A drawn offset this far from the server's is a respawn/teleport: jump.
+local LATERAL_SNAP = 14
+-- How quickly the drawn yaw follows the travel direction (1/s).
+local YAW_FOLLOW = 10
 local SNAP_DISTANCE = 25 -- further than this from the server and the car just jumps
 local CORRECTION_GAIN = 2 -- extra studs/s per stud behind the server
 -- Ceiling on that correction. Catching up a big gap at full gain looks like a
@@ -414,8 +422,11 @@ RunService.Heartbeat:Connect(function(dt)
 			room = math.max(0, target - visual.S)
 		end
 
+		local previousS = visual.S
+		local jumped = false
 		if math.abs(behind) > SNAP_DISTANCE then
 			visual.S = if path.Closed then expected % length else expected
+			jumped = true
 		elseif now >= visual.HoldUntil then
 			local speed = math.max(0, snap.Speed + math.min(behind * CORRECTION_GAIN, MAX_CATCHUP))
 			visual.S += math.min(speed * dt, room)
@@ -435,16 +446,43 @@ RunService.Heartbeat:Connect(function(dt)
 		look = flat(look).Unit
 		visual.Forward = look
 
-		-- Sideways offset for a lane change: eased toward the server's value so a
-		-- change reads as a smooth drift across, not a hop per snapshot.
+		-- Sideways offset for a lane change: follows the server's value, but
+		-- only as fast as the car is rolling forward (see LATERAL_PER_FORWARD).
+		local moved = visual.S - previousS
+		if path.Closed and moved < -length / 2 then
+			moved += length
+		end
+		moved = math.max(0, moved)
 		local lateral = visual.Lateral or snap.Lateral
-		lateral += math.clamp(snap.Lateral - lateral, -LATERAL_RATE * dt, LATERAL_RATE * dt)
+		local wanted = snap.Lateral - lateral
+		local step
+		if jumped or math.abs(wanted) > LATERAL_SNAP then
+			step = wanted
+		else
+			local limit = moved * LATERAL_PER_FORWARD
+			step = math.clamp(wanted, -limit, limit)
+		end
+		lateral += step
 		visual.Lateral = lateral
+		-- The body points where it is going: forward plus the sideways drift.
+		-- Held while stopped, so a car that stops mid-change stays angled
+		-- instead of snapping straight.
+		if moved > 1e-3 and not jumped then
+			local slope = math.clamp(step / moved, -1.5, 1.5)
+			local s0 = visual.Slope or 0
+			visual.Slope = s0 + (slope - s0) * math.min(1, YAW_FOLLOW * dt)
+		elseif jumped then
+			visual.Slope = 0
+		end
 		local right = Vector3.new(-look.Z, 0, look.X)
+		local heading = look
+		if visual.Slope and math.abs(visual.Slope) > 1e-3 then
+			heading = (look - right * visual.Slope).Unit
+		end
 
 		local record = visual.Record
 		local centre = position - right * lateral + Vector3.new(0, TrafficConfig.RoadY + record.Height, 0)
-		local cf = CFrame.lookAt(centre, centre + look)
+		local cf = CFrame.lookAt(centre, centre + heading)
 		if visual.Bump then
 			local offset, yaw = bumpOffset(visual, now)
 			if offset then

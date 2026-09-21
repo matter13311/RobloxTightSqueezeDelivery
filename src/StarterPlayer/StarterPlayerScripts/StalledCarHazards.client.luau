@@ -10,6 +10,10 @@
 -- clock, so all players see the same thing. Only cars near the camera are
 -- touched each blink; the rest are usually not even streamed in.
 --
+-- Police cars at the street incidents (tools/mapgen/Incidents.luau) carry
+-- "PoliceLight" parts instead: attribute Blue = true for the blue ones. On
+-- each beat the reds and blues swap, rather than all blinking together.
+--
 -- The lamps are looked up lazily rather than cached when the tag appears:
 -- with StreamingEnabled a tagged car can reach the client before its parts do,
 -- so a list built at that moment would be empty forever.
@@ -25,6 +29,9 @@ local INTERVAL = 0.1
 
 local ON_COLOR = Color3.fromRGB(255, 120, 20)
 local OFF_COLOR = Color3.fromRGB(120, 60, 10)
+local POLICE_RED = Color3.fromRGB(255, 30, 30)
+local POLICE_BLUE = Color3.fromRGB(40, 90, 255)
+local POLICE_DIM = Color3.fromRGB(40, 40, 46)
 
 local cars = {} -- [model] = { Parts = {BasePart} or nil, Lit = bool? }
 
@@ -47,7 +54,7 @@ local function lampsOf(entry, model)
 	end
 	parts = {}
 	for _, part in model:GetDescendants() do
-		if part:IsA("BasePart") and part.Name == "HazardLight" then
+		if part:IsA("BasePart") and (part.Name == "HazardLight" or part.Name == "PoliceLight") then
 			table.insert(parts, part)
 		end
 	end
@@ -84,8 +91,15 @@ RunService.Heartbeat:Connect(function(dt)
 		if #parts > 0 and entry.Lit ~= lit then
 			entry.Lit = lit
 			for _, part in parts do
-				part.Material = if lit then Enum.Material.Neon else Enum.Material.SmoothPlastic
-				part.Color = if lit then ON_COLOR else OFF_COLOR
+				if part.Name == "PoliceLight" then
+					local blue = part:GetAttribute("Blue") == true
+					local on = lit ~= blue
+					part.Material = if on then Enum.Material.Neon else Enum.Material.SmoothPlastic
+					part.Color = if not on then POLICE_DIM elseif blue then POLICE_BLUE else POLICE_RED
+				else
+					part.Material = if lit then Enum.Material.Neon else Enum.Material.SmoothPlastic
+					part.Color = if lit then ON_COLOR else OFF_COLOR
+				end
 			end
 		end
 	end
