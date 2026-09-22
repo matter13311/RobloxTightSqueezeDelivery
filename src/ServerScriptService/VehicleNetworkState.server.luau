@@ -54,7 +54,24 @@ local function toRpm(value)
 	return math.clamp(value, 0, 1)
 end
 
-remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm, steer)
+-- A counter the driving client bumps on every gearshift, relayed so bystanders
+-- can hear another car's anti-lag crack between gears (see InductionEffects).
+-- A COUNTER rather than a boolean because a shift is a one-frame event and a
+-- boolean set and cleared inside one network tick simply never arrives - what
+-- replicates is the value at the moment it is sampled, and that is almost
+-- always false. A number that only ever goes up cannot be missed: a receiver
+-- compares it with the last one it saw.
+--
+-- Wrapped well below 2^53 rather than trusted to stay small, since the value
+-- comes from a client and nothing else here bounds how long a drive lasts.
+local function toShiftCount(value)
+	if typeof(value) ~= "number" or value ~= value then
+		return 0
+	end
+	return math.floor(math.clamp(value, 0, 1e9))
+end
+
+remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm, steer, shiftCount, isTwoStep)
 	if typeof(vehicle) ~= "Instance" or not vehicle:IsA("Model") or vehicle.Parent ~= workspace.Vehicles then
 		return
 	end
@@ -75,4 +92,9 @@ remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, i
 	vehicle:SetAttribute("NetThrottle", toThrottle(throttle))
 	vehicle:SetAttribute("NetRpm", toRpm(rpm))
 	vehicle:SetAttribute("NetSteer", toSteer(steer))
+	vehicle:SetAttribute("NetShiftCount", toShiftCount(shiftCount))
+	-- Brake and gas held together at a standstill: a two-step launch being
+	-- held. Sustained rather than momentary, so unlike the shift above a plain
+	-- boolean is exactly right.
+	vehicle:SetAttribute("NetTwoStep", toBoolean(isTwoStep))
 end)

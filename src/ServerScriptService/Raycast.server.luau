@@ -386,6 +386,11 @@ local function AddCar(carModel)
 			carModel:SetAttribute("NetThrottle", 0)
 			carModel:SetAttribute("NetRpm", 0)
 			carModel:SetAttribute("NetSteer", 0)
+			-- Not NetShiftCount: it is a monotonic counter, and resetting it
+			-- to 0 IS a change, which every watching client would read as one
+			-- last phantom gearshift on a car nobody is in. Left where it is
+			-- so the next driver's first shift is the next value it takes.
+			carModel:SetAttribute("NetTwoStep", false)
 		end
 	end)
 

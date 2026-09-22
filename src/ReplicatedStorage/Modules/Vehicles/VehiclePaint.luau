@@ -1,5 +1,6 @@
--- Vehicle paint: which colours exist, what they cost, and how a colour gets
--- onto a car. ONE FILE, BOTH SIDES, same as UpgradePasses: the garage paints
+-- Vehicle bodywork: which colours and which MATERIALS exist, what they cost,
+-- and how each gets onto a car. (The file is still named for paint because
+-- paint is most of it; the garage tab it feeds is called "Body".) ONE FILE, BOTH SIDES, same as UpgradePasses: the garage paints
 -- its local preview with Apply, PlotManager paints the real spawned car with
 -- the same Apply, and both validate a saved value with the same Sanitize - so
 -- the preview can never show a colour the server would refuse to put on the
@@ -13,6 +14,11 @@
 -- Paintable folder at all falls back to its whole Body minus glass and lights,
 -- which is wrong on most cars (seats, windows, chrome) but is at least visible
 -- - it is the "someone added a car and forgot" case, not the intended one.
+--
+-- A SAVED MATERIAL VALUE is a string too: nil/"" is stock (the materials the
+-- car was built in, always free), or one of the Materials ids below. There is
+-- no free-form equivalent and no material pass - a material is a thing off a
+-- list in a way a colour is not, so there is nothing a picker would add.
 --
 -- A SAVED PAINT VALUE is a string, one of:
 --   nil / ""      - stock: the colours the car was built in. Always free.
@@ -42,6 +48,12 @@ VehiclePaint.STOCK_ATTRIBUTE = "StockColor"
 -- colour anyway (a badge, a stripe) without having to move it out.
 VehiclePaint.NO_PAINT_ATTRIBUTE = "NoPaint"
 
+-- The material half of STOCK_ATTRIBUTE, and a string rather than the
+-- EnumItem itself because Attributes cannot hold an Enum. Read back through
+-- Enum.Material, which is why a material Roblox retires would restore as nil
+-- and leave the part where it is rather than throwing.
+VehiclePaint.STOCK_MATERIAL_ATTRIBUTE = "StockMaterial"
+
 -- Placeholder prices - tune against the economy. Ordered as the swatch grid
 -- shows them: the four everyday colours first and cheaper, the four loud ones
 -- after.
@@ -59,6 +71,60 @@ VehiclePaint.Colors = {
 VehiclePaint.ColorsById = {}
 for _, entry in VehiclePaint.Colors do
 	VehiclePaint.ColorsById[entry.Id] = entry
+end
+
+-- THE MATERIALS, priced and ordered exactly like the colours above: bought
+-- once each with in-game money, account-wide afterwards, and stock is the free
+-- option. Eight of them so the picker is the same grid as the swatches.
+--
+-- Every one of these had to survive the same test: does a nine-year-old see
+-- the difference from across the bay, on a car of any colour? That rules out
+-- most of Roblox's material list (Pebble, Slate, Granite and friends all read
+-- as "slightly rougher plastic" at garage distance) and it is why the four
+-- expensive ones are the four that change the car's silhouette in the light
+-- rather than its texture.
+--
+-- Glass and ForceField are deliberately absent: both make the bodywork
+-- see-through, which on a car whose panels can be knocked off reads as damage
+-- rather than as a purchase.
+--
+-- !! TESTING PRICES ARE ACTIVE !! Every material Price below is $1 so the whole
+-- grid can be tried on in one sitting; the real figure follows each one after
+-- `--default`. RESTORE BEFORE SHIPPING. The eight COLOURS above are untouched
+-- and still cost their real price.
+--
+-- `Swatch` is ONLY the colour of that material's chip in the garage grid, and
+-- is not applied to anything. A chip cannot show a material honestly - the
+-- real preview is the car itself, three feet away and already wearing it,
+-- which is the entire reason the garage parks a live model - so the chip's one
+-- job is to be recognisably that material's family at 56 pixels.
+VehiclePaint.Materials = {
+	{ Id = "Glossy", DisplayName = "Glossy", Material = Enum.Material.SmoothPlastic, Price = 1, Swatch = Color3.fromRGB(206, 210, 218) }, --default price 750
+	{ Id = "Metal", DisplayName = "Metal", Material = Enum.Material.Metal, Price = 1, Swatch = Color3.fromRGB(150, 158, 170) }, --default price 750
+	{ Id = "Plate", DisplayName = "Plate", Material = Enum.Material.DiamondPlate, Price = 1, Swatch = Color3.fromRGB(118, 124, 134) }, --default price 750
+	{ Id = "Wood", DisplayName = "Wood", Material = Enum.Material.WoodPlanks, Price = 1, Swatch = Color3.fromRGB(154, 106, 62) }, --default price 750
+	{ Id = "Rusty", DisplayName = "Rusty", Material = Enum.Material.CorrodedMetal, Price = 1, Swatch = Color3.fromRGB(142, 82, 52) }, --default price 1500
+	{ Id = "Marble", DisplayName = "Marble", Material = Enum.Material.Marble, Price = 1, Swatch = Color3.fromRGB(228, 226, 232) }, --default price 1500
+	{ Id = "Foil", DisplayName = "Foil", Material = Enum.Material.Foil, Price = 1, Swatch = Color3.fromRGB(196, 204, 216) }, --default price 1500
+	-- The showpiece, and priced as one: Neon makes the bodywork glow in
+	-- whatever colour it is painted, so it is the one material that is worth
+	-- more the more colours the player already owns.
+	{ Id = "Neon", DisplayName = "Neon", Material = Enum.Material.Neon, Price = 1, Swatch = Color3.fromRGB(122, 244, 214) }, --default price 4000
+}
+
+VehiclePaint.MaterialsById = {}
+for _, entry in VehiclePaint.Materials do
+	VehiclePaint.MaterialsById[entry.Id] = entry
+end
+
+-- Every Enum.Material by its own name, for putting a part back on the material
+-- it was built in (see Apply). Built by iterating the enum rather than indexed
+-- with `Enum.Material[name]` on demand, because indexing an Enum with a name
+-- it does not have THROWS - and the name being looked up came out of a saved
+-- Attribute, which is exactly the value that can go stale.
+local MATERIAL_BY_NAME = {}
+for _, item in Enum.Material:GetEnumItems() do
+	MATERIAL_BY_NAME[item.Name] = item
 end
 
 -- The game pass that unlocks the custom colour picker, PER CAR - same shape
@@ -106,6 +172,28 @@ function VehiclePaint.Sanitize(value)
 		return string.upper(value)
 	end
 	return nil
+end
+
+-- The material half of Sanitize, and the same contract: returns the value if
+-- it is a material the game still knows how to draw, or nil (= stock) for
+-- anything else - including an id retired from Materials since it was saved,
+-- which quietly puts that car back to the materials it was built in.
+function VehiclePaint.SanitizeMaterial(value)
+	if type(value) ~= "string" or value == "" then
+		return nil
+	end
+	return if VehiclePaint.MaterialsById[value] then value else nil
+end
+
+-- nil means stock.
+function VehiclePaint.ToMaterial(value)
+	local entry = VehiclePaint.MaterialsById[VehiclePaint.SanitizeMaterial(value) or ""]
+	return entry and entry.Material
+end
+
+function VehiclePaint.MaterialDisplayName(value)
+	local entry = VehiclePaint.MaterialsById[VehiclePaint.SanitizeMaterial(value) or ""]
+	return if entry then entry.DisplayName else "Stock"
 end
 
 function VehiclePaint.ToHex(color)
@@ -169,11 +257,17 @@ function VehiclePaint.GetPaintableParts(carModel)
 	return parts
 end
 
--- Paints a car (a live one or a preview) with a saved paint value. Safe to
--- call repeatedly: the first call remembers each part's stock colour, and a
--- later nil puts it back.
-function VehiclePaint.Apply(carModel, value)
+-- Paints and re-surfaces a car (a live one or a preview) from a saved paint
+-- value and a saved material value, either of which may be nil for stock. Safe
+-- to call repeatedly: the first call remembers each part's stock colour and
+-- material, and a later nil puts that half back.
+--
+-- ONE function for both rather than two, because every caller that has one
+-- value has the other, and two calls would mean two walks of the car's parts
+-- and two chances for a call site to update only half of the look.
+function VehiclePaint.Apply(carModel, value, materialValue)
 	local color = VehiclePaint.ToColor(value)
+	local material = VehiclePaint.ToMaterial(materialValue)
 	for _, part in VehiclePaint.GetPaintableParts(carModel) do
 		local stock = part:GetAttribute(VehiclePaint.STOCK_ATTRIBUTE)
 		if color then
@@ -183,6 +277,23 @@ function VehiclePaint.Apply(carModel, value)
 			part.Color = color
 		elseif typeof(stock) == "Color3" then
 			part.Color = stock
+		end
+
+		local stockMaterial = part:GetAttribute(VehiclePaint.STOCK_MATERIAL_ATTRIBUTE)
+		if material then
+			if type(stockMaterial) ~= "string" then
+				part:SetAttribute(VehiclePaint.STOCK_MATERIAL_ATTRIBUTE, part.Material.Name)
+			end
+			part.Material = material
+		elseif type(stockMaterial) == "string" then
+			-- Indexed, not asserted: a material Roblox has since removed leaves
+			-- the part on whatever it is wearing, which is visibly wrong but is
+			-- a great deal better than erroring partway through and leaving
+			-- half the car in the new material and half in the old.
+			local restored = MATERIAL_BY_NAME[stockMaterial]
+			if restored then
+				part.Material = restored
+			end
 		end
 	end
 end

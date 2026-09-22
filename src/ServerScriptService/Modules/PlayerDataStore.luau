@@ -24,8 +24,11 @@
 --     Settings = { [key] = boolean|number }, -- client display settings (GameSettings), see SanitizeSettings
 --     Permits = { [permitId] = true }, -- zone permits bought (ProgressionConfig.Permits)
 --     ThirdPersonSecondsLeft = number, -- bought third-person time still unspent; only ticks down while the player is in a server
---     Customization = { [vehicleId] = { Paint = string? } }, -- per-car looks; Paint is a VehiclePaint value, nil = stock
+--     Customization = { [vehicleId] = { Paint = string?, Material = string? } }, -- per-car looks, both VehiclePaint values, nil = stock
 --     PaintColors = { [colorId] = true }, -- VehiclePaint.Colors bought with money; account-wide, every car can use them
+--     PaintMaterials = { [materialId] = true }, -- VehiclePaint.Materials, same deal: bought once, usable on every car
+--     InductionStages = { [vehicleId] = number }, -- highest Induction Upgrade stage BOUGHT for that car; 0/absent = stock
+--     InductionSetting = { [vehicleId] = number }, -- which of those stages is switched on, always <= InductionStages
 --   }
 --
 -- Deliveries/Contracts are persisted for one reason: contracts are sold. A
@@ -41,6 +44,7 @@ local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
 local VehiclePaint = require(ReplicatedStorage.Modules.Vehicles.VehiclePaint)
+local VehicleInduction = require(ReplicatedStorage.Modules.Vehicles.VehicleInduction)
 
 local ContractPool = require(script.Parent.ContractPool)
 
@@ -151,6 +155,9 @@ local function newDefaultData()
 		ThirdPersonSecondsLeft = 0,
 		Customization = {},
 		PaintColors = {},
+		PaintMaterials = {},
+		InductionStages = {},
+		InductionSetting = {},
 	}
 end
 
@@ -192,6 +199,17 @@ local function reconcile(data)
 		end
 	end
 	data.PaintColors = paintColors
+
+	-- Same rule again for the materials.
+	local paintMaterials = {}
+	if type(data.PaintMaterials) == "table" then
+		for id, owned in data.PaintMaterials do
+			if owned == true and type(id) == "string" and VehiclePaint.MaterialsById[id] then
+				paintMaterials[id] = true
+			end
+		end
+	end
+	data.PaintMaterials = paintMaterials
 
 	-- Defaults to TRUE for a save that predates the field, not false: an
 	-- existing player already knows how the game works, and dropping every one
@@ -254,7 +272,47 @@ local function reconcile(data)
 	-- stays on the car - only whether it can be drawn.
 	for _, entry in data.Customization do
 		entry.Paint = VehiclePaint.Sanitize(entry.Paint)
+		entry.Material = VehiclePaint.SanitizeMaterial(entry.Material)
 	end
+
+	-- Induction stages: only for cars still owned, and only ever as far up the
+	-- ladder as the ladder currently goes. A save from a build with five stages
+	-- read by a build with four clamps to four rather than leaving the car
+	-- holding a stage nothing can describe - the same clamp every upgrade level
+	-- gets below, for the same reason.
+	local inductionStages = {}
+	if type(data.InductionStages) == "table" then
+		for id, level in data.InductionStages do
+			if type(id) == "string" and data.OwnedVehicleIds[id] then
+				local clamped = VehicleInduction.ClampStage(level)
+				if clamped > 0 then
+					inductionStages[id] = clamped
+				end
+			end
+		end
+	end
+	data.InductionStages = inductionStages
+
+	-- The active stage, which is to InductionStages exactly what CarConfigs is
+	-- to UpgradeLevels: the bought stage is a CEILING, and this is the rung the
+	-- player has the car actually set to. Clamped against the ceiling here and
+	-- again on every write, so a save doctored to "stage 4 active, stage 1
+	-- bought" comes back as stage 1.
+	--
+	-- Absent means "all of it": buying a stage switches it on, so a player who
+	-- has never touched the arrows is on whatever they last bought. That also
+	-- makes this field free to add - every existing save reconciles to the
+	-- behaviour it already had.
+	local inductionSetting = {}
+	local savedSetting = if type(data.InductionSetting) == "table" then data.InductionSetting else {}
+	for id, owned in inductionStages do
+		local active = savedSetting[id]
+		if type(active) ~= "number" or active ~= active then
+			active = owned
+		end
+		inductionSetting[id] = math.clamp(math.floor(active), 0, owned)
+	end
+	data.InductionSetting = inductionSetting
 
 	-- After the vehicle tables, before the return: the contract pool has its own
 	-- reconcile (dead destinations, a cap that shrank, and the real-time refill

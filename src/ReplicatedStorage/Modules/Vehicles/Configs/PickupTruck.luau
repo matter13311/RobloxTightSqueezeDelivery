@@ -57,8 +57,11 @@ return {
 		Torque = {
 			DisplayName = "Power",
 			IconId = "rbxassetid://135577056253416",
-			Max = 25,
-			Step = 2.5,
+			-- Re-based for the Torque = 8 tune-down above (was Min 10 / Max 25).
+			-- Kept the same 6 levels and the same 2.5x Min-to-Max ratio, just
+			-- scaled down with the plain field: 8, 10, 12, 14, 16, 18, 20.
+			Max = 20,
+			Step = 2,
 			BaseCost = 150,
 			CostGrowth = 1.5,
 			Description = "How hard the engine pulls when you hit the gas. Higher Torque means quicker acceleration and an easier time powering up over kerbs and ramps.",
@@ -279,15 +282,20 @@ TailLightBrightness = 0.5,
 	-- The standstill shove now comes from Transmission.StallTorqueMultiplier
 	-- below, so this can be low for slow, deliberate driving in tight spaces
 	-- without leaving the truck unable to pull itself up a kerb.
-	-- 14 * 3.2 (1st) * 3.5 (stall) = 157 at a dead stop, on par with the
-	-- original 50 * 3.2 = 160, so kerb-climbing is untouched; once rolling
-	-- past StallSpeed it is 14 * 3.2 = 45, well under a third of the original.
+	-- 8 * 3.2 (1st) * 2.0 (stall) = 51 at a dead stop, well under the original
+	-- 50 * 3.2 = 160 - deliberately: this pass also toned down the kerb-climb
+	-- shove, not just rolling accel. If the truck can no longer pull itself up
+	-- a kerb, raise StallTorqueMultiplier before raising this. Once rolling
+	-- past StallSpeed it is 8 * 3.2 = 26, well under a fifth of the original.
 	--
 	-- TUNING: how long each gear lasts scales as (chassis mass / Torque), and
 	-- nothing else here changes it. Still shifting too eagerly? Halve Torque.
 	-- Too sluggish? Raise it. The standstill shove stays put either way as
 	-- long as you move StallTorqueMultiplier the opposite way.
-	Torque = 10,
+	-- Cut from 10 - rolling acceleration still felt too zippy for how
+	-- deliberate this truck is meant to feel. TUNING: still too quick between
+	-- gears? Lower further; too sluggish rolling? Raise back toward 10.
+	Torque = 8,
 	-- Torque = 100,
 
 	-- studs/s in TOP gear, and the number every SpeedFraction below is
@@ -397,12 +405,14 @@ TailLightBrightness = 0.5,
 		-- still helping at 6 studs/s, which is nearly half of 1st gear, so 1st
 		-- got shoved through before you noticed it. At 3 the boost is spent
 		-- almost immediately and 1st does its own work for the rest of it.
-		-- Dropped from 3.5. Combined with ThrottleRampTime below, this is what
-		-- stops the truck leaping forward the moment it drops into D with W
-		-- already held - the flip happens at a dead standstill, which is
-		-- exactly where the stall multiplier peaks, so it was the single
-		-- biggest force spike in the drivetrain landing at the worst moment.
-		StallTorqueMultiplier = 2.4,
+		-- Dropped from 3.5, then again from 2.4 - even with Torque cut to 8
+		-- (see above) the launch off the line still felt too eager. Combined
+		-- with ThrottleRampTime below, this is what stops the truck leaping
+		-- forward the moment it drops into D with W already held - the flip
+		-- happens at a dead standstill, which is exactly where the stall
+		-- multiplier peaks, so it was the single biggest force spike in the
+		-- drivetrain landing at the worst moment.
+		StallTorqueMultiplier = 2.0,
 		StallSpeed = 3,
 
 		-- A loaded truck should take a beat to commit to changing direction,

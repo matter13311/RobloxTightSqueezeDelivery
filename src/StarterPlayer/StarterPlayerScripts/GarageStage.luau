@@ -625,10 +625,11 @@ function GarageStage.Close()
 	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 end
 
--- Puts a vehicle on the stage, painted `paintValue` (nil = stock). Keeps the
--- camera angle the player has dragged to, so flicking through the list
--- compares cars from the same viewpoint.
-function GarageStage.ShowVehicle(vehicleId, paintValue)
+-- Puts a vehicle on the stage wearing `paintValue` and `materialValue` (either
+-- nil = stock - see VehiclePaint). Keeps the camera angle the player has
+-- dragged to, so flicking through the list compares cars from the same
+-- viewpoint.
+function GarageStage.ShowVehicle(vehicleId, paintValue, materialValue)
 	if not isOpen then
 		return
 	end
@@ -638,7 +639,7 @@ function GarageStage.ShowVehicle(vehicleId, paintValue)
 	end
 	pendingVehicleId = vehicleId
 	if current and current.VehicleId == vehicleId then
-		GarageStage.SetPaint(paintValue)
+		GarageStage.SetBody(paintValue, materialValue)
 		return
 	end
 
@@ -667,7 +668,7 @@ function GarageStage.ShowVehicle(vehicleId, paintValue)
 	local pivot = spawnCFrame - spawnCFrame.Position + Vector3.new(spawnCFrame.Position.X, floorY - entry.RestOffset, spawnCFrame.Position.Z)
 	model:PivotTo(pivot)
 
-	VehiclePaint.Apply(model, paintValue)
+	VehiclePaint.Apply(model, paintValue, materialValue)
 	model.Parent = previewFolder
 
 	local boxCFrame, boxSize = model:GetBoundingBox()
@@ -684,9 +685,11 @@ function GarageStage.ShowVehicle(vehicleId, paintValue)
 	end
 end
 
-function GarageStage.SetPaint(paintValue)
+-- Both halves of the look at once, because the terminal always knows both and
+-- a car is never half-previewing.
+function GarageStage.SetBody(paintValue, materialValue)
 	if current then
-		VehiclePaint.Apply(current.Model, paintValue)
+		VehiclePaint.Apply(current.Model, paintValue, materialValue)
 	end
 end
 

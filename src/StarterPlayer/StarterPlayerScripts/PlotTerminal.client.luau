@@ -5,15 +5,20 @@
 -- is parked there (GarageStage.luau - local to this player, nobody else sees
 -- it), and the UI frames it from the edges of the screen:
 --
---   LEFT   the car being looked at, its main action (SPAWN / BUY), and the
---          list of every vehicle - the player's own first, then the shop.
---          Clicking a row parks that car in the bay, owned or not, so the
---          shop is a test drive for the eyes.
+--   LEFT   the car being looked at and the list of every vehicle - the
+--          player's own first, then the shop. Clicking a row parks that car
+--          in the bay, owned or not, so the shop is a test drive for the eyes.
 --   RIGHT  what can be done to the car: Upgrades (the same cards, icons and
---          Pro Tuning Pass as before) and Paint.
---   MIDDLE the car. Drag to turn it, scroll/pinch to zoom.
+--          Pro Tuning Pass as before, plus the Induction Upgrade ladder) and
+--          Body - its colour and its material.
+--   MIDDLE the car, framed by the drag hint up top and the main action
+--          (SPAWN / BUY) bottom-centre, flanked by two arrows that cycle
+--          through the same list the left panel shows - a photo-less list is
+--          not obviously clickable to the audience this is built for, so the
+--          arrows are the primary way to browse and the list is the shortcut
+--          for a player who already knows the name they want.
 --
--- WHY. The car on screen IS the car, so a colour clicked in the Paint tab is
+-- WHY. The car on screen IS the car, so a colour clicked in the Body tab is
 -- on it immediately - which a thumbnail could never show - and a new vehicle
 -- needs no photo rendering, only a template. It also frees the whole screen
 -- for UI instead of one 720x624 box.
@@ -24,26 +29,37 @@
 -- paid stats shown in gold under the free ones rather than hidden in a tab
 -- (see UpgradePasses.luau for the split and why).
 --
--- PAINT. Stock is the free option; the eight colours are bought once with
--- in-game money and then work on every car; the Custom Paint pass unlocks the
--- full picker. Anything can be PREVIEWED on the car for free - clicking a
--- locked colour puts it on the car and offers the purchase right under it,
--- and the picker drags live whether or not the pass is owned. Nothing is saved
--- until it is bought and applied; leaving the tab or the garage puts the
--- saved paint back. See VehiclePaint.luau.
+-- BODY. Stock is the free option for both halves. The eight colours and the
+-- eight materials are each bought once with in-game money and then work on
+-- every car; the Custom Paint pass unlocks the free-form colour picker (there
+-- is no material equivalent - see VehiclePaint). Anything can be PREVIEWED on
+-- the car for free - clicking a locked colour or material puts it on the car
+-- and offers the purchase right under it, and the picker drags live whether or
+-- not the pass is owned. Nothing is saved until it is bought and applied;
+-- leaving the tab or the garage puts the saved look back.
+--
+-- INDUCTION. The turbo ladder (VehicleInduction.luau) sits at the bottom of
+-- the Upgrades tab rather than in a tab of its own: it is bought with in-game
+-- money like every other upgrade, and a third tab would push the two that
+-- matter into a third of the panel each. It is one card, not a grid, because
+-- it is one ladder with four named rungs rather than a slider.
 --
 -- THE TUTORIAL. Two constraints, both load-bearing:
 --
 --   The root frame is named TerminalPanel and the spawn button
 --   SpawnVehicleButton, because TutorialGuide.client.luau finds both by name
---   (through PlayerGui.PlotTerminalGui) to dim the screen down to that one
---   button. Renaming either costs the tutorial's spotlight and nothing else.
+--   (through PlayerGui.PlotTerminalGui, recursively) to dim the screen down to
+--   that one button. Renaming either costs the tutorial's spotlight and
+--   nothing else - reparenting or moving it does not, which is why
+--   layoutActionArea is free to relocate it.
 --
 --   The tutorial's banner is bottom-anchored, up to 580x106, and drawn OVER
---   this screen - so the spawn button sits at the TOP of the left panel, never
---   near the bottom edge. The right panel and the drag hint are not shown at
---   all while the tutorial runs: a player being told to press one button does
---   not need ten upgrade cards competing with the instruction.
+--   this screen - exactly where the spawn button, cycle arrows and contract
+--   warning normally sit. layoutActionArea moves all three back to the TOP of
+--   the left panel and hides the arrows for as long as the tutorial is
+--   running, same as it always has. The right panel and the drag hint are not
+--   shown at all while the tutorial runs: a player being told to press one
+--   button does not need ten upgrade cards competing with the instruction.
 --
 -- Nothing here is a security boundary. Claiming, spawning, buying, tuning and
 -- painting are all re-checked in PlotManager.server.luau.
@@ -63,6 +79,7 @@ local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
 local UpgradePasses = require(ReplicatedStorage.Modules.Vehicles.UpgradePasses)
 local VehiclePaint = require(ReplicatedStorage.Modules.Vehicles.VehiclePaint)
+local VehicleInduction = require(ReplicatedStorage.Modules.Vehicles.VehicleInduction)
 
 local GarageStage = require(script.Parent:WaitForChild("GarageStage"))
 
@@ -78,7 +95,11 @@ local buyVehicleFunction = ReplicatedStorage:WaitForChild("BuyVehicle")
 local buyUpgradeEvent = ReplicatedStorage:WaitForChild("BuyUpgrade")
 local setCarConfigValueEvent = ReplicatedStorage:WaitForChild("SetCarConfigValue")
 local buyPaintColorFunction = ReplicatedStorage:WaitForChild("BuyPaintColor")
+local buyPaintMaterialFunction = ReplicatedStorage:WaitForChild("BuyPaintMaterial")
 local setVehiclePaintFunction = ReplicatedStorage:WaitForChild("SetVehiclePaint")
+local setVehicleMaterialFunction = ReplicatedStorage:WaitForChild("SetVehicleMaterial")
+local buyInductionStageFunction = ReplicatedStorage:WaitForChild("BuyInductionStage")
+local setInductionStageFunction = ReplicatedStorage:WaitForChild("SetInductionStage")
 local setGarageOpenEvent = ReplicatedStorage:WaitForChild("SetGarageOpen")
 
 --============================================================================
@@ -101,6 +122,10 @@ local OWNED_SEGMENT = Color3.fromRGB(78, 86, 102)
 local CAUTION = Color3.fromRGB(224, 178, 84)
 local GOLD = Color3.fromRGB(247, 196, 78)
 local GOLD_DIM = Color3.fromRGB(122, 98, 42)
+-- Everything else that means "go" on this screen is ACCENT green - buy buttons,
+-- the active tab, the segment bars. The main SPAWN/BUY button needs to read as
+-- its own thing at a glance rather than as one more green button among many.
+local SPAWN_BLUE = Color3.fromRGB(64, 156, 224)
 
 -- The side panels are slightly see-through so the bay reads as one space with
 -- the car in it, rather than as a car in a letterbox.
@@ -215,6 +240,7 @@ end
 --============================================================================
 
 local closeTerminal -- assigned near the bottom; spawning closes the garage
+local showVehicle -- assigned near the vehicle list section; the cycle arrows need it earlier
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "PlotTerminalGui"
@@ -373,17 +399,6 @@ local vehicleStatusLabel = label(leftPanel, {
 	TextTruncate = Enum.TextTruncate.AtEnd,
 })
 
--- The one big button: SPAWN for a car you own, BUY for one you don't. Near
--- the top of the screen on purpose - see the tutorial note in the header.
-local actionButton = button(leftPanel, {
-	Name = "SpawnVehicleButton", -- see the tutorial note in the header
-	Size = UDim2.new(1, -32, 0, 50),
-	Position = UDim2.fromOffset(16, 86),
-	TextSize = 19,
-	Text = "SPAWN VEHICLE",
-})
-corner(actionButton, 12)
-
 -- Spawning REPLACES whatever is parked here, and a truck carrying a contract
 -- takes the contract with it - the crates are welded into that bed. That is the
 -- intended rule, but it costs a contract slot, so it gets said BEFORE the click
@@ -391,18 +406,113 @@ corner(actionButton, 12)
 -- mirrors onto the Player.
 local ACTIVE_CONTRACT_ATTRIBUTE = "ActiveContractStop"
 
-local contractWarning = label(leftPanel, {
-	Size = UDim2.new(1, -32, 0, 30),
-	Position = UDim2.fromOffset(16, 140),
-	Font = Enum.Font.GothamBold,
-	TextSize = 12,
-	TextColor3 = CAUTION,
-	TextXAlignment = Enum.TextXAlignment.Left,
-	TextWrapped = true,
-	Visible = false,
-})
+-- The one big button: SPAWN for a car you own, BUY for one you don't. Bottom
+-- middle of the screen, flanked by the vehicle-cycle arrows, so a child never
+-- has to find it in the corner or read the list on the left to use it. It
+-- moves back to the top of the left panel while the tutorial is running - see
+-- the tutorial note in the header for why - which layoutActionArea handles.
+--
+-- ONLY these five names escape the do-block below: this file's body is one
+-- scope and close to Luau's 200-local limit (see the header and the
+-- Induction/materials sections for the same pattern), and everything else
+-- here - the sizing constants, the arrow builder - is only ever needed while
+-- building this cluster.
+local actionButton, contractWarning, prevVehicleButton, nextVehicleButton, layoutActionArea
 
-local LIST_TOP = 176
+do
+	local ACTION_WIDTH = 240
+	local ACTION_HEIGHT = 60
+	local CYCLE_SIZE = 56
+	local CYCLE_GAP = 14
+
+	actionButton = button(root, {
+		Name = "SpawnVehicleButton", -- see the tutorial note in the header
+		AnchorPoint = Vector2.new(0.5, 1),
+		Size = UDim2.fromOffset(ACTION_WIDTH, ACTION_HEIGHT),
+		Position = UDim2.new(0.5, 0, 1, -MARGIN),
+		TextSize = 19,
+		Text = "SPAWN VEHICLE",
+	})
+	corner(actionButton, 14)
+
+	-- The two arrows either side of it cycle through every vehicle in catalog
+	-- order, owned and shop alike - a second way to browse that needs no
+	-- reading and no photo, for an audience the header says may not have
+	-- either yet. The list on the left still exists for a player who wants to
+	-- jump straight to a car by name.
+	local function makeCycleArrow(name, text, xOffset)
+		local arrow = button(root, {
+			Name = name,
+			AnchorPoint = Vector2.new(0.5, 1),
+			Size = UDim2.fromOffset(CYCLE_SIZE, CYCLE_SIZE),
+			Position = UDim2.new(0.5, xOffset, 1, -MARGIN - (ACTION_HEIGHT - CYCLE_SIZE) / 2),
+			BackgroundColor3 = PANEL,
+			BackgroundTransparency = PANEL_TRANSPARENCY,
+			Font = Enum.Font.GothamBlack,
+			TextSize = 22,
+			TextColor3 = BRIGHT_TEXT,
+			Text = text,
+		})
+		corner(arrow, CYCLE_SIZE / 2)
+		stroke(arrow, PANEL_EDGE)
+		return arrow
+	end
+
+	local CYCLE_OFFSET = ACTION_WIDTH / 2 + CYCLE_GAP + CYCLE_SIZE / 2
+	prevVehicleButton = makeCycleArrow("PrevVehicleButton", "<", -CYCLE_OFFSET)
+	nextVehicleButton = makeCycleArrow("NextVehicleButton", ">", CYCLE_OFFSET)
+
+	contractWarning = label(root, {
+		AnchorPoint = Vector2.new(0.5, 1),
+		Size = UDim2.new(0, 420, 0, 20),
+		Position = UDim2.new(0.5, 0, 1, -MARGIN - ACTION_HEIGHT - 6),
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextColor3 = CAUTION,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextWrapped = true,
+		Visible = false,
+	})
+
+	-- The tutorial's banner is bottom-anchored and drawn over this screen (see
+	-- the header), so the action cluster - button, arrows, warning - moves up
+	-- into the left panel for exactly as long as the tutorial is running, and
+	-- the arrows are hidden: a brand-new player has only the one starter car
+	-- to look at anyway.
+	layoutActionArea = function(tutorialActive)
+		if tutorialActive then
+			actionButton.Parent = leftPanel
+			actionButton.AnchorPoint = Vector2.new(0, 0)
+			actionButton.Size = UDim2.new(1, -32, 0, 50)
+			actionButton.Position = UDim2.fromOffset(16, 86)
+
+			contractWarning.Parent = leftPanel
+			contractWarning.AnchorPoint = Vector2.new(0, 0)
+			contractWarning.Size = UDim2.new(1, -32, 0, 30)
+			contractWarning.Position = UDim2.fromOffset(16, 140)
+			contractWarning.TextXAlignment = Enum.TextXAlignment.Left
+
+			prevVehicleButton.Visible = false
+			nextVehicleButton.Visible = false
+		else
+			actionButton.Parent = root
+			actionButton.AnchorPoint = Vector2.new(0.5, 1)
+			actionButton.Size = UDim2.fromOffset(ACTION_WIDTH, ACTION_HEIGHT)
+			actionButton.Position = UDim2.new(0.5, 0, 1, -MARGIN)
+
+			contractWarning.Parent = root
+			contractWarning.AnchorPoint = Vector2.new(0.5, 1)
+			contractWarning.Size = UDim2.new(0, 420, 0, 20)
+			contractWarning.Position = UDim2.new(0.5, 0, 1, -MARGIN - ACTION_HEIGHT - 6)
+			contractWarning.TextXAlignment = Enum.TextXAlignment.Center
+
+			prevVehicleButton.Visible = true
+			nextVehicleButton.Visible = true
+		end
+	end
+end
+
+local LIST_TOP = 92
 
 label(leftPanel, {
 	Size = UDim2.new(1, -32, 0, 16),
@@ -440,7 +550,7 @@ do
 end
 
 --============================================================================
--- Right panel: Upgrades / Paint for a car you own, shop info for one you don't
+-- Right panel: Upgrades / Body for a car you own, shop info for one you don't
 --============================================================================
 
 local rightPanel = makePanel({
@@ -501,17 +611,22 @@ local function makeRightScroll()
 end
 
 local upgradesScroll = makeRightScroll()
-local paintScroll = makeRightScroll()
-paintScroll.Name = "PaintPage"
+local bodyScroll = makeRightScroll()
+bodyScroll.Name = "BodyPage"
 upgradesScroll.Name = "UpgradesPage"
+
+-- The tab's own name, used as its label, as its key in rightTabs and as the
+-- thing activeRightTab is compared against. One constant so renaming the tab
+-- again is one line rather than a hunt for string literals.
+local BODY_TAB = "Body"
 
 local rightTabs = {} -- [name] = { Button, Page }
 local activeRightTab = "Upgrades"
-local onLeavePaintTab -- assigned in the paint section
+local onLeaveBodyTab -- assigned in the body section
 
 local function showRightTab(name)
-	if activeRightTab == "Paint" and name ~= "Paint" and onLeavePaintTab then
-		onLeavePaintTab()
+	if activeRightTab == BODY_TAB and name ~= BODY_TAB and onLeaveBodyTab then
+		onLeaveBodyTab()
 	end
 	activeRightTab = name
 	for tabName, entry in rightTabs do
@@ -544,7 +659,7 @@ local function addRightTab(name, page, order)
 end
 
 addRightTab("Upgrades", upgradesScroll, 1)
-addRightTab("Paint", paintScroll, 2)
+addRightTab(BODY_TAB, bodyScroll, 2)
 
 -- Shown in place of the tabs for a car the player does not own yet.
 local shopInfo = Instance.new("Frame")
@@ -594,12 +709,13 @@ label(shopInfo, {
 	Text = "Buy it to upgrade it and paint it any colour you own. Drag the car to look around it.",
 })
 
--- Bottom middle, under the car. Hidden during the tutorial, whose banner sits
--- exactly here.
+-- Top middle, clear of both side panels. Bottom middle is now the spawn
+-- button and cycle arrows, and the tutorial's banner sits down there too, so
+-- the hint moved up rather than fight either for the same strip.
 local dragHint = label(root, {
 	Size = UDim2.fromOffset(360, 24),
-	Position = UDim2.new(0.5, 0, 1, -MARGIN),
-	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 0, MARGIN),
+	AnchorPoint = Vector2.new(0.5, 0),
 	Font = Enum.Font.GothamBold,
 	TextSize = 14,
 	TextColor3 = BRIGHT_TEXT,
@@ -735,6 +851,26 @@ end
 
 local function savedPaintFor(data, vehicleId)
 	return VehiclePaint.Sanitize((data.VehiclePaint or {})[vehicleId])
+end
+
+local function savedMaterialFor(data, vehicleId)
+	return VehiclePaint.SanitizeMaterial((data.VehicleMaterial or {})[vehicleId])
+end
+
+-- The highest stage BOUGHT for this car, and the one switched on. Two values,
+-- exactly like UpgradeLevels and CarConfigs: buying raises the ceiling, the
+-- arrows on the card pick a rung at or under it.
+local function inductionStageFor(data, vehicleId)
+	return VehicleInduction.ClampStage((data.InductionStages or {})[vehicleId])
+end
+
+local function inductionSettingFor(data, vehicleId)
+	local owned = inductionStageFor(data, vehicleId)
+	local active = (data.InductionSetting or {})[vehicleId]
+	if type(active) ~= "number" then
+		return owned
+	end
+	return math.clamp(VehicleInduction.ClampStage(active), 0, owned)
 end
 
 --============================================================================
@@ -1159,8 +1295,207 @@ local function clearChildren(container)
 	end
 end
 
+--============================================================================
+-- Induction Upgrade card
+--============================================================================
+-- ONE card, not a grid: this is a single ladder with four named rungs, and
+-- each rung is a different thing rather than another notch of the same slider.
+-- It sits at the BOTTOM of the Upgrades tab, after the stat cards a player
+-- reaches for first, even though it is the only upgrade whose result you can
+-- HEAR - because it always has something to sell (see renderUpgrades) and
+-- would otherwise push those cards below the fold on every car.
+--
+-- Nothing here is gated behind the Pro Tuning Pass. The pass sells the stats a
+-- player has to be told the meaning of; this sells a noise, and a noise nobody
+-- can hear until they pay Robux is a noise nobody knows exists.
+
+-- Wrapped for the same reason as the material section below: this file's body
+-- is one scope and it is close to Luau's 200-local limit, so a section keeps
+-- its own constants to itself.
+local makeInductionCard
+
+do
+	local INDUCTION_CARD_HEIGHT = 190
+	local PIP_HEIGHT = 10
+
+	makeInductionCard = function(data, vehicleId, layoutOrder)
+		local ownedStage = inductionStageFor(data, vehicleId)
+		local activeStage = inductionSettingFor(data, vehicleId)
+		local nextStage = VehicleInduction.NextStage(ownedStage)
+		local maxStage = VehicleInduction.MaxStage()
+
+		local card = Instance.new("Frame")
+		card.Name = "InductionCard"
+		card.Size = UDim2.new(1, 0, 0, INDUCTION_CARD_HEIGHT)
+		card.BackgroundColor3 = CARD
+		card.BorderSizePixel = 0
+		card.LayoutOrder = layoutOrder
+		card.Parent = upgradesScroll
+		corner(card, 12)
+		-- Green once anything is switched ON, so a glance down the tab says what
+		-- this car is running right now rather than what it has in the boot.
+		stroke(card, if activeStage > 0 then ACCENT else CARD_EDGE, if activeStage > 0 then 2 else 1)
+
+		label(card, {
+			Size = UDim2.new(1, -24, 0, 16),
+			Position = UDim2.fromOffset(14, 12),
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextColor3 = DIM_TEXT,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = string.upper(VehicleInduction.DisplayName),
+		})
+
+		-- The stage the car is RUNNING is the headline, because that is the
+		-- question the player is asking. "Stock" when nothing is switched on,
+		-- including for a player who has bought the lot and turned it all off.
+		label(card, {
+			-- Stops 84px short of the right edge, which is where the two 28px
+			-- arrows and their margins start. A stage name long enough to reach
+			-- it truncates rather than running under them.
+			Size = UDim2.new(1, -96, 0, 26),
+			Position = UDim2.fromOffset(14, 28),
+			Font = Enum.Font.GothamBlack,
+			TextSize = 22,
+			TextColor3 = if activeStage > 0 then ACCENT else BRIGHT_TEXT,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = VehicleInduction.DisplayNameFor(activeStage),
+		})
+
+		-- Switching between stages already bought. Secondary by design and
+		-- placed exactly where the stat cards put theirs, because they do the
+		-- same job: buying already switched the new stage on, so these only
+		-- ever turn it back DOWN and up again. Anti-lag is loud on purpose,
+		-- and a careful delivery is a real reason to want the quiet truck back.
+		local function setStage(newStage)
+			local clamped = math.clamp(newStage, 0, ownedStage)
+			if clamped == activeStage then
+				return
+			end
+			playClickSound()
+			-- InvokeServer, not FireServer, so the change is guaranteed applied
+			-- before refreshTerminalData reads it back.
+			setInductionStageFunction:InvokeServer(vehicleId, clamped)
+			refreshTerminalData()
+		end
+
+		local function makeStageArrow(text, xOffset, delta)
+			local enabled = (delta < 0 and activeStage > 0) or (delta > 0 and activeStage < ownedStage)
+			local arrow = button(card, {
+				Size = UDim2.fromOffset(28, 28),
+				Position = UDim2.new(1, xOffset, 0, 27),
+				AnchorPoint = Vector2.new(1, 0),
+				BackgroundColor3 = if enabled then PANEL else CARD,
+				AutoButtonColor = enabled,
+				Font = Enum.Font.GothamBold,
+				TextSize = 18,
+				TextColor3 = if enabled then BRIGHT_TEXT else OWNED_SEGMENT,
+				Text = text,
+			})
+			corner(arrow, 14)
+			if enabled then
+				arrow.MouseButton1Click:Connect(function()
+					setStage(activeStage + delta)
+				end)
+			end
+		end
+
+		-- Only once there is something to switch between. On a stock car they
+		-- would be two dead circles next to the word "Stock".
+		if ownedStage > 0 then
+			makeStageArrow("-", -48, -1)
+			makeStageArrow("+", -14, 1)
+		end
+
+		local pips = Instance.new("Frame")
+		pips.Size = UDim2.new(1, -28, 0, PIP_HEIGHT)
+		pips.Position = UDim2.fromOffset(14, 60)
+		pips.BackgroundTransparency = 1
+		pips.Parent = card
+		do
+			local layout = Instance.new("UIListLayout", pips)
+			layout.FillDirection = Enum.FillDirection.Horizontal
+			layout.Padding = UDim.new(0, SEGMENT_GAP)
+			layout.SortOrder = Enum.SortOrder.LayoutOrder
+		end
+		-- Three states, the same three the stat cards' segment bars use and in
+		-- the same colours: green = switched on, grey = bought but turned off,
+		-- dark = not bought. No numbers, because there is nothing to count.
+		for level = 1, maxStage do
+			local pip = Instance.new("Frame")
+			pip.Size = UDim2.new(1 / maxStage, -SEGMENT_GAP, 1, 0)
+			pip.BackgroundColor3 = if level <= activeStage
+				then ACCENT
+				elseif level <= ownedStage then OWNED_SEGMENT
+				else LOCKED
+			pip.BorderSizePixel = 0
+			pip.LayoutOrder = level
+			pip.Parent = pips
+			corner(pip, 5)
+		end
+
+		-- What the NEXT UNBOUGHT stage does, not what the current one did: the
+		-- card's job below the headline is to sell the next rung. At the top of
+		-- the ladder there is nothing left to sell, so it describes whatever
+		-- the car is running instead.
+		local described = nextStage or VehicleInduction.Get(activeStage)
+		label(card, {
+			Size = UDim2.new(1, -28, 0, 52),
+			Position = UDim2.fromOffset(14, 78),
+			TextSize = 13,
+			TextColor3 = DIM_TEXT,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			Text = if described then described.Blurb else "",
+		})
+
+		local buyButton = button(card, {
+			Name = "BuyInductionButton",
+			Size = UDim2.new(1, -28, 0, 42),
+			Position = UDim2.fromOffset(14, 136),
+			TextSize = 15,
+		})
+		corner(buyButton, 10)
+
+		if not nextStage then
+			buyButton.Text = "FULLY BUILT " .. TICK_GLYPH
+			buyButton.BackgroundColor3 = LOCKED
+			buyButton.TextColor3 = DIM_TEXT
+			return
+		end
+
+		local affordable = (data.Money or 0) >= nextStage.Price
+		-- The next stage is NAMED on the button, not called "upgrade": "BLOW-OFF
+		-- VALVE $9,000" is a thing a child can want, and "UPGRADE $9,000" is not.
+		buyButton.Text = if affordable
+			then string.upper(nextStage.DisplayName) .. "  " .. formatMoney(nextStage.Price)
+			else "NEED " .. formatMoney(nextStage.Price - (data.Money or 0))
+		buyButton.BackgroundColor3 = if affordable then ACCENT else LOCKED
+		buyButton.TextColor3 = if affordable then PANEL else DIM_TEXT
+		buyButton.AutoButtonColor = affordable
+
+		buyButton.MouseButton1Click:Connect(function()
+			if not affordable then
+				return
+			end
+			playClickSound()
+			if buyInductionStageFunction:InvokeServer(vehicleId) then
+				playClaimSound()
+			end
+			refreshTerminalData()
+		end)
+	end
+end
+
+-- The induction ladder is the LAST thing in the tab, not the first: it does
+-- not come from a Configs file, so it always has something to show, but the
+-- free/paid stat cards are what most cars have and what a player reaches for
+-- first, and burying them under one big card pushed them below the fold.
 local function renderUpgrades(data, vehicleId)
 	clearChildren(upgradesScroll)
+
 	local def = VehicleCatalog.Get(vehicleId)
 	local specs = def and VehiclePhysics.GetUpgradeSpecs(def.TemplateName)
 	if not specs then
@@ -1168,8 +1503,10 @@ local function renderUpgrades(data, vehicleId)
 			Size = UDim2.new(1, 0, 0, 40),
 			TextSize = 14,
 			TextColor3 = DIM_TEXT,
-			Text = "This vehicle has no upgrades yet.",
+			Text = "This vehicle has no other upgrades yet.",
+			LayoutOrder = 1,
 		})
+		makeInductionCard(data, vehicleId, 2)
 		return
 	end
 
@@ -1198,32 +1535,44 @@ local function renderUpgrades(data, vehicleId)
 
 	local paidStats = orderedStats(specs, PAID_ORDER, true)
 	if #paidStats == 0 then
-		return -- a car with no gated stats has no pass to sell
+		makeInductionCard(data, vehicleId, 2) -- a car with no gated stats has no pass to sell
+		return
 	end
 	makePassBanner(vehicleId, ownsPass, 2)
 	addCards(makeGridSection(3), paidStats)
+	makeInductionCard(data, vehicleId, 4)
 end
 
 --============================================================================
--- Paint tab
+-- Body tab
 --============================================================================
 
--- What is on the car right now, which may be a colour being tried on rather
--- than the saved one. `nil` = stock.
+-- What is on the car right now, either half of which may be something being
+-- tried on rather than the saved one. `nil` = stock.
 local previewPaint = nil
+local previewMaterial = nil
+
+-- Pushes both halves of the preview onto the car at once. Every place that
+-- changes one of them goes through here, because VehiclePaint.Apply takes both
+-- and passing nil for the half that did not change would strip it.
+local function applyPreview()
+	GarageStage.SetBody(previewPaint, previewMaterial)
+end
 
 local function isPreviewing(data)
 	return previewPaint ~= savedPaintFor(data, viewedVehicleId)
+		or previewMaterial ~= savedMaterialFor(data, viewedVehicleId)
 end
 
 local function revertPreview()
 	if latestData and viewedVehicleId then
 		previewPaint = savedPaintFor(latestData, viewedVehicleId)
-		GarageStage.SetPaint(previewPaint)
+		previewMaterial = savedMaterialFor(latestData, viewedVehicleId)
+		applyPreview()
 	end
 end
 
-onLeavePaintTab = revertPreview
+onLeaveBodyTab = revertPreview
 
 local function sectionLabel(parent, text, order)
 	return label(parent, {
@@ -1237,7 +1586,7 @@ local function sectionLabel(parent, text, order)
 	})
 end
 
-sectionLabel(paintScroll, "COLOURS", 1)
+sectionLabel(bodyScroll, "COLOURS", 1)
 
 -- 5 x 56 + 4 x 11 == 324 == UPGRADE_CONTENT_WIDTH.
 local SWATCH_SIZE = 56
@@ -1249,7 +1598,7 @@ swatchGrid.BackgroundTransparency = 1
 swatchGrid.Size = UDim2.new(1, 0, 0, 0)
 swatchGrid.AutomaticSize = Enum.AutomaticSize.Y
 swatchGrid.LayoutOrder = 2
-swatchGrid.Parent = paintScroll
+swatchGrid.Parent = bodyScroll
 
 -- The purchase for a colour being tried on. Only visible while previewing a
 -- colour the player does not own.
@@ -1259,7 +1608,7 @@ buyBar.BackgroundColor3 = CARD
 buyBar.BorderSizePixel = 0
 buyBar.LayoutOrder = 3
 buyBar.Visible = false
-buyBar.Parent = paintScroll
+buyBar.Parent = bodyScroll
 corner(buyBar, 12)
 stroke(buyBar, ACCENT, 1)
 
@@ -1288,9 +1637,9 @@ local buyBarButton = button(buyBar, {
 })
 corner(buyBarButton, 10)
 
-sectionLabel(paintScroll, "CUSTOM COLOUR", 4)
+sectionLabel(bodyScroll, "CUSTOM COLOUR", 4)
 
-local renderPaint -- forward: swatches, buy bar and apply button
+local renderBody -- forward: swatches, buy bar and apply button
 
 -- The palette pass for the car being looked at, or nil if that car has no
 -- pass created yet. Per car, like the tuning pass.
@@ -1312,16 +1661,17 @@ local function commitPaint(value)
 		latestData.VehiclePaint = latestData.VehiclePaint or {}
 		latestData.VehiclePaint[vehicleId] = value
 		previewPaint = value
-		GarageStage.SetPaint(value)
+		applyPreview()
 		renderAll()
 	end
 end
 
 local function tryOnPaint(value)
 	previewPaint = value
-	GarageStage.SetPaint(value)
-	renderPaint()
+	applyPreview()
+	renderBody()
 end
+
 
 local customChipStroke, applyCustomButton, setPickerFromValue, cancelPickerDrag
 do
@@ -1331,7 +1681,7 @@ do
 	customSection.BackgroundTransparency = 1
 	customSection.Size = UDim2.new(1, 0, 0, 262)
 	customSection.LayoutOrder = 5
-	customSection.Parent = paintScroll
+	customSection.Parent = bodyScroll
 
 	local PICKER_HEIGHT = 150
 	local HUE_HEIGHT = 22
@@ -1482,7 +1832,7 @@ do
 		-- Only the car and the chip follow the drag frame by frame; the rest of
 		-- the tab (swatch rings, the apply button) is redrawn on begin and end.
 		previewPaint = pickerHex()
-		GarageStage.SetPaint(previewPaint)
+		applyPreview()
 	end
 
 	local function beginPickerDrag(kind, input)
@@ -1493,13 +1843,13 @@ do
 		pickerDrag = kind
 		pickerDragInput = input
 		updatePickerDrag(input.Position)
-		renderPaint()
+		renderBody()
 	end
 
 	local function endPickerDrag()
 		pickerDrag = nil
 		pickerDragInput = nil
-		renderPaint()
+		renderBody()
 	end
 
 	satValBox.InputBegan:Connect(function(input)
@@ -1546,6 +1896,233 @@ do
 		pickerDrag = nil
 		pickerDragInput = nil
 	end
+end
+
+--============================================================================
+-- Body tab: materials
+--============================================================================
+-- Deliberately the same 56px grid, the same padlock, the same tick and the
+-- same buy bar as the colours above it. A material is a second thing bought
+-- exactly the way a colour is, so the second half of this tab teaches nothing
+-- new - the player already knows how it works by the time they scroll to it.
+
+-- EVERYTHING BELOW IS IN A do-BLOCK, and only renderMaterials comes out of it.
+-- This file is close to Luau's limit of 200 locals per scope (the whole file
+-- body is one scope), and a section that needs seven names to build one grid
+-- has no business spending seven of them at the top level. Same reason the
+-- colour picker above is wrapped.
+local renderMaterials
+
+do
+	sectionLabel(bodyScroll, "MATERIAL", 6)
+
+	local materialGrid = Instance.new("Frame")
+	materialGrid.Name = "Materials"
+	materialGrid.BackgroundTransparency = 1
+	materialGrid.Size = UDim2.new(1, 0, 0, 0)
+	materialGrid.AutomaticSize = Enum.AutomaticSize.Y
+	materialGrid.LayoutOrder = 7
+	materialGrid.Parent = bodyScroll
+
+	local materialBuyBar = Instance.new("Frame")
+	materialBuyBar.Size = UDim2.new(1, 0, 0, 56)
+	materialBuyBar.BackgroundColor3 = CARD
+	materialBuyBar.BorderSizePixel = 0
+	materialBuyBar.LayoutOrder = 8
+	materialBuyBar.Visible = false
+	materialBuyBar.Parent = bodyScroll
+	corner(materialBuyBar, 12)
+	stroke(materialBuyBar, ACCENT, 1)
+
+	local materialBuyBarSwatch = Instance.new("Frame")
+	materialBuyBarSwatch.Size = UDim2.fromOffset(32, 32)
+	materialBuyBarSwatch.Position = UDim2.fromOffset(12, 12)
+	materialBuyBarSwatch.BorderSizePixel = 0
+	materialBuyBarSwatch.Parent = materialBuyBar
+	corner(materialBuyBarSwatch, 8)
+
+	local materialBuyBarName = label(materialBuyBar, {
+		Size = UDim2.new(1, -190, 1, 0),
+		Position = UDim2.fromOffset(54, 0),
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+
+	local materialBuyBarButton = button(materialBuyBar, {
+		Name = "BuyMaterialButton",
+		Size = UDim2.fromOffset(124, 38),
+		Position = UDim2.new(1, -10, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		TextSize = 15,
+	})
+	corner(materialBuyBarButton, 10)
+
+	-- The material half of commitPaint/tryOnPaint, deliberately the same two
+	-- functions again rather than one generalised pair: they differ in the
+	-- remote they call, the field they write back and nothing else, and a
+	-- shared version parameterised on all three reads worse than this does.
+	local function commitMaterial(value)
+		local vehicleId = viewedVehicleId
+		if not vehicleId then
+			return
+		end
+		local ok = setVehicleMaterialFunction:InvokeServer(vehicleId, value)
+		if ok and latestData and viewedVehicleId == vehicleId then
+			latestData.VehicleMaterial = latestData.VehicleMaterial or {}
+			latestData.VehicleMaterial[vehicleId] = value
+			previewMaterial = value
+			applyPreview()
+			renderAll()
+		end
+	end
+
+	local function tryOnMaterial(value)
+		previewMaterial = value
+		applyPreview()
+		renderBody()
+	end
+
+	-- One line taller than the colour swatches: a colour's own look already
+	-- says what it is, but "rusty" or "marble" is not something a swatch alone
+	-- reads as, so the material's name gets its own line here rather than
+	-- being swapped out for the price once it is locked.
+	local MATERIAL_CELL_HEIGHT = SWATCH_SIZE + 34
+
+	local function makeMaterialChip(value, order, ownedMaterials, savedMaterial)
+		local entry = value and VehiclePaint.MaterialsById[value]
+		local owned = value == nil or ownedMaterials[value] == true
+		local isOn = previewMaterial == value
+		local isSaved = savedMaterial == value
+
+		local cell = Instance.new("Frame")
+		cell.Name = value or "Stock"
+		cell.Size = UDim2.fromOffset(SWATCH_SIZE, MATERIAL_CELL_HEIGHT)
+		cell.BackgroundTransparency = 1
+		cell.LayoutOrder = order
+		cell.Parent = materialGrid
+
+		local chip = button(cell, {
+			Name = "Chip",
+			Size = UDim2.fromOffset(SWATCH_SIZE, SWATCH_SIZE),
+			BackgroundColor3 = if entry then entry.Swatch else CARD,
+			Text = if entry then "" else "STOCK",
+			Font = Enum.Font.GothamBlack,
+			TextSize = 11,
+			TextColor3 = BRIGHT_TEXT,
+		})
+		corner(chip, 12)
+		stroke(chip, if isOn then ACCENT else CARD_EDGE, if isOn then 3 else 1)
+
+		if not owned then
+			label(chip, {
+				Size = UDim2.fromOffset(22, 22),
+				Position = UDim2.new(1, -2, 1, -2),
+				AnchorPoint = Vector2.new(1, 1),
+				TextSize = 13,
+				Text = LOCK_GLYPH,
+			})
+		elseif isSaved then
+			local tick = label(chip, {
+				Size = UDim2.fromOffset(22, 22),
+				Position = UDim2.new(1, -3, 0, 3),
+				AnchorPoint = Vector2.new(1, 0),
+				BackgroundTransparency = 0,
+				BackgroundColor3 = ACCENT,
+				Font = Enum.Font.GothamBlack,
+				TextSize = 14,
+				TextColor3 = PANEL,
+				Text = TICK_GLYPH,
+			})
+			corner(tick, 11)
+		end
+
+		-- The kind of material - Rust, Neon, Marble - always shown, whether or
+		-- not it is owned yet: a locked chip used to hide this behind its price,
+		-- which meant the only way to know what you'd be buying was to unlock it.
+		label(cell, {
+			Size = UDim2.new(1, 4, 0, 16),
+			Position = UDim2.new(0.5, 0, 0, SWATCH_SIZE + 3),
+			AnchorPoint = Vector2.new(0.5, 0),
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextColor3 = BRIGHT_TEXT,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = if entry then entry.DisplayName else "Stock",
+		})
+
+		label(cell, {
+			Size = UDim2.new(1, 4, 0, 14),
+			Position = UDim2.new(0.5, 0, 0, SWATCH_SIZE + 19),
+			AnchorPoint = Vector2.new(0.5, 0),
+			TextSize = 11,
+			TextColor3 = if owned then DIM_TEXT else ACCENT,
+			Text = if owned then (if entry then "Owned" else "Free") else formatMoney(entry.Price),
+		})
+
+		chip.MouseButton1Click:Connect(function()
+			playClickSound()
+			-- Owned and not already saved: applying is the whole interaction, so
+			-- don't make a child find a second button to confirm with. Owned and
+			-- already saved: nothing to commit, so this is just putting it back on
+			-- after trying something else. Same rule as the colour swatches.
+			if owned and value ~= savedMaterial then
+				commitMaterial(value)
+			else
+				tryOnMaterial(value)
+			end
+		end)
+	end
+
+	renderMaterials = function(data)
+		clearChildren(materialGrid)
+		local grid = Instance.new("UIGridLayout", materialGrid)
+		grid.CellSize = UDim2.fromOffset(SWATCH_SIZE, MATERIAL_CELL_HEIGHT)
+		grid.CellPadding = UDim2.fromOffset(SWATCH_GAP, 8)
+		grid.SortOrder = Enum.SortOrder.LayoutOrder
+
+		local ownedMaterials = {}
+		for _, id in data.PaintMaterials or {} do
+			ownedMaterials[id] = true
+		end
+		local saved = savedMaterialFor(data, viewedVehicleId)
+
+		makeMaterialChip(nil, 0, ownedMaterials, saved)
+		for index, entry in VehiclePaint.Materials do
+			makeMaterialChip(entry.Id, index, ownedMaterials, saved)
+		end
+
+		local entry = previewMaterial and VehiclePaint.MaterialsById[previewMaterial]
+		local tryingLocked = entry ~= nil and not ownedMaterials[entry.Id]
+		materialBuyBar.Visible = tryingLocked
+		if tryingLocked then
+			materialBuyBarSwatch.BackgroundColor3 = entry.Swatch
+			materialBuyBarName.Text = entry.DisplayName
+			local affordable = (data.Money or 0) >= entry.Price
+			materialBuyBarButton.Text = if affordable
+				then "BUY " .. formatMoney(entry.Price)
+				else "NEED " .. formatMoney(entry.Price - (data.Money or 0))
+			materialBuyBarButton.BackgroundColor3 = if affordable then ACCENT else LOCKED
+			materialBuyBarButton.TextColor3 = if affordable then PANEL else DIM_TEXT
+			materialBuyBarButton.AutoButtonColor = affordable
+		end
+	end
+
+	materialBuyBarButton.MouseButton1Click:Connect(function()
+		local data = latestData
+		local entry = previewMaterial and VehiclePaint.MaterialsById[previewMaterial]
+		if not data or not entry or (data.Money or 0) < entry.Price then
+			return
+		end
+		playClickSound()
+		local vehicleId = viewedVehicleId
+		if buyPaintMaterialFunction:InvokeServer(entry.Id) then
+			setVehicleMaterialFunction:InvokeServer(vehicleId, entry.Id)
+			playClaimSound()
+		end
+		refreshTerminalData()
+	end)
 end
 
 local function makeSwatch(value, order, ownedColors, savedPaint)
@@ -1620,11 +2197,12 @@ local function makeSwatch(value, order, ownedColors, savedPaint)
 	end)
 end
 
-renderPaint = function()
+renderBody = function()
 	local data = latestData
 	if not data or not viewedVehicleId then
 		return
 	end
+	renderMaterials(data)
 	clearChildren(swatchGrid)
 	local grid = Instance.new("UIGridLayout", swatchGrid)
 	grid.CellSize = UDim2.fromOffset(SWATCH_SIZE, SWATCH_SIZE + 20)
@@ -1706,8 +2284,6 @@ local function listHeader(text, order)
 		LayoutOrder = order,
 	})
 end
-
-local showVehicle -- forward
 
 local function makeVehicleRow(data, vehicleId, owned, order)
 	local def = VehicleCatalog.Get(vehicleId)
@@ -1858,7 +2434,7 @@ local function renderHeader(data)
 		vehicleStatusLabel.Text = "Owned  \u{2022}  " .. VehiclePaint.DisplayName(savedPaintFor(data, vehicleId)) .. " paint"
 		local carrying, stop = carryingContract()
 		-- Recoloured with the warning so the two read as one object.
-		setAction("SPAWN VEHICLE", if carrying then CAUTION else ACCENT, function()
+		setAction("SPAWN VEHICLE", if carrying then CAUTION else SPAWN_BLUE, function()
 			spawnVehicleEvent:FireServer(vehicleId)
 			-- Nothing left to do at the terminal once the car is out.
 			closeTerminal()
@@ -1886,7 +2462,7 @@ local function renderHeader(data)
 		setAction("NEED " .. formatMoney(def.Price - data.Money) .. " MORE", LOCKED, nil)
 		return
 	end
-	setAction("BUY " .. formatMoney(def.Price), ACCENT, function()
+	setAction("BUY " .. formatMoney(def.Price), SPAWN_BLUE, function()
 		if buyVehicleFunction:InvokeServer(vehicleId) then
 			playClaimSound()
 		end
@@ -1900,6 +2476,39 @@ actionButton.MouseButton1Click:Connect(function()
 		actionHandler()
 	end
 end)
+
+-- Steps to the previous/next vehicle in catalog order - owned and shop alike,
+-- the same order the list on the left uses within each of its two headers.
+-- Scoped to this do-block: cycleVehicle is only ever called from the two
+-- connections right below it and has no business staying alive as a
+-- chunk-wide local for the rest of the file (see the 200-local note above).
+do
+	local function cycleVehicle(delta)
+		local order = VehicleCatalog.Order
+		if not latestData or #order == 0 then
+			return
+		end
+		local currentIndex = 1
+		for index, id in order do
+			if id == viewedVehicleId then
+				currentIndex = index
+				break
+			end
+		end
+		local nextId = order[((currentIndex - 1 + delta) % #order) + 1]
+		if nextId and nextId ~= viewedVehicleId then
+			playClickSound()
+			showVehicle(nextId)
+		end
+	end
+
+	prevVehicleButton.MouseButton1Click:Connect(function()
+		cycleVehicle(-1)
+	end)
+	nextVehicleButton.MouseButton1Click:Connect(function()
+		cycleVehicle(1)
+	end)
+end
 
 player:GetAttributeChangedSignal(ACTIVE_CONTRACT_ATTRIBUTE):Connect(function()
 	if screenGui.Enabled and latestData then
@@ -1953,6 +2562,7 @@ renderAll = function()
 	local tutorialActive = isTutorialActive()
 	rightPanel.Visible = not tutorialActive
 	dragHint.Visible = not tutorialActive
+	layoutActionArea(tutorialActive)
 	if tutorialActive or not viewedVehicleId then
 		return
 	end
@@ -1962,11 +2572,11 @@ renderAll = function()
 	shopInfo.Visible = not owned
 	if owned then
 		renderUpgrades(data, viewedVehicleId)
-		renderPaint()
+		renderBody()
 		showRightTab(activeRightTab)
 	else
 		upgradesScroll.Visible = false
-		paintScroll.Visible = false
+		bodyScroll.Visible = false
 		renderShopInfo(data, viewedVehicleId)
 	end
 end
@@ -1979,16 +2589,18 @@ showVehicle = function(vehicleId)
 		return
 	end
 	viewedVehicleId = vehicleId
-	previewPaint = if ownsVehicle(data, vehicleId) then savedPaintFor(data, vehicleId) else nil
+	local owned = ownsVehicle(data, vehicleId)
+	previewPaint = if owned then savedPaintFor(data, vehicleId) else nil
+	previewMaterial = if owned then savedMaterialFor(data, vehicleId) else nil
 	setPickerFromValue(previewPaint)
-	if ownsVehicle(data, vehicleId) and data.SelectedVehicleId ~= vehicleId then
+	if owned and data.SelectedVehicleId ~= vehicleId then
 		data.SelectedVehicleId = vehicleId
 		selectVehicleEvent:FireServer(vehicleId)
 	end
 	renderAll()
 	-- Last: building a preview for the first time can yield while its model
 	-- replicates, and the UI should not wait on it.
-	task.spawn(GarageStage.ShowVehicle, vehicleId, previewPaint)
+	task.spawn(GarageStage.ShowVehicle, vehicleId, previewPaint, previewMaterial)
 end
 
 refreshTerminalData = function()
@@ -2002,12 +2614,14 @@ refreshTerminalData = function()
 	end
 	-- A purchase can change what is saved; whatever is on the car follows the
 	-- save unless the player is mid-way through trying something on.
-	if not (activeRightTab == "Paint" and isPreviewing(data)) or not ownsVehicle(data, viewedVehicleId) then
-		previewPaint = if ownsVehicle(data, viewedVehicleId) then savedPaintFor(data, viewedVehicleId) else nil
+	local owned = ownsVehicle(data, viewedVehicleId)
+	if not (activeRightTab == BODY_TAB and isPreviewing(data)) or not owned then
+		previewPaint = if owned then savedPaintFor(data, viewedVehicleId) else nil
+		previewMaterial = if owned then savedMaterialFor(data, viewedVehicleId) else nil
 	end
 	if screenGui.Enabled then
 		renderAll()
-		GarageStage.SetPaint(previewPaint)
+		applyPreview()
 	end
 	return data
 end
