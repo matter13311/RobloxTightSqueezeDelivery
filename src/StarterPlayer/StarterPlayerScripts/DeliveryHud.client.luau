@@ -1675,6 +1675,16 @@ waypointCaption.ZIndex = 0
 waypointCaption.Text = ""
 waypointCaption.Parent = waypoint
 
+-- Far away and straight ahead, the destination projects onto the horizon -
+-- exactly where the traffic in front of the truck is. At full size the
+-- marker sat on top of those cars, so the far diamond shrinks, fades a
+-- little and floats ABOVE the point instead of centred on it (see
+-- WAYPOINT_FAR_* below). The edge arrow and the near arrow keep full size:
+-- those are the moments the player actually needs to read it.
+local waypointScale = Instance.new("UIScale")
+waypointScale.Scale = 1
+waypointScale.Parent = waypoint
+
 -- Resolved lazily and re-resolved while empty, for the same reason
 -- findBaySpaces is: the destination models are hand-built in Studio and can
 -- appear or be renamed after this script has already run.
@@ -1731,6 +1741,25 @@ local WAYPOINT_MARGIN_TOP = 165
 local WAYPOINT_NEAR_DISTANCE = 120
 local WAYPOINT_BOUNCE_AMPLITUDE = 8
 local WAYPOINT_BOUNCE_SPEED = 3.4
+
+-- The far, on-screen diamond: scaled down, see-through, and lifted so its
+-- bottom edge sits this many pixels above the destination point.
+local WAYPOINT_FAR_SCALE = 0.6
+local WAYPOINT_FAR_TRANSPARENCY = 0.35
+local WAYPOINT_FAR_LIFT = 18
+-- Beyond this the far diamond is at its smallest; between NEAR and this it
+-- grows back towards full size so the hand-over to the arrow is not a jump.
+local WAYPOINT_FAR_FULL_AT = 400
+local WAYPOINT_EDGE_SCALE = 0.8
+
+local function setWaypointLook(scale, transparency, anchorY)
+	waypointScale.Scale = scale
+	waypointArrow.TextTransparency = transparency
+	waypointCaption.TextTransparency = transparency
+	waypointArrowStroke.Transparency = 0.2 + transparency * 0.8
+	captionStroke.Transparency = 0.35 + transparency * 0.65
+	waypoint.AnchorPoint = Vector2.new(0.5, anchorY)
+end
 
 RunService.RenderStepped:Connect(function()
 	if not activeContract then
@@ -1809,6 +1838,20 @@ RunService.RenderStepped:Connect(function()
 	else
 		clampedX = point.X
 		clampedY = math.clamp(point.Y, minY, maxY)
+	end
+
+	if edge then
+		setWaypointLook(WAYPOINT_EDGE_SCALE, 0, 0.5)
+	elseif near then
+		setWaypointLook(1, 0, 0.5)
+	else
+		local t = math.clamp((distance - WAYPOINT_NEAR_DISTANCE) / (WAYPOINT_FAR_FULL_AT - WAYPOINT_NEAR_DISTANCE), 0, 1)
+		local scale = 1 + (WAYPOINT_FAR_SCALE - 1) * t
+		setWaypointLook(scale, WAYPOINT_FAR_TRANSPARENCY * t, 1)
+		-- Bottom-anchored now, so keep its TOP where the centred marker's top
+		-- used to stop - clear of the job panel.
+		local height = waypoint.Size.Y.Offset
+		clampedY = math.max(clampedY - WAYPOINT_FAR_LIFT, minY - height / 2 + height * scale)
 	end
 
 	waypoint.Position = UDim2.fromOffset(clampedX, clampedY)

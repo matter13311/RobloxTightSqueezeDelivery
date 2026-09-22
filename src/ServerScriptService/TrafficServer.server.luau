@@ -61,6 +61,8 @@ for _, model in TrafficNet.SortedTemplates(templatesFolder) do
 	table.insert(templates, {
 		HalfLength = model:GetAttribute("HalfLength") or root.Size.Z / 2,
 		HalfWidth = model:GetAttribute("HalfWidth") or root.Size.X / 2,
+		Weight = model:GetAttribute("Weight") or 1,
+		Routes = model:GetAttribute("Routes"),
 	})
 end
 

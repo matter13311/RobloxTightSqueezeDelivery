@@ -8,6 +8,26 @@
 -- end; each circuit holds up to its Cap, which is how the map gets busier the
 -- further it is from the depot. Cars are only created or recycled where no
 -- player can see it happen. See TrafficConfig for the routes.
+--
+-- LANE CHANGES. A car follows its route's line, plus a sideways offset
+-- (car.Lane, + = to its left). On a route with `Lanes` (Market Ave, which has
+-- two lanes each way) a car that is held up - by a slow or stopped car, a
+-- player, or roadworks - moves over into the other lane if that lane is clear
+-- ahead and alongside, and drifts back to its own lane only once its own lane
+-- is clear. It never sits straddling the line waiting for a gap: a change is
+-- only started when the target lane is already free. Outside the route's lane
+-- boxes (junctions, turn-arounds) it always returns to the route line. The
+-- check only runs for cars that are actually held up, so it costs next to
+-- nothing when traffic is flowing.
+--
+-- A lane change is DRIVEN, never slid: the sideways offset follows an S-curve
+-- over a stretch of forward travel (steer out, cross, straighten), and it
+-- only advances as the car moves forward, so a stopped car never drifts
+-- sideways. A car boxed in behind something steers out more sharply over a
+-- shorter stretch, and senses what is ahead from where its NOSE will be, so
+-- it can pull out of a queue rather than wait behind the thing it is
+-- steering round. Cars on lane routes also stop a little further back
+-- (LaneStopGap) to leave themselves room to pull out, like real drivers do.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -19,11 +39,29 @@ TrafficSim.__index = TrafficSim
 local SENSE_INTERVAL = 0.1
 local AHEAD_SAMPLE = 4 -- studs ahead of the centre a car points at, smooths corners
 
+-- Lane changes: forward studs of travel per stud of sideways offset when the
+-- road ahead is open, and the shortest stretch a boxed-in car will use. TrafficController.client
+-- rebuilds the curve from these, so it keeps copies: change both.
+local LANE_STUDS_PER_OFFSET = 4.5
+local LANE_MIN_LENGTH = 16
+-- Extra stopping distance on lane routes, so a car queued behind something
+-- has room to steer out of the queue.
+local LANE_STOP_GAP = 8
+
+-- 0..1 -> 0..1 with zero slope at both ends: steer out, then straighten.
+local function smoothstep(t)
+	return t * t * (3 - 2 * t)
+end
+
 local function flat(v)
 	return Vector3.new(v.X, 0, v.Z)
 end
 
--- templates: array of { HalfLength, HalfWidth }, in TrafficNet.SortedTemplates order.
+-- templates: array of { HalfLength, HalfWidth, Weight, Routes }, in
+-- TrafficNet.SortedTemplates order. Weight (default 1) is how often it is
+-- picked; Routes, if set, is a plain substring a route's Name must contain
+-- (the buses and big trucks only run the "Market" circuits, whose 12-stud
+-- lanes have no kerb parking for them to clip).
 -- maxCars: already capped to what a snapshot can carry.
 function TrafficSim.new(config, templates, maxCars)
 	local self = setmetatable({}, TrafficSim)
@@ -48,6 +86,20 @@ function TrafficSim.new(config, templates, maxCars)
 			Count = 0,
 			Path = path,
 			KeepClear = TrafficSim.KeepClearIntervals(path, config.KeepClear or {}),
+			Lanes = route.Lanes,
+		})
+	end
+	-- Permanent obstacles (roadworks), as oriented boxes in the same shape as
+	-- the per-tick obstacles from the server.
+	self.Static = {}
+	for _, r in config.Static or {} do
+		table.insert(self.Static, {
+			Position = Vector3.new((r[1] + r[3]) / 2, 0, (r[2] + r[4]) / 2),
+			Look = Vector3.zAxis,
+			Right = Vector3.xAxis,
+			HalfLength = (r[4] - r[2]) / 2,
+			HalfWidth = (r[3] - r[1]) / 2,
+			Static = true,
 		})
 	end
 	return self
@@ -148,8 +200,35 @@ function TrafficSim:_rollHonkDelays(car)
 	car.QueueHonkDelay = self:_rand(config.HonkInQueueDelayMin, config.HonkInQueueDelayMax)
 end
 
-function TrafficSim:_place(route, s, speed)
-	local templateIndex = self.Rng:NextInteger(1, #self.Templates)
+-- A body for a new car on `route`, weighted, from the templates allowed there.
+function TrafficSim:_pickTemplate(route)
+	local total = 0
+	for _, t in self.Templates do
+		if not t.Routes or string.find(route.Name, t.Routes, 1, true) then
+			total += t.Weight or 1
+		end
+	end
+	local roll = self.Rng:NextNumber(0, total)
+	local last = 1
+	for index, t in self.Templates do
+		if not t.Routes or string.find(route.Name, t.Routes, 1, true) then
+			last = index
+			roll -= t.Weight or 1
+			if roll <= 0 then
+				return index
+			end
+		end
+	end
+	return last
+end
+
+-- Extra spawn clearance for a body longer than an ordinary car.
+function TrafficSim:_extraClearance(templateIndex)
+	return math.max(0, self.Templates[templateIndex].HalfLength - 9.5) * 2
+end
+
+function TrafficSim:_place(route, s, speed, templateIndex)
+	templateIndex = templateIndex or self:_pickTemplate(route)
 	local template = self.Templates[templateIndex]
 	local position, direction = TrafficPath.Sample(route.Path, s, 1)
 	local car = {
@@ -173,8 +252,18 @@ function TrafficSim:_place(route, s, speed)
 		HoldUntil = 0,
 		LastBump = 0,
 		Position = position,
+		Base = position,
 		Forward = direction,
 		Right = Vector3.new(-direction.Z, 0, direction.X),
+		Lane = 0,
+		LaneTarget = 0,
+		LaneSince = 0,
+		-- the change in progress: from which offset, how far along (0..1) and
+		-- over how many studs of forward travel
+		LaneFrom = 0,
+		LaneGoal = 0,
+		LaneProgress = 1,
+		LaneLength = LANE_MIN_LENGTH,
 	}
 	self:_rollHonkDelays(car)
 	route.Count += 1
@@ -200,7 +289,7 @@ end
 -- of it, else nil.
 function TrafficSim:_gapTo(car, position, look, right, halfLength, halfWidth)
 	local config = self.Config
-	local d = position - car.Position
+	local d = position - (car.SensePosition or car.Position)
 	local ahead = d:Dot(car.Forward)
 	if ahead <= 0 then
 		return nil
@@ -223,6 +312,16 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 	local cars = self.Cars
 
 	for _, car in cars do
+		-- Mid lane change, look ahead from where the nose will be once it has
+		-- covered the stopping distance, not from the body's current offset:
+		-- otherwise a car pulling out from behind a stopped car keeps
+		-- "seeing" it and can never move forward to finish the manoeuvre.
+		car.SensePosition = nil
+		if car.LaneProgress < 1 then
+			local p = math.min(1, car.LaneProgress + (car.HalfLength + config.StopGap) / car.LaneLength)
+			local noseLane = car.LaneFrom + (car.LaneGoal - car.LaneFrom) * smoothstep(p)
+			car.SensePosition = car.Base - car.Right * noseLane
+		end
 		local best, leader, leaderIsPlayer = math.huge, nil, false
 		for _, other in cars do
 			if other ~= car and not (car.IgnoreCar == other and now < car.IgnoreUntil) then
@@ -232,16 +331,22 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 				end
 			end
 		end
-		for _, obstacle in obstacles do
-			local gap = self:_gapTo(car, obstacle.Position, obstacle.Look, obstacle.Right, obstacle.HalfLength, obstacle.HalfWidth)
-			if gap and gap < best then
-				best, leader, leaderIsPlayer = gap, obstacle, true
+		for _, list in { obstacles, self.Static } do
+			for _, obstacle in list do
+				local gap = self:_gapTo(car, obstacle.Position, obstacle.Look, obstacle.Right, obstacle.HalfLength, obstacle.HalfWidth)
+				if gap and gap < best then
+					-- roadworks are not somebody to honk at
+					best, leader, leaderIsPlayer = gap, obstacle, not obstacle.Static
+				end
 			end
 		end
-		car.Limit = best - config.StopGap
+		car.Limit = best - config.StopGap - (if car.Route.Lanes then LANE_STOP_GAP else 0)
+		car.SensePosition = nil
 		car.Leader = leader
 		car.LeaderIsPlayer = leaderIsPlayer
 	end
+
+	self:_lanes(now, obstacles)
 
 	-- Two cars that each think the other is in the way (crossing paths at a
 	-- junction) would wait forever. After a moment, the older one goes.
@@ -250,6 +355,7 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 		if
 			other
 			and not car.LeaderIsPlayer
+			and not other.Static
 			and other.Leader == car
 			and car.StoppedFor > 1.5
 			and other.StoppedFor > 1.5
@@ -268,6 +374,7 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 		if
 			other
 			and not car.LeaderIsPlayer
+			and not other.Static
 			and car.StoppedFor > config.MergePatience
 			and car.Forward:Dot(other.Forward) < 0.7
 		then
@@ -298,6 +405,87 @@ function TrafficSim:_sense(now, obstacles, tryHonk)
 end
 
 --=============================================================================
+-- Lane changes
+--=============================================================================
+
+local function inBoxes(boxes, p)
+	for _, b in boxes do
+		if p.X >= b[1] and p.X <= b[3] and p.Z >= b[2] and p.Z <= b[4] then
+			return true
+		end
+	end
+	return false
+end
+
+-- Is the lane at sideways offset `offset` clear for `car`: nothing within
+-- `ahead` studs in front or `behind` studs behind (bumper to bumper)?
+function TrafficSim:_laneClear(car, offset, ahead, behind, obstacles)
+	local p = car.Base - car.Right * offset
+	local function blocks(position, look, right, halfLength, halfWidth)
+		local d = position - p
+		local across = math.abs(d:Dot(car.Right))
+		local otherAcross = math.abs(look:Dot(car.Right)) * halfLength + math.abs(right:Dot(car.Right)) * halfWidth
+		if across > car.HalfWidth + otherAcross + 0.8 then
+			return false
+		end
+		local along = d:Dot(car.Forward)
+		local otherAlong = math.abs(look:Dot(car.Forward)) * halfLength + math.abs(right:Dot(car.Forward)) * halfWidth
+		local gap = math.abs(along) - car.HalfLength - otherAlong
+		if along >= 0 then
+			return gap < ahead
+		end
+		return gap < behind
+	end
+	for _, other in self.Cars do
+		if other ~= car and blocks(other.Position, other.Forward, other.Right, other.HalfLength, other.HalfWidth) then
+			return false
+		end
+	end
+	for _, list in { obstacles, self.Static } do
+		for _, o in list do
+			if blocks(o.Position, o.Look, o.Right, o.HalfLength, o.HalfWidth) then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+function TrafficSim:_lanes(now, obstacles)
+	for _, car in self.Cars do
+		local lanes = car.Route.Lanes
+		if not lanes then
+			continue
+		end
+		-- only on the multi-lane stretches, and not starting a change right
+		-- before one ends (a junction or turn-around is coming)
+		local here = inBoxes(lanes.Boxes, car.Base)
+		local ahead = here and inBoxes(lanes.Boxes, car.Base + car.Forward * 45)
+		if not here then
+			car.LaneTarget = 0
+			continue
+		end
+		local leader = car.Leader
+		local heldUp = leader ~= nil
+			and car.Limit < 30
+			and (car.LeaderIsPlayer or leader.Static or leader.Speed < 10 or (leader.StoppedFor or 0) > 0.5)
+		if car.LaneTarget == 0 then
+			if heldUp and ahead and self:_laneClear(car, lanes.Offset, 30, 10, obstacles) then
+				car.LaneTarget = lanes.Offset
+				car.LaneSince = now
+			end
+		elseif now - car.LaneSince > 3 then
+			-- back to its own lane once that is free (it never waits across
+			-- the line for it: until then it simply stays where it is)
+			if not ahead or self:_laneClear(car, 0, 40, 10, obstacles) then
+				car.LaneTarget = 0
+				car.LaneSince = now
+			end
+		end
+	end
+end
+
+--=============================================================================
 -- Public
 --=============================================================================
 
@@ -313,8 +501,10 @@ function TrafficSim:Fill(isClear)
 		end
 		local s = self.Rng:NextNumber(0, math.max(0, route.Path.Length - 2))
 		local position = TrafficPath.Sample(route.Path, s, 1)
-		if self:IsClear(position, 26) and isClear(position, 26) then
-			self:_place(route, s, self.Rng:NextNumber(0, self.Config.CruiseSpeed))
+		local templateIndex = self:_pickTemplate(route)
+		local clearance = 26 + self:_extraClearance(templateIndex)
+		if self:IsClear(position, clearance) and isClear(position, clearance) then
+			self:_place(route, s, self.Rng:NextNumber(0, self.Config.CruiseSpeed), templateIndex)
 		end
 	end
 end
@@ -417,9 +607,30 @@ function TrafficSim:Step(dt, now, world)
 			look = direction
 		end
 		look = flat(look).Unit
-		car.Position = position
 		car.Forward = look
 		car.Right = Vector3.new(-look.Z, 0, look.X)
+		car.Base = position
+		if car.LaneTarget ~= car.LaneGoal then
+			-- a new change (or a change of mind part-way): start a fresh
+			-- S-curve from wherever the car is now
+			local offset = math.abs(car.LaneTarget - car.Lane)
+			car.LaneFrom = car.Lane
+			car.LaneGoal = car.LaneTarget
+			car.LaneProgress = if offset < 0.05 then 1 else 0
+			-- the open-road length, cut short when boxed in (but never so
+			-- short it becomes a sideways hop)
+			local open = math.max(LANE_MIN_LENGTH, offset * LANE_STUDS_PER_OFFSET)
+			car.LaneLength = math.clamp(math.max(0, car.Limit) + LANE_MIN_LENGTH, LANE_MIN_LENGTH, open)
+		end
+		if car.LaneProgress < 1 then
+			-- only forward travel moves it across
+			car.LaneProgress = math.min(1, car.LaneProgress + travel / car.LaneLength)
+			car.Lane = car.LaneFrom + (car.LaneGoal - car.LaneFrom) * smoothstep(car.LaneProgress)
+			if car.LaneProgress >= 1 then
+				car.Lane = car.LaneGoal
+			end
+		end
+		car.Position = position - car.Right * car.Lane
 	end
 
 	self.SenseTimer += dt
@@ -450,15 +661,17 @@ function TrafficSim:Step(dt, now, world)
 				-- On a circuit there is no single entry point, so try a few
 				-- places around it and take the first one nobody can see.
 				local tries = if route.Closed then 6 else 1
+				local templateIndex = self:_pickTemplate(route)
+				local clearance = config.SpawnClearance + self:_extraClearance(templateIndex)
 				for _ = 1, tries do
 					local s = if route.Closed then self.Rng:NextNumber(0, route.Path.Length) else 0
 					local point = TrafficPath.Sample(route.Path, s, 1)
 					if
 						world.IsHidden(point)
-						and self:IsClear(point, config.SpawnClearance)
-						and world.IsClear(point, config.SpawnClearance)
+						and self:IsClear(point, clearance)
+						and world.IsClear(point, clearance)
 					then
-						self:_place(route, s, config.CruiseSpeed * 0.6)
+						self:_place(route, s, config.CruiseSpeed * 0.6, templateIndex)
 						break
 					end
 				end

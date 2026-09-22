@@ -1,4 +1,4 @@
--- Developer products. Today there is exactly one: refresh the contract board.
+-- Developer products: refresh the contract board, and timed third person.
 --
 -- This is the ONLY ProcessReceipt callback in the game, and it has to stay that
 -- way - Roblox allows one per server, and a second assignment silently replaces
@@ -18,6 +18,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 
 local refreshContractsFunction = script.Parent:WaitForChild("RefreshContracts")
+local grantThirdPersonFunction = script.Parent:WaitForChild("GrantThirdPerson")
 
 -- Server -> the buying client, once the board has actually been rebuilt. The
 -- client also learns the purchase went through from
@@ -34,8 +35,6 @@ contractsRefreshedEvent.Parent = ReplicatedStorage
 --=============================================================================
 
 -- [productId] = function(player) -> boolean granted
-local ThirdPersonExpiresAttribute = "ThirdPersonExpiresAt"
-
 local handlers = {
 	[ProgressionConfig.Monetization.RefreshContractsProductId] = function(player)
 		if not refreshContractsFunction:Invoke(player) then
@@ -46,18 +45,13 @@ local handlers = {
 	end,
 
 	-- Third-person-while-driving, read by VehicleViewMode.luau on the
-	-- client. Stacks on top of whatever time is left rather than resetting
-	-- from now, so buying again while it's still active is never wasted -
-	-- the perk is time, not a light switch. Set as a plain Attribute:
-	-- replicates to the owning client for free and needs no save (it's
-	-- meant to run out), so unlike the contract refresh above there is no
-	-- PlotManager/DataStore involved.
+	-- client. The purchase is 20 minutes of PLAY time: the time left is saved
+	-- with the player and only ticks down while they are in a server, so
+	-- leaving and coming back does not cost them any of it. Like the contract
+	-- refresh above, PlotManager owns the save, so this goes through its
+	-- bindable; it also stacks on whatever time is left.
 	[ProgressionConfig.Monetization.ThirdPersonProductId] = function(player)
-		local now = os.time()
-		local current = player:GetAttribute(ThirdPersonExpiresAttribute)
-		local base = if type(current) == "number" and current > now then current else now
-		player:SetAttribute(ThirdPersonExpiresAttribute, base + ProgressionConfig.Monetization.ThirdPersonDurationSeconds)
-		return true
+		return grantThirdPersonFunction:Invoke(player, ProgressionConfig.Monetization.ThirdPersonDurationSeconds)
 	end,
 }
 

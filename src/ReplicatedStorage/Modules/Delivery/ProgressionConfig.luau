@@ -15,6 +15,7 @@
 --   * How many contracts the depot board holds at once (ContractCapFor).
 --   * Which vehicles the shop will sell (VehicleCatalog's RequiredDeliveries).
 --   * Which cargo types the board will offer at all (CargoTypesFor).
+--   * Which zone permits can be bought (Permits).
 
 local ProgressionConfig = {}
 
@@ -228,6 +229,66 @@ function ProgressionConfig.DeliveryCountText(count)
 end
 
 --=============================================================================
+-- Zone permits
+--=============================================================================
+
+-- The city is three zones end to end (see workspace.Map and
+-- tools/mapgen/Layout.luau): Old Town is free, and each zone past it sits
+-- behind a crossing that only permit holders may drive through - the canal
+-- bridges into the Mill District, the rail tunnels into the Harbour.
+--
+-- Priced like vehicles, in money AND lifetime deliveries, for the same reason
+-- (see VehicleCatalog's header): money alone can be ground out in one sitting,
+-- deliveries can only be paid in driving. The two permits land between the
+-- vehicle milestones so there is always a next thing to buy.
+--
+-- A permit gates two things: the barriers at the crossings (PermitGates.client)
+-- and which destinations the contract board will offer (ContractPool). The
+-- second matters as much as the first - a board full of jobs you cannot drive
+-- to is worse than a short board.
+ProgressionConfig.Permits = {
+	-- Ordered: a permit's zone is its index + 1 (Old Town, zone 1, needs none).
+	Order = { "CanalBridge", "HarbourTunnel" },
+	CanalBridge = {
+		Id = "CanalBridge",
+		DisplayName = "Canal Bridge Permit",
+		ZoneName = "Mill District",
+		Zone = 2,
+		-- TEMP: testing price (real value 7500). Restore before release.
+		Price = 50,
+		RequiredDeliveries = 30,
+		-- Each permit needs the one before it: the Harbour is past the Mill
+		-- District, so a Harbour permit without a bridge permit reaches nothing.
+		Requires = nil,
+	},
+	HarbourTunnel = {
+		Id = "HarbourTunnel",
+		DisplayName = "Harbour Tunnel Permit",
+		ZoneName = "Harbour",
+		Zone = 3,
+		-- TEMP: testing price (real value 40000). Restore before release.
+		Price = 100,
+		RequiredDeliveries = 150,
+		Requires = "CanalBridge",
+	},
+}
+
+-- Highest zone a set of owned permits reaches ({ [permitId] = true }).
+-- Walks the chain in order and stops at the first gap, so a permit owned out of
+-- order (only possible by editing a save) cannot skip a zone.
+function ProgressionConfig.UnlockedZone(ownedPermits)
+	local zone = 1
+	for _, id in ProgressionConfig.Permits.Order do
+		if type(ownedPermits) == "table" and ownedPermits[id] then
+			zone = ProgressionConfig.Permits[id].Zone
+		else
+			break
+		end
+	end
+	return zone
+end
+
+--=============================================================================
 -- Monetization
 --=============================================================================
 
@@ -253,6 +314,12 @@ ProgressionConfig.Monetization = {
 	-- active adds this on top of whatever time is left rather than
 	-- overwriting it - see the grant handler in Monetization.server.luau.
 	ThirdPersonDurationSeconds = 20 * 60,
+	-- The Player attribute the perk is published on: a unix time the perk
+	-- runs out at, read by VehicleViewMode on the client. What is SAVED is
+	-- not this timestamp but the seconds left (PlayerDataStore's
+	-- ThirdPersonSecondsLeft), so the time only ticks down while the player
+	-- is actually in a server - see PlotManager's GrantThirdPerson.
+	ThirdPersonAttribute = "ThirdPersonExpiresAt",
 
 	-- The free path to the same refresh (see ContractPool.FreeRefresh): one
 	-- always-available refresh on a rolling cooldown, not "N free per calendar

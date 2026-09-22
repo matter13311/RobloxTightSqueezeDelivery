@@ -17,6 +17,12 @@
       "$path": "src/ServerScriptService"
     },
 
+    "ServerStorage": {
+      "MapGen": {
+        "$path": "tools/mapgen"
+      }
+    },
+
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "$path": "src/StarterPlayer/StarterPlayerScripts"
