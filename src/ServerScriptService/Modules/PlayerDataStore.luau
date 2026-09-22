@@ -24,6 +24,8 @@
 --     Settings = { [key] = boolean|number }, -- client display settings (GameSettings), see SanitizeSettings
 --     Permits = { [permitId] = true }, -- zone permits bought (ProgressionConfig.Permits)
 --     ThirdPersonSecondsLeft = number, -- bought third-person time still unspent; only ticks down while the player is in a server
+--     Customization = { [vehicleId] = { Paint = string? } }, -- per-car looks; Paint is a VehiclePaint value, nil = stock
+--     PaintColors = { [colorId] = true }, -- VehiclePaint.Colors bought with money; account-wide, every car can use them
 --   }
 --
 -- Deliveries/Contracts are persisted for one reason: contracts are sold. A
@@ -38,6 +40,7 @@ local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.Progression
 local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
+local VehiclePaint = require(ReplicatedStorage.Modules.Vehicles.VehiclePaint)
 
 local ContractPool = require(script.Parent.ContractPool)
 
@@ -146,6 +149,8 @@ local function newDefaultData()
 		Settings = {},
 		Permits = {},
 		ThirdPersonSecondsLeft = 0,
+		Customization = {},
+		PaintColors = {},
 	}
 end
 
@@ -176,6 +181,17 @@ local function reconcile(data)
 	data.Permits = permits
 	-- A save that predates the field simply has no third-person time banked.
 	data.ThirdPersonSecondsLeft = sanitizeCount(data.ThirdPersonSecondsLeft)
+
+	-- Same rule as Permits: only colour ids that still exist, only `true`.
+	local paintColors = {}
+	if type(data.PaintColors) == "table" then
+		for id, owned in data.PaintColors do
+			if owned == true and type(id) == "string" and VehiclePaint.ColorsById[id] then
+				paintColors[id] = true
+			end
+		end
+	end
+	data.PaintColors = paintColors
 
 	-- Defaults to TRUE for a save that predates the field, not false: an
 	-- existing player already knows how the game works, and dropping every one
@@ -223,12 +239,21 @@ local function reconcile(data)
 	-- vehicle id too, so they accumulate a dead entry for every renamed or
 	-- removed car and carry it in the save forever - and, unlike
 	-- OwnedVehicleIds, nothing downstream would ever notice.
-	for _, byVehicle in { data.UpgradeLevels, data.CarConfigs } do
+	data.Customization = type(data.Customization) == "table" and data.Customization or {}
+	for _, byVehicle in { data.UpgradeLevels, data.CarConfigs, data.Customization } do
 		for id, values in byVehicle do
 			if not data.OwnedVehicleIds[id] or type(values) ~= "table" then
 				byVehicle[id] = nil
 			end
 		end
+	end
+
+	-- A paint value that no longer means anything (a retired colour id, a
+	-- mangled hex string) reverts that car to stock. Whether the player still
+	-- has the RIGHT to it is not re-checked here - a colour they paid for once
+	-- stays on the car - only whether it can be drawn.
+	for _, entry in data.Customization do
+		entry.Paint = VehiclePaint.Sanitize(entry.Paint)
 	end
 
 	-- After the vehicle tables, before the return: the contract pool has its own
