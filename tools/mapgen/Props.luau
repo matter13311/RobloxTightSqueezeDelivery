@@ -346,8 +346,10 @@ function Props.FireEscape(parent, cf, top)
 	end
 end
 
-function Props.Balcony(parent, cf, top)
-	local y = 14
+-- `bottom` = lowest balcony floor (default 14); raised over a shopfront module,
+-- whose cornice reaches ~15.3 and would otherwise sit inside the first slab.
+function Props.Balcony(parent, cf, top, bottom)
+	local y = bottom or 14
 	while y < top - 6 do
 		box(parent, "Balcony", cf, 0, y, 0, Vector3.new(8, 0.5, 3), flat({ Material = Enum.Material.Concrete, Color = Color3.fromRGB(190, 185, 175) }))
 		box(parent, "BalconyRail", cf, 0, y + 0.5, 2.8, Vector3.new(8, 3, 0.2), flat({ Material = Enum.Material.Metal, Color = BLACK, Transparency = 0.2 }))
@@ -415,6 +417,23 @@ function Props.Lanterns(parent, a, b, top)
 			Material = Enum.Material.Neon, Color = U.pick({ Color3.fromRGB(255, 60, 40), Color3.fromRGB(255, 150, 40) }), Shape = Enum.PartType.Ball, CastShadow = false,
 		}))
 		local _ = l
+	end
+end
+
+-- Warm festoon bulbs, the kind a café strings across its yard - hung across
+-- an alley mouth so the gap in the frontage glows (see Zone's mouth kit).
+function Props.Festoon(parent, a, b, top)
+	local y = math.min(15, (top or 99) - 1.5)
+	local pa, pb = a + Vector3.new(0, y, 0), b + Vector3.new(0, y + U.range(-0.6, 0.6), 0)
+	local sag = 1.4
+	U.wire(parent, pa, pb, Color3.fromRGB(30, 26, 22), 0.08, sag)
+	local n = math.max(2, math.floor((pb - pa).Magnitude / 2.2))
+	for i = 1, n - 1 do
+		local t = i / n
+		local p = pa:Lerp(pb, t) - Vector3.new(0, 0.45 + math.sin(t * math.pi) * sag, 0)
+		U.part(parent, "FestoonBulb", Vector3.new(0.55, 0.7, 0.55), CFrame.new(p), flat({
+			Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 205, 130), Shape = Enum.PartType.Ball, CastShadow = false,
+		}))
 	end
 end
 

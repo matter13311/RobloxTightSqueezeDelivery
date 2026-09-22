@@ -136,6 +136,41 @@ function TrailerDrive:Step(delta, tractorThrottle)
 	})
 end
 
+-- (truck + trailer) / truck while a trailer is coupled and rolling, else 1.
+--
+-- The tractor's drive force is a raw impulse that does not scale with mass
+-- (see the drive branch in VehiclePhysics.Step), and the hinges at the
+-- kingpin keep the two bodies separate assemblies, so the truck's own
+-- AssemblyMass never sees the trailer: a trailer as heavy as the truck would
+-- halve acceleration and double every gear's dwell. Today's Trailer is light
+-- (~9.7 against AmericanHitchTruck's 358.5, so ~1.03x); this is here for
+-- heavier trailers or loads. The big hitched slowdown was the crash
+-- detector scraping against the trailer - see VehicleCrashDetector.
+--
+-- Returned rather than written into config.Torque: the caller multiplies it
+-- in fresh every frame, so uncoupling (or leaving the seat mid-tow) drops it
+-- straight back to 1 with nothing to restore. Read from last frame's
+-- coupling, which is one frame late on hitch/unhitch and harmless.
+function TrailerDrive:MassRatio()
+	local trailerChassis = self.Trailer and self.Trailer.PrimaryPart
+	local truckChassis = self.CarModel.PrimaryPart
+	if not trailerChassis or trailerChassis.Anchored or not truckChassis then
+		return 1
+	end
+	local truckMass = truckChassis.AssemblyMass
+	if truckMass <= 0 then
+		return 1
+	end
+	return (truckMass + trailerChassis.AssemblyMass) / truckMass
+end
+
+-- The drive-torque multiplier: MassRatio blended by the tractor's
+-- HitchedTorqueFeel (1 = full compensation, 0 = none).
+function TrailerDrive:TorqueScale(tractorConfig)
+	local feel = tractorConfig.HitchedTorqueFeel or 1
+	return 1 + (self:MassRatio() - 1) * feel
+end
+
 function TrailerDrive:Destroy()
 	self:_detach()
 end

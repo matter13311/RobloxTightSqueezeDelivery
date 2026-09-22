@@ -272,6 +272,13 @@ local DEFAULTS = {
 	DriveWheels = "All", -- "All", "Front", or "Rear" - which axle receives drive/brake force from the throttle
 	WheelSpinBoost = 0, -- 0 = off. Extra visual wheel-spin speed under throttle at low speed, for a burnout/wheelspin look on drive wheels
 	Torque = 10,
+	-- How much of a hitched trailer's weight the tractor's drive force is
+	-- scaled up to cover. Torque is a raw impulse, so hauling a trailer as
+	-- heavy as the truck halves acceleration; TrailerDrive.TorqueScale boosts
+	-- it by 1 + HitchedTorqueFeel * trailerMass / truckMass. 1 = the rig
+	-- accelerates exactly like the truck alone, 0 = no compensation, in
+	-- between keeps it feeling heavier. Only matters on a tractor.
+	HitchedTorqueFeel = 1,
 	-- Hill assist: the fraction of gravity's downhill pull the drive wheels
 	-- cancel while the player is throttling UP a slope. Drive force is a fixed
 	-- impulse that does not scale with mass, so a ramp that gravity pulls on
@@ -1144,6 +1151,10 @@ end
 --   Handbrake         true while Space is held.
 --   TorqueMultiplier  current gear's ratio (defaults to 1 = single-speed).
 --   GearMaxSpeed      current gear's top speed (defaults to config.MaxSpeed).
+--   HillAssistMassScale  multiplier on the hill assist's mass (defaults to 1).
+--                     A tractor passes (truck + trailer) / truck, since the
+--                     assist is sized from this car's own weight but also has
+--                     to haul the trailer's up the slope.
 --   Rpm               0..1 engine revs, for the engine sound's pitch. Absent
 --                     means "no gearbox here", and the sound falls back to
 --                     tracking road speed.
@@ -1672,19 +1683,39 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 			elseif input.Throttle and input.Throttle ~= 0 and isDriveWheel then
 				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
 
-				-- Hill assist (see DEFAULTS.HillAssist). LookVector.Y is
-				-- sin(pitch), so throttle * LookVector.Y is positive exactly
-				-- when the throttle is pushing the car uphill - forwards up a
-				-- ramp or reversing up one. Descents get nothing. Split across
-				-- the driven wheels so the total is the same for AWD and 2WD.
-				-- Deliberately outside the gear fade above: the fade is what
-				-- caps top speed, and a climb should be able to hold speed,
-				-- not stall at the point where drive force faded to nothing.
-				local climb = input.Throttle * wheelDirCFrame.LookVector.Y
+				-- Hill assist (see DEFAULTS.HillAssist). `grade` is sin(slope)
+				-- of the ROAD under this wheel along the car's heading, so
+				-- throttle * grade is positive exactly when the throttle is
+				-- pushing the car uphill - forwards up a ramp or reversing up
+				-- one. Descents get nothing. Split across the driven wheels so
+				-- the total is the same for AWD and 2WD. Deliberately outside
+				-- the gear fade above: the fade is what caps top speed, and a
+				-- climb should be able to hold speed, not stall at the point
+				-- where drive force faded to nothing.
+				--
+				-- Measured from the ground normal, NOT the chassis' own pitch
+				-- (wheelDirCFrame.LookVector.Y, which it used to be). A load
+				-- sits behind the axles and squats the rear springs - a full
+				-- StarterVehicle rests ~5 degrees nose-up on flat tarmac - and
+				-- read off the chassis that was a permanent "climb": an assist
+				-- that scales with mass and ignores the gear fade, so a loaded
+				-- car accelerated without limit (149 studs/s after 10 s of W
+				-- against 32 empty, MaxSpeed 50).
+				local heading = Vector3.new(wheelDirCFrame.LookVector.X, 0, wheelDirCFrame.LookVector.Z)
+				local grade = 0
+				if heading.Magnitude > 1e-3 then
+					local normal = raycast.Normal
+					local alongRoad = heading - normal * heading:Dot(normal)
+					if alongRoad.Magnitude > 1e-3 then
+						grade = alongRoad.Unit.Y
+					end
+				end
+				local climb = input.Throttle * grade
 				local hillAssist = config.HillAssist or 0
 				if climb > 0 and hillAssist > 0 then
 					local drivenWheels = if config.DriveWheels == "All" then 4 else 2
 					local assistImpulse = wheelWeight * 4 / drivenWheels * delta * climb * hillAssist
+						* (input.HillAssistMassScale or 1)
 					longitudinalForce += wheelDirCFrame.LookVector * math.sign(input.Throttle) * assistImpulse
 				end
 			elseif input.Throttle and input.Throttle ~= 0 then

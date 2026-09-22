@@ -69,12 +69,12 @@ VehicleCatalog.Vehicles = {
 		-- The next tier up from PickupTruck, so priced/gated higher.
 		-- ~2x what a typical player has earned by the delivery gate below,
 		-- the same ratio as PickupTruck's $5,000 at 20.
-		Price = 15000,
+		Price = 1, --default 15,000
 		-- 75 is the next CapMilestones step up from PickupTruck's 20 (see
 		-- ProgressionConfig.Contracts.CapMilestones), so this vehicle lands
 		-- alongside that milestone's own reward the same way PickupTruck lines
 		-- up with the 20 milestone.
-		RequiredDeliveries = 75,
+		RequiredDeliveries = 1, --default 75
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
 	StraightTruck = {
@@ -98,11 +98,11 @@ VehicleCatalog.Vehicles = {
 		-- No thumbnail rendered yet - PlotTerminal.client.luau shows its
 		-- "Image Coming Soon" placeholder until an ImageId is set here.
 		-- Placeholder - adjust to taste. The top of the ladder, above StraightTruck.
-		Price = 1000, --default 100,000
+		Price = 1, --default 100,000
 		-- 450 is the next CapMilestones step up from StraightTruck's 200 (see
 		-- ProgressionConfig.Contracts.CapMilestones), same pairing as the
 		-- vehicles before it.
-		RequiredDeliveries = 4, --default 450
+		RequiredDeliveries = 1, --default 450
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
 }

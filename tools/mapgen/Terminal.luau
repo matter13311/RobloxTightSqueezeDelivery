@@ -40,9 +40,13 @@ local function floorText(parent, x, z, w, d, text, color, yaw)
 	return p
 end
 
--- see-through fence: a low kerb and two rails on posts
+-- see-through fence: a low kerb and two rails on posts, plus an invisible
+-- solid panel the whole way - the posts are 10 apart and the rails don't
+-- collide, so without it any car drove between the posts onto the verges
+-- (and from there into the sea)
 local function fence(parent, a, b)
 	U.segment(parent, "FenceKerb", a, b, 1, 0, 1.2, { Material = Enum.Material.Concrete, Color = WALL }, 0)
+	U.segment(parent, "FenceBarrier", a, b, 0.6, 0, 8, { Transparency = 1, CastShadow = false }, 0)
 	for _, y in { 3.6, 6.2 } do
 		U.segment(parent, "FenceRail", a, b, 0.3, y - 0.15, y + 0.15, { Material = Enum.Material.Metal, Color = METAL, CanCollide = false }, 0)
 	end
@@ -326,6 +330,13 @@ function Terminal.Build(map, kit, deliveryDepot, plotsFolder)
 		end
 	end
 	U.box(f, "BackWall", U.rect(-L.HalfWidth, yard.z2 + 4, L.HalfWidth, yard.z2 + 6), 0, 8, { Material = Enum.Material.Brick, Color = Color3.fromRGB(120, 80, 64) })
+	-- the verges are scenery: walled on the sea side, fenced from Terminal Rd
+	for _, sx in { -1, 1 } do
+		local x = sx * L.HalfWidth
+		U.box(f, "VergeWall", U.rect(math.min(x, x - sx * 2), 20, math.max(x, x - sx * 2), yard.z2 + 4), 0, 8, { Material = Enum.Material.Brick, Color = Color3.fromRGB(120, 80, 64) })
+		local inner = if sx < 0 then yard.x1 else yard.x2
+		fence(f, Vector3.new(inner, 0, 21), Vector3.new(x - sx * 2, 0, 21))
+	end
 
 	return f
 end

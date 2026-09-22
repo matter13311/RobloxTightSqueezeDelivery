@@ -2,7 +2,7 @@
 -- has its own look so a player can tell where they are at a glance:
 --
 --   Old Town  warm brick and cream, shopfronts, awnings, balconies, rooftop
---             water tanks, neon shop signs.
+--             water tanks. (Neon signs live in the alleys only.)
 --   Mill      soot-stained brick and corrugated metal, sawtooth factory
 --             roofs, pipes, chimneys, fewer windows.
 --   Harbour   blue/green/rust sheds with pitched roofs, container stacks,
@@ -38,7 +38,7 @@ Style.Zones = {
 		colors = { Color3.fromRGB(128, 70, 56), Color3.fromRGB(150, 96, 72), Color3.fromRGB(196, 180, 150), Color3.fromRGB(88, 84, 80), Color3.fromRGB(170, 120, 90) },
 		minH = 30, maxH = 64, minLen = 18, maxLen = 38,
 		shopfrontChance = 0.8, awningChance = 0.6, balconyChance = 0.45, waterTankChance = 0.05,
-		neonChance = 0.35, sawtoothChance = 0, gableChance = 0, pipeChance = 0.1,
+		shopModuleChance = 0.55, sawtoothChance = 0, gableChance = 0, pipeChance = 0.1,
 		material = Enum.Material.Brick,
 	},
 	Mill = {
@@ -52,7 +52,7 @@ Style.Zones = {
 		colors = { Color3.fromRGB(96, 70, 60), Color3.fromRGB(82, 78, 74), Color3.fromRGB(110, 96, 80), Color3.fromRGB(70, 72, 76), Color3.fromRGB(120, 84, 62) },
 		minH = 22, maxH = 44, minLen = 30, maxLen = 60,
 		shopfrontChance = 0.15, awningChance = 0.2, balconyChance = 0, waterTankChance = 0.02,
-		neonChance = 0.08, sawtoothChance = 0.45, gableChance = 0, pipeChance = 0.5,
+		shopModuleChance = 0.12, sawtoothChance = 0.45, gableChance = 0, pipeChance = 0.5,
 		material = Enum.Material.Brick,
 		metalChance = 0.35, -- corrugated sheds
 	},
@@ -66,7 +66,7 @@ Style.Zones = {
 		colors = { Color3.fromRGB(62, 96, 120), Color3.fromRGB(70, 110, 90), Color3.fromRGB(140, 72, 50), Color3.fromRGB(150, 150, 146), Color3.fromRGB(96, 104, 110) },
 		minH = 18, maxH = 34, minLen = 32, maxLen = 64,
 		shopfrontChance = 0.25, awningChance = 0.3, balconyChance = 0, waterTankChance = 0,
-		neonChance = 0.12, sawtoothChance = 0, gableChance = 0.55, pipeChance = 0.1,
+		shopModuleChance = 0.25, sawtoothChance = 0, gableChance = 0.55, pipeChance = 0.1,
 		material = Enum.Material.Concrete,
 		metalChance = 0.5,
 		containerLotChance = 0.25, -- some lots are container stacks instead of buildings
@@ -95,12 +95,36 @@ Style.Graffiti = {
 }
 Style.Posters = { "rbxassetid://2629850706", "rbxassetid://2244905104" }
 
+-- Neon words are for ALLEYS only (alley walls and the blade at each mouth).
+-- Street frontages used to carry them too (neonChance) - so many that play
+-- testers stopped reading signs at all, the alley ones included. Street shops
+-- are told apart by their shopfront instead (shopModuleChance: the
+-- MapKit.Templates.Shopfronts modules - see Zone.makeBuilding).
 Style.NeonWords = {
 	OldTown = { "PIZZA", "DINER", "HOTEL", "BAR", "LAUNDRY", "BOOKS", "TATTOO", "CAFE", "PAWN", "DELI", "RECORDS", "BARBER" },
 	Mill = { "WELDING", "PARTS", "TOOLS", "SCRAP", "GARAGE", "SPARKS", "BOLTS" },
 	Harbour = { "FISH", "BAIT", "CHOWDER", "SAILS", "ROPE", "OYSTERS", "ICE" },
 	noodle = { "NOODLES", "RAMEN", "DUMPLINGS", "BAO", "TEA", "WOK", "SUSHI" },
 }
+-- The vertical neon blade hung on the building beside an alley mouth (see
+-- Zone's mouth kit): a business "round the back" that makes a passing driver
+-- look into the gap. By alley theme, else the zone's NeonWords. Short words
+-- only - they are stacked one letter per line.
+Style.MouthWords = {
+	garbage = { "DELI", "DINER", "BAR" },
+	rats = { "PAWN", "BAR", "PIZZA" },
+	pigeon = { "CAFE", "BAKERY", "BOOKS" },
+	laundry = { "LAUNDRY", "WASH" },
+	noodle = { "NOODLES", "RAMEN", "WOK" },
+	market = { "MARKET", "FRUIT", "DELI" },
+	junk = { "JUNK", "SALVAGE", "PAWN" },
+	cardboard = { "POST", "BOXES" },
+	recycling = { "CANS", "BOTTLES" },
+	scrap = { "SCRAP", "PARTS", "WELDING" },
+	docks = { "ROPE", "SAILS", "ICE" },
+	fish = { "FISH", "BAIT", "OYSTERS" },
+}
+
 Style.NeonColors = {
 	Color3.fromRGB(255, 70, 120), Color3.fromRGB(80, 220, 255), Color3.fromRGB(255, 200, 60),
 	Color3.fromRGB(120, 255, 120), Color3.fromRGB(255, 110, 40),

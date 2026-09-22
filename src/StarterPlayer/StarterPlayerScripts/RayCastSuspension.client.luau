@@ -787,7 +787,11 @@ local function beginDrive(humanoid, seatPart)
 			-- handbrake at every dock and leave it showing as engaged after
 			-- the load finished.
 			Handbrake = mySession.Handbrake or cargoLoading,
-			TorqueMultiplier = drive.TorqueMultiplier,
+			-- A coupled trailer's weight is scaled back out of the drive force
+			-- and hill assist (1 when nothing is hitched) - see
+			-- TrailerDrive:MassRatio.
+			TorqueMultiplier = (drive.TorqueMultiplier or 1) * mySession.TrailerDrive:TorqueScale(config),
+			HillAssistMassScale = mySession.TrailerDrive:MassRatio(),
 			GearMaxSpeed = drive.GearMaxSpeed,
 			Rpm = drive.Rpm,
 		})
@@ -898,6 +902,19 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 
 		local attachments = getWheelAttachments(vehicle)
 		local chassis = attachments and vehicle.PrimaryPart
+		if attachments and not chassis then
+			-- PrimaryPart was destroyed out from under a cached vehicle
+			-- (Model.PrimaryPart auto-nils when that part is destroyed)
+			-- without the model itself leaving workspace.Vehicles, so
+			-- ChildRemoved above never fired to clear the cache. Without this,
+			-- attachments stays truthy forever and chassis.Anchored below
+			-- throws every single frame - which, because this is one shared
+			-- loop over every car, permanently stops EVERY vehicle after this
+			-- one in GetChildren() order (including whichever one you're
+			-- driving) from getting its wheel/steering-wheel update again.
+			wheelAttachmentsCache[vehicle] = nil
+			continue
+		end
 		-- Parked cars are Anchored and don't need their wheels touched at
 		-- all - skip them outright rather than relying on velocity happening
 		-- to read exactly zero every frame, which is a guarantee, not a hope.

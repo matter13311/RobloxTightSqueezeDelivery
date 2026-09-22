@@ -28,9 +28,19 @@
 -- 11.6, hitch truck ~12 x 34, +trailer ~75 long):
 --   Market Ave 76 = 4 x 12 lanes + a 28-wide centre strip that carries the
 --   elevated express deck (and its ramps, which split the road). Streets 34.
---   Alleys: 11.5 tight (starter/pickup), 14 snug (box/straight squeeze),
+--   Alleys: 13.5 tight (starter/pickup), 15.5 snug (box/straight squeeze),
 --   20-24 standard and 26-32 wide (with clutter/parked-car bands that keep a
---   13-16 stud channel). No alley is designed for the rig.
+--   13-16 stud channel). No alley is designed for the rig. (v4.2: tight was
+--   11.5 and snug 14 - play testers kept scraping, and a pickup had 0.6 studs
+--   a side.)
+--   Angled legs ("curves") run WIDER than their alley (AlleyCurve) and the
+--   straight legs flare out to meet them, and every one is shallow (~25-30
+--   degrees): at 45 degrees and alley width a truck could not make the turn
+--   without banging both walls.
+--
+-- DESTINATIONS: most sit INSIDE the alleys (access facing an alley leg), so
+-- that the alleys are where the work is - play testers who stuck to the main
+-- roads never found them. The rig destinations stay on the open roads.
 
 local L = {}
 
@@ -62,6 +72,11 @@ L.LinkMerge = 80
 -- Connector roads narrow to tight local streets once they leave a zone.
 L.ConnectorWidths = { Market = 36, Street = 26 }
 
+-- Angled alley legs: perpendicular width = max(alley w + Extra, Min), and the
+-- straight legs either side widen to the angled leg's horizontal width for
+-- Flare studs before the bend, so a vehicle can start and finish the turn.
+L.AlleyCurve = { Extra = 4, Min = 17, Flare = 14 }
+
 L.SpaceSize = Vector2.new(16, 42)
 L.RigSpaceSize = Vector2.new(18, 82)
 L.WarehouseDepth = 30
@@ -79,6 +94,11 @@ L.World = { x1 = -2400, z1 = -3900, x2 = 900, z2 = 800 } -- the sea
 -- Branches = { { z, w, to = "market"|"street", Name, Theme } } }.
 -- Path legs: same x = straight north-south; same z = a sharp dog-leg; both
 -- differ = an angled "curve".
+-- An alley's north end x must EQUAL the next segment's south end x on the
+-- same side, so the two mouths face each other across the cross road and a
+-- driver coming out can see straight down the next alley (play testers who
+-- came out of Bin Juice Row missed Mirror Snapper 44 studs to the left). The
+-- ends that meet a connector's tight lane stay where the connector expects.
 
 L.Zones = {
 	{
@@ -99,45 +119,45 @@ L.Zones = {
 		Segments = {
 			{
 				z1 = -296, z2 = -20,
-				West = { Name = "Pigeon Pass", Theme = "pigeon", w = 11.5,
-					Path = { { x = -160 }, { x = -160, z = -150 }, { x = -140, z = -178 }, { x = -140 } },
-					Branches = { { z = -90, w = 11.5, to = "street", Name = "Whisker Way", Theme = "tight" },
+				West = { Name = "Pigeon Pass", Theme = "pigeon", w = 13.5,
+					Path = { { x = -160 }, { x = -160, z = -140 }, { x = -140, z = -190 }, { x = -140 } },
+					Branches = { { z = -90, w = 13.5, to = "street", Name = "Whisker Way", Theme = "tight" },
 						{ z = -250, w = 18, to = "market", Name = "Soup Spoon Slip", Theme = "market" } } },
 				East = { Name = "Bin Juice Row", Theme = "garbage", w = 24,
 					Path = { { x = 150 }, { x = 150, z = -120 }, { x = 176, z = -120 }, { x = 176 } },
 					Branches = { { z = -70, w = 18, to = "market", Name = "Gutter Run", Theme = "garbage" },
-						{ z = -230, w = 14, to = "street", Name = "Elbow Room", Theme = "junk" } } },
+						{ z = -230, w = 15.5, to = "street", Name = "Elbow Room", Theme = "junk" } } },
 			},
 			{
 				z1 = -616, z2 = -330,
 				West = { Name = "Laundry Row", Theme = "laundry", w = 22,
-					Path = { { x = -130 }, { x = -130, z = -440 }, { x = -170, z = -440 }, { x = -170 } },
+					Path = { { x = -140 }, { x = -140, z = -440 }, { x = -150, z = -440 }, { x = -150 } },
 					Branches = { { z = -500, w = 16, to = "market", Name = "Tangle Alley", Theme = "laundry" },
-						{ z = -600, w = 11.5, to = "street", Name = "Bottleneck", Theme = "tight" } } },
-				East = { Name = "Mirror Snapper", Theme = "tight", w = 11.5,
-					Path = { { x = 132 }, { x = 132, z = -470 }, { x = 158, z = -500 }, { x = 158 } },
-					Branches = { { z = -380, w = 11.5, to = "market", Name = "Paper Doll Pass", Theme = "tight" },
+						{ z = -600, w = 13.5, to = "street", Name = "Bottleneck", Theme = "tight" } } },
+				East = { Name = "Mirror Snapper", Theme = "tight", w = 13.5,
+					Path = { { x = 176 }, { x = 176, z = -455 }, { x = 150, z = -515 }, { x = 150 } },
+					Branches = { { z = -380, w = 13.5, to = "market", Name = "Paper Doll Pass", Theme = "tight" },
 						{ z = -575, w = 20, to = "street", Name = "Grease Trap", Theme = "garbage" } } },
 			},
 			{
 				z1 = -956, z2 = -650,
 				West = { Name = "Rat Run", Theme = "rats", w = 20,
-					Path = { { x = -150 }, { x = -150, z = -760 }, { x = -122, z = -790 }, { x = -122 } },
+					Path = { { x = -150 }, { x = -150, z = -750 }, { x = -122, z = -805 }, { x = -122 } },
 					Branches = { { z = -700, w = 16, to = "market", Name = "Crooked Mile", Theme = "junk" },
-						{ z = -830, w = 14, to = "street", Name = "Puddle Jump", Theme = "cardboard" },
-						{ z = -940, w = 11.5, to = "street", Name = "Hairpin Hollow", Theme = "tight" } } },
+						{ z = -830, w = 15.5, to = "street", Name = "Puddle Jump", Theme = "cardboard" },
+						{ z = -940, w = 13.5, to = "street", Name = "Hairpin Hollow", Theme = "tight" } } },
 				East = { Name = "Noodle Row", Theme = "noodle", w = 30,
 					Path = { { x = 150 }, { x = 150 } },
 					Branches = { { z = -680, w = 18, to = "market", Name = "Lantern Lane", Theme = "noodle" },
-						{ z = -900, w = 14, to = "street", Name = "Chopstick Cut", Theme = "noodle" } } },
+						{ z = -900, w = 15.5, to = "street", Name = "Chopstick Cut", Theme = "noodle" } } },
 			},
 		},
 		Destinations = {
-			{ Name = "Textile Works", rect = { 175, -500, 267, -420 }, access = "E", spaces = 2 },
+			{ Name = "Textile Works", rect = { 188, -216, 267, -138 }, access = "W", spaces = 2 }, -- off Bin Juice Row
 			{ Name = "Lumber Yard", rect = { -267, -560, -184, -380 }, access = "W", spaces = 2, rig = true },
 			{ Name = "Night Market", rect = { 58, -820, 135, -740 }, access = "E", spaces = 2 },
 			{ Name = "Brick Lane Supply", rect = { -110, -930, -44, -850 }, access = "W", spaces = 2, depth = 20 },
-			{ Name = "Cold Storage", rect = { -267, -770, -185, -690 }, access = "W", spaces = 2 },
+			{ Name = "Cold Storage", rect = { -248, -732, -160, -662 }, access = "E", spaces = 2, depth = 24 }, -- off Rat Run
 		},
 		Landmarks = {
 			{ Kind = "ClockTower", x = 75, z = -262, Label = "Clock Tower" },
@@ -173,44 +193,44 @@ L.Zones = {
 		Segments = {
 			{
 				z1 = -320, z2 = -34,
-				West = { Name = "Close Shave", Theme = "tight", w = 11.5,
-					Path = { { x = -150 }, { x = -150, z = -200 }, { x = -176, z = -228 }, { x = -176 } },
-					Branches = { { z = -90, w = 11.5, to = "market", Name = "Sparky's Squeeze", Theme = "tight" },
-						{ z = -290, w = 11.5, to = "street", Name = "Paper Cut", Theme = "tight" } } },
+				West = { Name = "Close Shave", Theme = "tight", w = 13.5,
+					Path = { { x = -150 }, { x = -150, z = -190 }, { x = -126, z = -245 }, { x = -126 } },
+					Branches = { { z = -90, w = 13.5, to = "market", Name = "Sparky's Squeeze", Theme = "tight" },
+						{ z = -290, w = 13.5, to = "street", Name = "Paper Cut", Theme = "tight" } } },
 				East = { Name = "Tin Can Alley", Theme = "recycling", w = 24,
 					Path = { { x = 160 }, { x = 160, z = -150 }, { x = 130, z = -150 }, { x = 130 } },
 					Branches = { { z = -80, w = 16, to = "market", Name = "Cog Lane", Theme = "scrap" },
-						{ z = -290, w = 14, to = "street", Name = "Bucket Row", Theme = "recycling" } } },
+						{ z = -290, w = 15.5, to = "street", Name = "Bucket Row", Theme = "recycling" } } },
 			},
 			{
 				z1 = -650, z2 = -354,
 				West = { Name = "Fishbone Cut", Theme = "scrap", w = 22,
-					Path = { { x = -126 }, { x = -126, z = -500 }, { x = -150, z = -530 }, { x = -150 } },
+					Path = { { x = -126 }, { x = -126, z = -492 }, { x = -150, z = -548 }, { x = -150 } },
 					Branches = { { z = -400, w = 16, to = "market", Name = "Smokestack Slip", Theme = "scrap" },
 						{ z = -620, w = 18, to = "market", Name = "Rust Bucket Row", Theme = "junk" },
-						{ z = -470, w = 14, to = "street", Name = "Wonky Way", Theme = "cardboard" } } },
-				East = { Name = "Scrape Street", Theme = "scrap", w = 14,
-					Path = { { x = 150 }, { x = 150, z = -560 }, { x = 176, z = -560 }, { x = 176 } },
-					Branches = { { z = -420, w = 14, to = "street", Name = "Knuckle Lane", Theme = "junk" },
+						{ z = -470, w = 15.5, to = "street", Name = "Wonky Way", Theme = "cardboard" } } },
+				East = { Name = "Scrape Street", Theme = "scrap", w = 16,
+					Path = { { x = 130 }, { x = 130 } },
+					Branches = { { z = -420, w = 15.5, to = "street", Name = "Knuckle Lane", Theme = "junk" },
 						{ z = -600, w = 20, to = "market", Name = "Soot Row", Theme = "garbage" } } },
 			},
 			{
 				z1 = -966, z2 = -684,
 				West = { Name = "Muddy Boots", Theme = "cardboard", w = 26,
-					Path = { { x = -160 }, { x = -160 } },
-					Branches = { { z = -740, w = 11.5, to = "street", Name = "Tight Spot", Theme = "tight" },
-						{ z = -900, w = 11.5, to = "market", Name = "Squeaky Gap", Theme = "tight" } } },
+					Path = { { x = -150 }, { x = -150 } },
+					Branches = { { z = -740, w = 13.5, to = "street", Name = "Tight Spot", Theme = "tight" },
+						{ z = -900, w = 13.5, to = "market", Name = "Squeaky Gap", Theme = "tight" } } },
 				East = { Name = "Rattle Row", Theme = "scrap", w = 20,
-					Path = { { x = 140 }, { x = 140, z = -820 }, { x = 166, z = -850 }, { x = 166 } },
+					Path = { { x = 130 }, { x = 130, z = -805 }, { x = 166, z = -862 }, { x = 166 } },
 					Branches = { { z = -720, w = 18, to = "market", Name = "Anvil Alley", Theme = "junk" },
 						{ z = -930, w = 16, to = "street", Name = "Clatter Cut", Theme = "recycling" } } },
 			},
 		},
 		Destinations = {
 			{ Name = "Paper Mill", rect = { 185, -260, 267, -60 }, access = "E", spaces = 2, rig = true },
-			{ Name = "Foundry Supply", rect = { -112, -560, -44, -470 }, access = "W", spaces = 2, depth = 20 },
-			{ Name = "Tire Depot", rect = { 44, -900, 125, -820 }, access = "W", spaces = 2 },
-			{ Name = "Scrap Yard", rect = { -267, -960, -185, -860 }, access = "W", spaces = 2 },
+			{ Name = "Foundry Supply", rect = { -112, -474, -44, -414 }, access = "W", spaces = 2, depth = 20 }, -- off Fishbone Cut
+			{ Name = "Tire Depot", rect = { 140, -783, 245, -697 }, access = "W", spaces = 2 }, -- off Rattle Row
+			{ Name = "Scrap Yard", rect = { -252, -948, -163, -858 }, access = "E", spaces = 2 }, -- off Muddy Boots
 		},
 		Landmarks = {
 			{ Kind = "WaterTower", x = -80, z = -200, Label = "Water Tower" },
@@ -248,7 +268,7 @@ L.Zones = {
 			{
 				z1 = -320, z2 = -34,
 				West = { Name = "Soggy Box Lane", Theme = "cardboard", w = 24,
-					Path = { { x = -150 }, { x = -150, z = -170 }, { x = -124, z = -200 }, { x = -124 } },
+					Path = { { x = -150 }, { x = -150, z = -160 }, { x = -124, z = -215 }, { x = -124 } },
 					Branches = { { z = -260, w = 16, to = "street", Name = "Barnacle Bend", Theme = "docks" },
 						{ z = -110, w = 18, to = "market", Name = "Net Mender's Walk", Theme = "fish" } } },
 				East = { Name = "Dock Hop", Theme = "docks", w = 28,
@@ -259,23 +279,23 @@ L.Zones = {
 			{
 				z1 = -640, z2 = -354,
 				West = { Name = "Stinky Pete's", Theme = "fish", w = 26,
-					Path = { { x = -170 }, { x = -170, z = -470 }, { x = -140, z = -470 }, { x = -140 } },
+					Path = { { x = -124 }, { x = -124, z = -470 }, { x = -150, z = -470 }, { x = -150 } },
 					Branches = { { z = -420, w = 20, to = "market", Name = "Gull Alley", Theme = "fish" },
-						{ z = -600, w = 11.5, to = "street", Name = "Eel Squeeze", Theme = "tight" } } },
+						{ z = -600, w = 13.5, to = "street", Name = "Eel Squeeze", Theme = "tight" } } },
 				East = { Name = "Salt Lane", Theme = "docks", w = 22,
-					Path = { { x = 140 }, { x = 140, z = -500 }, { x = 166, z = -530 }, { x = 166 } },
+					Path = { { x = 155 }, { x = 155, z = -485 }, { x = 166, z = -545 }, { x = 166 } },
 					Branches = { { z = -400, w = 18, to = "market", Name = "Tide Cut", Theme = "docks" },
 						{ z = -600, w = 18, to = "street", Name = "Anchor Row", Theme = "junk" } } },
 			},
 		},
 		Destinations = {
-			{ Name = "Rail Depot", rect = { -267, -140, -185, -40 }, access = "W", spaces = 2 },
-			{ Name = "Fish Market", rect = { 44, -560, 123, -470 }, access = "W", spaces = 2 },
+			{ Name = "Rail Depot", rect = { -250, -144, -162, -46 }, access = "E", spaces = 2 }, -- off Soggy Box Lane
+			{ Name = "Fish Market", rect = { 166, -466, 250, -362 }, access = "W", spaces = 2 }, -- off Salt Lane
 			{ Name = "North Docks", rect = { 150, -760, 300, -674 }, access = "S", spaces = 3 },
 			{ Name = "Container Terminal", rect = { -140, -760, 130, -674 }, access = "S", spaces = 3, rig = true },
 		},
 		Landmarks = {
-			{ Kind = "BigFish", x = -90, z = -230, Label = "Big Fish" },
+			{ Kind = "BigFish", x = -86, z = -230, Label = "Big Fish" },
 			{ Kind = "Lighthouse", x = 340, z = -735, Label = "Lighthouse" },
 			{ Kind = "Cranes", x = -250, z = -720, Label = "Quay Cranes" },
 		},

@@ -598,6 +598,14 @@ local function spawnVehicle(player, data, session)
 	else
 		warn("PlotManager: " .. clone:GetFullName() .. " has no PrimaryPart - can't apply ConfigName/upgrade attributes")
 	end
+	-- Atomic, not Default: a Default model streams its parts out one by one
+	-- while the Model itself stays in workspace.Vehicles, leaving PrimaryPart
+	-- nil and no ChildRemoved for the client caches to react to. Atomic
+	-- streams the whole car, Model included, in and out as one unit, which
+	-- is the ChildAdded/ChildRemoved contract every client vehicle script
+	-- already assumes. Not Persistent: that would make every client run the
+	-- per-frame wheel/light work for every car on the map.
+	clone.ModelStreamingMode = Enum.ModelStreamingMode.Atomic
 	clone.Parent = VehicleFolder
 
 	session.SpawnedVehicle = clone

@@ -92,6 +92,9 @@ local function wallHeight(ctx, p, normal, along, half)
 	return lowest
 end
 
+-- Zone's alley-mouth kit hangs things on the same walls.
+Alleys.WallHeight = wallHeight
+
 -- One straight leg. `leg` = { rect, alongZ (bool), w, theme, zoneStyle }
 function Alleys.DressLeg(folder, kit, leg, avoid, ctx)
 	local r = leg.rect

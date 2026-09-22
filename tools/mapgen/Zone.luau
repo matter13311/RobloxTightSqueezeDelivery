@@ -80,6 +80,23 @@ local function faceClear(x1, z1, x2, z2)
 	return true
 end
 
+-- Street shopfront modules (MapKit.Templates.Shopfronts: ground floors cut from
+-- the free "Poorer Storefronts City Signs Exterior" model, 74230464623288 -
+-- 26 wide, no lettering, pivot on the wall plane facing out, up to 3.2 deep),
+-- set per build from the kit. Every placed one's pavement footprint goes in
+-- shopRects so street furniture and the alley-mouth kit keep clear of it.
+local shopfronts = {}
+local shopRects = {}
+
+local function shopBlocked(p, pad)
+	for _, r in shopRects do
+		if p.X > r.x1 - pad and p.X < r.x2 + pad and p.Z > r.z1 - pad and p.Z < r.z2 + pad then
+			return true
+		end
+	end
+	return false
+end
+
 local CORRUGATED = { id = "rbxassetid://1396501591", u = 16, v = 16, color = Color3.fromRGB(230, 230, 230) }
 
 local function roofExtras(parent, r, height, style, styleKey)
@@ -166,7 +183,29 @@ local function makeBuilding(parent, r, styleKey, height, fronts)
 		end
 		local faceCentre = Vector3.new(cx + n.X * U.width(r) / 2, 0, cz + n.Z * U.depth(r) / 2)
 		local wallCF = CFrame.lookAt(faceCentre, faceCentre + n)
-		if U.chance(style.shopfrontChance) then
+		-- a row of real shopfronts (1-3, centred) instead of glass + awning;
+		-- nothing on a street frontage carries a word any more (see Style)
+		local modules = math.min(3, math.floor((len - 2) / 26))
+		local useModules = #shopfronts > 0 and modules >= 1 and height >= 16 and U.chance(style.shopModuleChance or 0)
+		if useModules then
+			local along = wallCF.RightVector
+			local last
+			for k = 1, modules do
+				local t = U.pick(shopfronts)
+				if t == last and #shopfronts > 1 then
+					t = shopfronts[(table.find(shopfronts, t) % #shopfronts) + 1]
+				end
+				last = t
+				local base = faceCentre + along * ((k - (modules + 1) / 2) * 26) + Vector3.new(0, SIDEWALK_TOP - 0.2, 0)
+				local c = t:Clone()
+				c:PivotTo(CFrame.lookAt(base, base + n))
+				c.Parent = p
+				local outer = base + n * 3.5
+				table.insert(shopRects, U.rect(
+					math.min(base.X, outer.X) - math.abs(along.X) * 13, math.min(base.Z, outer.Z) - math.abs(along.Z) * 13,
+					math.max(base.X, outer.X) + math.abs(along.X) * 13, math.max(base.Z, outer.Z) + math.abs(along.Z) * 13))
+			end
+		elseif U.chance(style.shopfrontChance) then
 			local size = (math.abs(n.X) > 0.5) and Vector3.new(0.4, 9, len - 4) or Vector3.new(len - 4, 9, 0.4)
 			U.part(p, "Shopfront", size, CFrame.new(faceCentre + n * 0.2 + Vector3.new(0, SIDEWALK_TOP + 4.5, 0)), {
 				Material = Enum.Material.Glass, Color = Color3.fromRGB(30, 36, 44), Reflectance = 0.15, CanCollide = false, CastShadow = false,
@@ -188,17 +227,16 @@ local function makeBuilding(parent, r, styleKey, height, fronts)
 			fx1, fx2 = cx - halfLen, cx + halfLen
 		end
 		local highOk = faceClear(fx1, fz1, fx2, fz2)
-		if U.chance(style.neonChance) and height > 18 then
-			Props.Neon(p, wallCF, Style.NeonWords[styleKey])
-		end
-		if highOk and style.balconyChance > 0 and U.chance(style.balconyChance) and height > 26 then
+		-- over a shopfront: balconies start clear of its cornice (top ~15.3),
+		-- and no pipe or graffiti down through it
+		if highOk and style.balconyChance > 0 and U.chance(style.balconyChance) and height > (useModules and 29 or 26) then
 			local off = U.range(-len / 4, len / 4)
-			Props.Balcony(p, wallCF * CFrame.new(off, 0, 0), height)
+			Props.Balcony(p, wallCF * CFrame.new(off, 0, 0), height, useModules and 17.5 or nil)
 		end
-		if style.pipeChance > 0 and U.chance(style.pipeChance) then
+		if not useModules and style.pipeChance > 0 and U.chance(style.pipeChance) then
 			Props.DrainPipe(p, wallCF * CFrame.new(U.range(-len / 3, len / 3), 0, 0), height)
 		end
-		if U.chance(0.12) then
+		if not useModules and U.chance(0.12) then
 			Props.Graffiti(p, wallCF * CFrame.new(U.range(-len / 4, len / 4), 0, 0), U.range(4, 6))
 		end
 	end
@@ -311,16 +349,256 @@ local function streetSign(folder, x, z, ewName, nsName, sx, sz)
 	U.label(b2, Enum.NormalId.Right, nsName, { PixelsPerStud = 40 })
 end
 
-local function alleySign(folder, x, z, name, alongZ, width)
-	U.part(folder, "AlleySignPost", Vector3.new(0.4, 9, 0.4), CFrame.new(x, 4.5, z), { Material = Enum.Material.Metal, Color = Color3.fromRGB(60, 60, 64) })
-	local size = alongZ and Vector3.new(0.2, 2.2, 8) or Vector3.new(8, 2.2, 0.2)
-	local plate = U.part(folder, "AlleySign", size, CFrame.new(x, 8.2, z), {
-		Material = Enum.Material.SmoothPlastic, Color = Color3.fromRGB(120, 72, 30), CanCollide = false,
+--=============================================================================
+-- Alley mouths
+--=============================================================================
+--
+-- Play testers drove straight past every alley: the frontage reads as one
+-- continuous wall and the old name plate sat half inside its own post and the
+-- building. So every mouth gets a kit that makes the gap catch the eye
+-- without a sign saying "alley here":
+--
+--   * the name plate, on a tall kerb post past the FAR corner (a car turning
+--     in cuts the near one), hung BESIDE the post and out over the road (not
+--     into the wall), readable by traffic in both directions;
+--   * warm festoon bulbs strung across the opening, so the gap glows;
+--   * a vertical neon blade on the near corner building - a business round
+--     the back, seen before the gap is, the thing you look at and then past;
+--   * yellow/black corner guards on the two building corners, which give the
+--     gap an edge the facade texture was hiding;
+--   * worn tyre tracks curving out of the kerb lane into the mouth: someone
+--     drives in here.
+--
+-- A mouth: { p = centre of the opening ON the kerb line, out = unit vector
+-- from the block toward the road, w = opening width, name, theme, lane =
+-- kerb-to-kerb-lane-centre distance }. `d`, the kerb lane's direction of
+-- travel (traffic drives on the right), runs along the kerb.
+
+local SIGN_BROWN = Color3.fromRGB(120, 72, 30)
+local SIGN_TEXT = Color3.fromRGB(255, 230, 150)
+local TRACK = { Material = Enum.Material.SmoothPlastic, Color = Color3.fromRGB(26, 26, 26), CanCollide = false, CanQuery = false, CastShadow = false }
+
+local function alleyNameSign(folder, m, d)
+	local post = m.p + d * (m.w / 2 + 2.2) - m.out * 0.9 + Vector3.new(0, SIDEWALK_TOP, 0)
+	U.part(folder, "AlleySignPost", Vector3.new(0.5, 16.5, 0.5), CFrame.new(post + Vector3.new(0, 8.25, 0)), {
+		Material = Enum.Material.Metal, Color = METAL,
 	})
-	local text = name .. (width <= 12 and "  (TIGHT)" or "")
-	local faces = alongZ and { Enum.NormalId.Left, Enum.NormalId.Right } or { Enum.NormalId.Front, Enum.NormalId.Back }
-	for _, f in faces do
-		U.label(plate, f, text, { PixelsPerStud = 40, TextColor3 = Color3.fromRGB(255, 230, 150) })
+	-- long axis along `out`; faces +-d. Above bus roofs, so it can overhang
+	-- the kerb lane.
+	local length = 7.6
+	local c = post + m.out * (length / 2 - 0.5) - d * 0.4 + Vector3.new(0, 15.2, 0)
+	local plate = U.part(folder, "AlleySign", Vector3.new(length, 1.9, 0.2), CFrame.lookAt(c, c + d), {
+		Material = Enum.Material.SmoothPlastic, Color = SIGN_BROWN, CanCollide = false,
+	})
+	local text = m.name .. (m.w <= 14 and "  (TIGHT)" or "")
+	for _, f in { Enum.NormalId.Front, Enum.NormalId.Back } do
+		U.label(plate, f, text, { PixelsPerStud = 40, TextColor3 = SIGN_TEXT })
+	end
+	local arm = post + m.out * (length / 2 - 0.5) - d * 0.2 + Vector3.new(0, 16.35, 0)
+	U.part(folder, "AlleySignArm", Vector3.new(length, 0.25, 0.25), CFrame.lookAt(arm, arm + d), {
+		Material = Enum.Material.Metal, Color = METAL, CanCollide = false,
+	})
+end
+
+local function mouthNeon(folder, m, d, ctx, styleKey)
+	-- on the upstream corner building's frontage, projecting over the pavement
+	local wallPoint = m.p - d * (m.w / 2 + 2.6) - m.out * SW
+	if Alleys.WallHeight(ctx, wallPoint, m.out, d, 1.2) < 18 then
+		return
+	end
+	local tip = wallPoint + m.out * 3.6
+	if shopBlocked(wallPoint + m.out * 1.5, 1.5) then
+		return
+	end
+	if not faceClear(math.min(wallPoint.X, tip.X) - 1, math.min(wallPoint.Z, tip.Z) - 1, math.max(wallPoint.X, tip.X) + 1, math.max(wallPoint.Z, tip.Z) + 1) then
+		return -- under the express link
+	end
+	local words = Style.MouthWords[m.theme] or Style.NeonWords[styleKey] or Style.NeonWords.OldTown
+	local word = U.pick(words)
+	local color = U.pick(Style.NeonColors)
+	local height = math.max(6, #word * 1.25 + 1.2)
+	local c = wallPoint + m.out * 2 + Vector3.new(0, 9 + height / 2, 0)
+	-- X = thickness along d, Z = depth along out
+	local board = U.part(folder, "AlleyNeonBlade", Vector3.new(0.5, height, 3.2), CFrame.lookAt(c, c + m.out), {
+		Material = Enum.Material.SmoothPlastic, Color = Color3.fromRGB(20, 20, 24), CanCollide = false,
+	})
+	for _, f in { Enum.NormalId.Left, Enum.NormalId.Right } do
+		local g = U.label(board, f, table.concat(string.split(word, ""), "\n"), { PixelsPerStud = 30, Font = Enum.Font.FredokaOne, TextColor3 = color })
+		g.LightInfluence = 0
+		g.Brightness = 2
+	end
+	-- neon edge along the outer side, and the two wall brackets
+	local edge = c + m.out * 1.7
+	U.part(folder, "AlleyNeonEdge", Vector3.new(0.3, height, 0.2), CFrame.lookAt(edge, edge + m.out), {
+		Material = Enum.Material.Neon, Color = color, CanCollide = false, CanQuery = false, CastShadow = false,
+	})
+	for _, dy in { height / 2 - 0.4, -height / 2 + 0.4 } do
+		local br = wallPoint + m.out * 0.2 + Vector3.new(0, c.Y + dy, 0)
+		U.part(folder, "AlleyNeonBracket", Vector3.new(0.2, 0.2, 0.4), CFrame.lookAt(br, br + m.out), {
+			Material = Enum.Material.Metal, Color = Color3.fromRGB(28, 28, 30), CanCollide = false, CanQuery = false,
+		})
+	end
+end
+
+local function mouthFestoons(folder, m, d, ctx)
+	for _, inset in { SW + 1.5, SW + 12 } do
+		local a = m.p - d * (m.w / 2) - m.out * inset
+		local b = m.p + d * (m.w / 2) - m.out * inset
+		local top = math.min(Alleys.WallHeight(ctx, a, d, m.out, 0.6), Alleys.WallHeight(ctx, b, -d, m.out, 0.6))
+		if top >= 17 then
+			Props.Festoon(folder, a, b, top)
+		end
+	end
+end
+
+local function mouthCornerGuards(folder, m, d, ctx)
+	for _, side in { -1, 1 } do
+		-- the building corner: frontage line meets the alley side wall
+		local corner = m.p + d * side * (m.w / 2) - m.out * SW
+		if Alleys.WallHeight(ctx, corner + d * side, m.out, d, 0.2) >= 8 and not shopBlocked(corner + d * side * 0.6 + m.out * 0.5, 0) then
+			for band = 0, 4 do
+				local color = if band % 2 == 0 then YELLOW else Color3.fromRGB(24, 24, 24)
+				local y = SIDEWALK_TOP + band * 1.1 + 0.55
+				-- on the frontage, next to the corner
+				local f = corner + d * side * 0.6 + m.out * 0.05 + Vector3.new(0, y, 0)
+				U.part(folder, "CornerGuard", Vector3.new(1.2, 1.1, 0.1), CFrame.lookAt(f, f + m.out), {
+					Material = Enum.Material.SmoothPlastic, Color = color, CanCollide = false, CanQuery = false, CastShadow = false,
+				})
+				-- and round onto the alley wall
+				local s = corner - d * side * 0.05 - m.out * 0.6 + Vector3.new(0, y, 0)
+				U.part(folder, "CornerGuard", Vector3.new(1.2, 1.1, 0.1), CFrame.lookAt(s, s - d * side), {
+					Material = Enum.Material.SmoothPlastic, Color = color, CanCollide = false, CanQuery = false, CastShadow = false,
+				})
+			end
+		end
+	end
+end
+
+-- Worn tyre marks at an alley mouth. One quadratic curve drawn as two wheel
+-- lines of short flat strips; every set gets its own gauge (a car vs a
+-- truck), length, darkness and wear (strips missing where the rubber has
+-- worn off), and its own height, so two sets crossing never z-fight.
+local function trackCurve(folder, s0, c, e, opts, potholes)
+	local function at(t)
+		return s0 * (1 - t) ^ 2 + c * (2 * (1 - t) * t) + e * (t * t)
+	end
+	local N = opts.segments or 12
+	for _, off in { -opts.gauge / 2, opts.gauge / 2 } do
+		local prev
+		for i = 0, N do
+			local t = i / N
+			local p = at(t)
+			local tangent = (at(math.min(1, t + 0.02)) - at(math.max(0, t - 0.02))).Unit
+			local side = Vector3.new(-tangent.Z, 0, tangent.X)
+			p += side * (off + U.range(-0.12, 0.12))
+			local overHole = false
+			for _, h in potholes do
+				if math.abs(h.X - p.X) < 7 and math.abs(h.Z - p.Z) < 7 then
+					overHole = true
+				end
+			end
+			if prev and not overHole and not U.chance(opts.wear) then
+				-- tops at 0.008 + 0.005 * (slot * 2 + parity): every curve has
+				-- its own pair of heights, and alternate strips differ too
+				-- (neighbours overlap on the inside of a bend). All stay below
+				-- the alley paving (0.04) and the lane lines (0.055).
+				local top = 0.008 + 0.005 * (opts.slot * 2 + i % 2)
+				local mid = (prev + p) / 2 + Vector3.new(0, top - 0.005, 0)
+				local len = (p - prev).Magnitude
+				local k = if opts.fadeIn then t else 1 - t
+				TRACK.Transparency = math.clamp(opts.faint - (opts.faint - opts.dark) * k, 0, 0.95)
+				U.part(folder, "TyreTrack", Vector3.new(opts.width, 0.01, len), CFrame.lookAt(mid, mid + (p - prev)), TRACK)
+			end
+			prev = p
+		end
+	end
+end
+
+-- The kinds of mark a mouth can carry (weights: how common each is).
+--   in       turned in from the kerb lane (the original)
+--   out      pulled out of the alley into the kerb lane
+--   inOut    both
+--   swing    a wide swing in from the far lane (a truck lining up)
+--   brake    straight braking streaks before the turn, then the turn in
+local TRACK_KINDS = { { "in", 4 }, { "out", 2 }, { "inOut", 1.5 }, { "swing", 1 }, { "brake", 1.5 } }
+
+local function pickTrackKind()
+	local total = 0
+	for _, k in TRACK_KINDS do
+		total += k[2]
+	end
+	local r = U.range(0, total)
+	for _, k in TRACK_KINDS do
+		r -= k[2]
+		if r <= 0 then
+			return k[1]
+		end
+	end
+	return "in"
+end
+
+local function mouthTracks(folder, m, d, potholes, layer)
+	local kind = pickTrackKind()
+	local lane = m.out * m.lane
+	local truck = U.chance(0.35)
+	local function opts(extra)
+		local o = {
+			gauge = if truck then U.range(3.3, 3.8) else U.range(2.6, 3.1),
+			width = if truck then U.range(1, 1.2) else U.range(0.75, 0.95),
+			dark = U.range(0.45, 0.6), faint = U.range(0.78, 0.88),
+			wear = U.range(0.05, 0.25), segments = U.int(10, 14),
+			slot = if layer == 0 then 0 else 2, fadeIn = true,
+		}
+		for k, v in extra or {} do
+			o[k] = v
+		end
+		return o
+	end
+	local mouthIn = m.p - d * U.range(0.5, 2.5) - m.out * U.range(0, 1)
+	local function turnIn(o)
+		local from = U.range(26, 44)
+		trackCurve(folder, m.p + lane - d * from, m.p + lane - d * U.range(4, 10), mouthIn, o or opts(), potholes)
+	end
+	if kind == "in" then
+		turnIn()
+	elseif kind == "out" then
+		local to = U.range(26, 44)
+		trackCurve(folder, m.p + d * U.range(0.5, 2.5), m.p + lane + d * U.range(4, 10), m.p + lane + d * to, opts({ fadeIn = false }), potholes)
+	elseif kind == "inOut" then
+		turnIn()
+		local to = U.range(24, 38)
+		trackCurve(folder, m.p + d * U.range(0.5, 2.5), m.p + lane + d * U.range(4, 10), m.p + lane + d * to,
+			opts({ fadeIn = false, slot = if layer == 0 then 1 else 2 }), potholes)
+	elseif kind == "swing" then
+		-- Market has a second lane beyond the kerb lane; a street does not,
+		-- so there the swing is just longer and shallower
+		local far = if m.lane < 8 then lane + m.out * 12 else lane + m.out * 2
+		trackCurve(folder, m.p + far - d * U.range(46, 60), m.p + far - d * U.range(10, 16), mouthIn, opts({ segments = 16 }), potholes)
+	else -- brake
+		local stop = U.range(12, 18)
+		trackCurve(folder, m.p + lane - d * (stop + U.range(10, 16)), m.p + lane - d * (stop + 5), m.p + lane - d * stop,
+			opts({ segments = 5, dark = 0.35, faint = 0.6, wear = 0.05, width = U.range(1.1, 1.3), slot = if layer == 0 then 1 else 2 }), potholes)
+		turnIn()
+	end
+end
+
+local function alleyMouth(f, m, ctx, styleKey, potholes)
+	local d = Vector3.new(-m.out.Z, 0, m.out.X)
+	alleyNameSign(f.Signs, m, d)
+	mouthFestoons(f.Alleys, m, d, ctx)
+	mouthCornerGuards(f.Alleys, m, d, ctx)
+	if U.chance(0.8) then
+		mouthNeon(f.Signs, m, d, ctx, styleKey)
+	end
+	-- most mouths carry tyre marks, not all; the ones near the Terminal
+	-- (the first stretch of Old Town, where every player starts) always do,
+	-- often from more than one vehicle
+	local nearTerminal = styleKey == "OldTown" and m.p.Z > -420
+	if nearTerminal or U.chance(0.7) then
+		mouthTracks(f.Markings, m, d, potholes, 0)
+		if nearTerminal and U.chance(0.6) then
+			mouthTracks(f.Markings, m, d, potholes, 1)
+		end
 	end
 end
 
@@ -356,15 +634,25 @@ local function legsFor(spec, seg)
 		elseif a.z == b.z then
 			table.insert(legs, { kind = "EW", rect = U.rect(math.min(a.x, b.x) - w / 2, a.z - w / 2, math.max(a.x, b.x) + w / 2, a.z + w / 2) })
 		else
-			-- angled: the channel keeps its PERPENDICULAR width w, so its
-			-- horizontal width is w / cos(angle)
+			-- angled: the channel keeps a PERPENDICULAR width wd (wider than
+			-- the alley, see Layout.AlleyCurve), so its horizontal width is
+			-- wd / cos(angle)
 			local dx, dz = b.x - a.x, a.z - b.z
-			local wh = w * math.sqrt(dx * dx + dz * dz) / dz
+			local wd = math.max(w + L.AlleyCurve.Extra, L.AlleyCurve.Min)
+			local wh = wd * math.sqrt(dx * dx + dz * dz) / dz
 			table.insert(legs, {
 				kind = "DIAG",
 				rect = U.rect(math.min(a.x, b.x) - wh / 2, b.z, math.max(a.x, b.x) + wh / 2, a.z),
-				a = Vector3.new(a.x, 0, a.z), b = Vector3.new(b.x, 0, b.z), wh = wh,
+				a = Vector3.new(a.x, 0, a.z), b = Vector3.new(b.x, 0, b.z), wh = wh, w = wd,
 			})
+			-- and the straight legs flare out to that width just before the
+			-- bend, so the turn has room to start and finish (the inner
+			-- building corner used to sit right at the bend)
+			local flare = L.AlleyCurve.Flare
+			if wh > w then
+				table.insert(legs, { kind = "FLARE", rect = U.rect(a.x - wh / 2, a.z, a.x + wh / 2, a.z + flare) })
+				table.insert(legs, { kind = "FLARE", rect = U.rect(b.x - wh / 2, b.z - flare, b.x + wh / 2, b.z) })
+			end
 		end
 	end
 	return legs, nodes
@@ -425,6 +713,8 @@ function Zone.Build(spec, kit, ctx)
 	local rampLen = L.Express.rampLength
 	table.clear(walls)
 	table.clear(overheadClear)
+	table.clear(shopRects)
+	shopfronts = kit.Templates:FindFirstChild("Shopfronts") and kit.Templates.Shopfronts:GetChildren() or {}
 	-- the express link's in-zone stretches (see Layout.LinkX): from the zone
 	-- edge over Market's west lanes to where it merges with the deck
 	local LW = L.Express.width
@@ -656,7 +946,7 @@ function Zone.Build(spec, kit, ctx)
 			table.insert(avoid, U.expand(d.drive, 2))
 		end
 		for _, leg in b.legs do
-			if leg.kind == "EW" or leg.kind == "DIAG" then
+			if leg.kind == "EW" or leg.kind == "DIAG" or leg.kind == "FLARE" then
 				table.insert(avoid, leg.rect)
 			end
 		end
@@ -682,7 +972,7 @@ function Zone.Build(spec, kit, ctx)
 			end
 		end
 		for _, leg in b.legs do
-			if leg.kind == "EW" then
+			if leg.kind == "EW" or leg.kind == "FLARE" then
 				paveRect(leg.rect)
 			elseif leg.kind == "DIAG" then
 				local a, bb, wh = leg.a, leg.b, leg.wh
@@ -713,22 +1003,28 @@ function Zone.Build(spec, kit, ctx)
 					end
 				end
 				Alleys.DressLeg(f.Alleys, kit, { rect = leg.rect, alongZ = false, w = b.alley.w, theme = b.alley.Theme }, joins, actx)
-			else
-				Alleys.DressDiagonal(f.Alleys, kit, leg.a, leg.b, b.alley.w, b.alley.Theme, actx)
+			elseif leg.kind == "DIAG" then
+				Alleys.DressDiagonal(f.Alleys, kit, leg.a, leg.b, leg.w, b.alley.Theme, actx)
 			end
+			-- (FLARE: the widened approach to a bend - left bare on purpose)
 		end
 		for _, br in b.branches do
 			local r = br.rect
 			local inner = U.rect(r.x1 + 3, r.z1, r.x2 - 3, r.z2)
 			Alleys.DressLeg(f.Alleys, kit, { rect = inner, alongZ = false, w = br.w, theme = br.theme }, {}, actx)
 		end
-		-- alley signs
+		-- alley mouths: name signs and the cues that make the gap noticeable
 		local n1, n2 = b.nodes[1], b.nodes[#b.nodes]
-		alleySign(f.Signs, n1.x + b.alley.w / 2 + 2.5, b.rect.z2 - 3, b.alley.Name, true, b.alley.w)
-		alleySign(f.Signs, n2.x + b.alley.w / 2 + 2.5, b.rect.z1 + 3, b.alley.Name, true, b.alley.w)
+		-- every road's kerb lane runs 11 in from the kerb (Traffic: w / 2 - 11 off the
+		-- centre line; Market's outer lanes are 6 in)
+		alleyMouth(f, { p = Vector3.new(n1.x, 0, b.rect.z2), out = Vector3.new(0, 0, 1), w = b.alley.w,
+			name = b.alley.Name, theme = b.alley.Theme, lane = 11 }, actx, styleKey, potholes)
+		alleyMouth(f, { p = Vector3.new(n2.x, 0, b.rect.z1), out = Vector3.new(0, 0, -1), w = b.alley.w,
+			name = b.alley.Name, theme = b.alley.Theme, lane = 11 }, actx, styleKey, potholes)
 		for _, br in b.branches do
-			local x = br.roadX + (br.roadX > (br.rect.x1 + br.rect.x2) / 2 and -3 or 3)
-			alleySign(f.Signs, x, br.rect.z1 - 2.5, br.name, false, br.w)
+			local toward = if br.roadX > (br.rect.x1 + br.rect.x2) / 2 then 1 else -1
+			alleyMouth(f, { p = Vector3.new(br.roadX, 0, br.z), out = Vector3.new(toward, 0, 0), w = br.w,
+				name = br.name, theme = br.theme, lane = if br.to == "market" then 6 else 11 }, actx, styleKey, potholes)
 		end
 	end
 
@@ -1076,6 +1372,9 @@ function Zone.Build(spec, kit, ctx)
 	end
 	for _, c in linkCols do
 		table.insert(clearOf, U.expand(c, 3))
+	end
+	for _, r in shopRects do
+		table.insert(clearOf, r)
 	end
 	local function clear(x, z, pad)
 		for _, h in clearOf do

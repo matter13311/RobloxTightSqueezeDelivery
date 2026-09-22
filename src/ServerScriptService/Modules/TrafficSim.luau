@@ -40,8 +40,9 @@ local SENSE_INTERVAL = 0.1
 local AHEAD_SAMPLE = 4 -- studs ahead of the centre a car points at, smooths corners
 
 -- Lane changes: forward studs of travel per stud of sideways offset when the
--- road ahead is open, and the shortest stretch a boxed-in car will use.
-local LANE_STUDS_PER_OFFSET = 3.6
+-- road ahead is open, and the shortest stretch a boxed-in car will use. TrafficController.client
+-- rebuilds the curve from these, so it keeps copies: change both.
+local LANE_STUDS_PER_OFFSET = 4.5
 local LANE_MIN_LENGTH = 16
 -- Extra stopping distance on lane routes, so a car queued behind something
 -- has room to steer out of the queue.

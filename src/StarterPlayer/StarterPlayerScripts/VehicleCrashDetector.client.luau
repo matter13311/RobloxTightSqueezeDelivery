@@ -26,6 +26,7 @@ local VehicleEntryDebug = require(ReplicatedStorage.Modules.Vehicles.VehicleEntr
 local VehicleCrashSounds = require(ReplicatedStorage.Modules.Vehicles.VehicleCrashSounds)
 local VehicleSqueakSounds = require(ReplicatedStorage.Modules.Vehicles.VehicleSqueakSounds)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 
 local impactRemote = ReplicatedStorage:WaitForChild("VehicleImpact")
 local scrapeRemote = ReplicatedStorage:WaitForChild("VehicleScrape")
@@ -40,6 +41,22 @@ local player = Players.LocalPlayer
 local CONTACT_TIMEOUT = 0.25
 
 local session = nil
+
+-- True for any part of the trailer coupled to this truck (the kingpin pin
+-- included - its joint folder lives under the trailer's chassis).
+--
+-- The trailer's nose rides on the fifth wheel, so the truck's hulls touch it
+-- for the whole tow. As a contact, it read as a surface the truck was
+-- sliding along at full road speed - a horizontal velocity against a mostly
+-- vertical normal - and checkScrape bled ScrapeDrag (14 studs/s^2) off the
+-- truck from ScrapeMinTangentSpeed (8 studs/s) up. That was the entire "the
+-- truck is slow with a trailer on": a hard ceiling at ~9 studs/s, while the
+-- trailer itself weighs under 10. Re-read per call rather than cached,
+-- because the player can couple and drop trailers without leaving the seat.
+local function isHitchedTrailerPart(carModel, part)
+	local trailer = TrailerHitch.GetHitchedTrailer(carModel)
+	return trailer ~= nil and part:IsDescendantOf(trailer)
+end
 
 --=============================================================================
 -- Effects
@@ -275,6 +292,11 @@ local function checkScrape(mySession, velocity, delta, now)
 		if offset.Magnitude < 0.05 then
 			continue
 		end
+		-- Also filtered at Touched, but a contact opened just BEFORE coupling
+		-- would otherwise scrape until it times out.
+		if isHitchedTrailerPart(mySession.CarModel, part) then
+			continue
+		end
 
 		-- Cast at just this one part (Include, not Exclude) so the answer is
 		-- that surface's normal and nothing else's - the truck's own hulls are
@@ -484,7 +506,7 @@ local function beginSession(carModel)
 				table.insert(
 					mySession.Connections,
 					part.Touched:Connect(function(other)
-						if other:IsDescendantOf(carModel) then
+						if other:IsDescendantOf(carModel) or isHitchedTrailerPart(carModel, other) then
 							return
 						end
 						-- Touched fires for non-collidable parts too - it

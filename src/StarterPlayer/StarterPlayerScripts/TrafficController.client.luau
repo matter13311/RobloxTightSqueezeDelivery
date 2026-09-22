@@ -51,6 +51,7 @@ local LATERAL_PER_FORWARD = 1.3
 local LATERAL_SNAP = 14
 -- How quickly the drawn yaw follows the travel direction (1/s).
 local YAW_FOLLOW = 10
+local YAW_FOLLOW_ON_CURVE = 30
 local SNAP_DISTANCE = 25 -- further than this from the server and the car just jumps
 local CORRECTION_GAIN = 2 -- extra studs/s per stud behind the server
 -- Ceiling on that correction. Catching up a big gap at full gain looks like a
@@ -69,6 +70,9 @@ local routes = {}
 for index, route in TrafficConfig.Routes do
 	routes[index] = TrafficPath.Build(TrafficConfig, route)
 	routes[index].Closed = route.Closed
+	-- The only offsets a lane change runs between (TrafficSim: 0 or
+	-- Lanes.Offset), so a predicted offset can be clamped to them.
+	routes[index].LaneOffset = route.Lanes and route.Lanes.Offset or 0
 end
 
 local trafficFolder = Instance.new("Folder")
@@ -175,6 +179,132 @@ local function releaseVisual(visual)
 end
 
 --=============================================================================
+-- Lane changes
+--=============================================================================
+
+-- The server moves a car across on a smoothstep of forward travel (TrafficSim:
+-- Lane = From + (Goal - From) * smoothstep(Progress), Progress += travel /
+-- LaneLength), always between the route line (0) and Lanes.Offset. Only the
+-- current offset reaches the client, 10 times a second. Chasing that raw value
+-- moved cars sideways in a staircase - catch up, wait for the next packet,
+-- catch up - and the yaw read off each frame's step flicked between angled and
+-- straight with it: the lane-change jitter. Even a rate extrapolated from two
+-- packets lags the curve by half a packet and overshoots its end, so cars
+-- reached the new lane still angled.
+--
+-- So the client rebuilds the curve itself. With both ends known, an offset IS
+-- a progress (inverse smoothstep), and two packets give the curve's length:
+-- travel between them / progress between them. From then on the drawn offset
+-- and its slope are exact functions of the car's own distance along the route.
+
+-- Copies of TrafficSim's LANE_STUDS_PER_OFFSET / LANE_MIN_LENGTH: keep equal.
+local LANE_STUDS_PER_OFFSET = 4.5
+local LANE_MIN_LENGTH = 16
+
+-- 0..1 -> 0..1, the inverse of t * t * (3 - 2t).
+local function inverseSmoothstep(f)
+	f = math.clamp(f, 0, 1)
+	return 0.5 - math.sin(math.asin(1 - 2 * f) / 3)
+end
+
+local function smoothstep(t)
+	return t * t * (3 - 2 * t)
+end
+
+-- Forward distance from s0 to s1 along the route (short way round a loop).
+local function travelled(path, s0, s1)
+	local ds = s1 - s0
+	if path.Closed then
+		ds %= path.Length
+		if ds > path.Length / 2 then
+			ds -= path.Length
+		end
+	end
+	return ds
+end
+
+-- Fed every snapshot. Keeps visual.Change = { From, Goal, AnchorS, AnchorP,
+-- S, P, Length } while a change is running, nil otherwise.
+local function trackLaneChange(visual, path, s, lateral)
+	local offset = path.LaneOffset
+	local previous = visual.Snap
+	local change = visual.Change
+	if offset == 0 then
+		visual.Change = nil
+		return
+	end
+	local atZero, atOffset = math.abs(lateral) < 0.07, math.abs(lateral - offset) < 0.07
+	if change then
+		local span = change.Goal - change.From
+		-- Moving back the way it came is a change of mind: start over below.
+		local backwards = previous and (lateral - previous.Lateral) * span < -0.07
+		if backwards then
+			change = nil
+		elseif math.abs(lateral - change.Goal) < 0.07 then
+			change.S, change.P = s, 1
+			return
+		end
+	end
+	if atZero or atOffset then
+		-- Resting in a lane. A finished change stays until the car has drawn
+		-- its way to the end of it (see the per-frame code).
+		if change == nil then
+			visual.Change = nil
+		end
+		return
+	end
+	if change == nil then
+		if not previous or previous.Lateral == lateral then
+			visual.Change = nil
+			return -- no direction yet: the next packet will give one
+		end
+		local goal = if (lateral - previous.Lateral) * offset > 0 then offset else 0
+		local from = if goal == 0 then offset else 0
+		local p = inverseSmoothstep((lateral - from) / (goal - from))
+		-- The server picked the curve's length from the room ahead when it
+		-- decided (TrafficSim: clamp(Limit + LANE_MIN_LENGTH, LANE_MIN_LENGTH,
+		-- open road)), and the last snapshot's Room is that Limit near enough.
+		-- Guessing the open-road length instead drew a boxed-in car's short,
+		-- sharp pull-out too gently, then kinked when two packets measured it.
+		local openLength = math.abs(offset) * LANE_STUDS_PER_OFFSET
+		local room = if previous.Unlimited or not previous.Stop then math.huge else travelled(path, previous.S, previous.Stop)
+		change = {
+			From = from,
+			Goal = goal,
+			AnchorS = s,
+			AnchorP = p,
+			S = s,
+			P = p,
+			-- until two packets measure it
+			Length = math.clamp(math.max(0, room) + LANE_MIN_LENGTH, LANE_MIN_LENGTH, math.max(LANE_MIN_LENGTH, openLength)),
+		}
+		visual.Change = change
+		return
+	end
+	local p = inverseSmoothstep((lateral - change.From) / (change.Goal - change.From))
+	-- Measured over the whole change so far, not packet to packet: the
+	-- offsets are 1/8-stud steps, so a long baseline is a far better ruler.
+	local dp = p - change.AnchorP
+	local ds = travelled(path, change.AnchorS, s)
+	if dp > 0.06 and ds > 0.5 then
+		change.Length = math.clamp(ds / dp, 8, 400)
+	end
+	change.S, change.P = s, math.max(p, change.P)
+end
+
+-- The drawn offset and its slope (sideways studs per forward stud) at distance
+-- `s`, or nil when no change is running.
+local function laneCurveAt(visual, path, s)
+	local change = visual.Change
+	if not change then
+		return nil
+	end
+	local p = math.clamp(change.P + travelled(path, change.S, s) / change.Length, 0, 1)
+	local span = change.Goal - change.From
+	return change.From + span * smoothstep(p), span * 6 * p * (1 - p) / change.Length, p
+end
+
+--=============================================================================
 -- Snapshots
 --=============================================================================
 
@@ -220,6 +350,8 @@ snapshotRemote.OnClientEvent:Connect(function(payload)
 		-- Room at the cap means nothing is in front of it: no stop point at all.
 		-- Anything less is a real distance from `S` to where it must stop.
 		local unlimited = entry.Room >= TrafficNet.MaxRoom - 1
+		local lateral = entry.Lateral or 0
+		trackLaneChange(visual, path, entry.S, lateral)
 		visual.Snap = {
 			Time = serverTime,
 			S = entry.S,
@@ -228,7 +360,7 @@ snapshotRemote.OnClientEvent:Connect(function(payload)
 				then nil
 				else entry.S + (if path.Closed then entry.Room else math.min(path.Length - entry.S, entry.Room)),
 			Speed = entry.Speed,
-			Lateral = entry.Lateral or 0,
+			Lateral = lateral,
 		}
 		setBrakeLights(visual, entry.Braking)
 	end
@@ -453,8 +585,18 @@ RunService.Heartbeat:Connect(function(dt)
 			moved += length
 		end
 		moved = math.max(0, moved)
-		local lateral = visual.Lateral or snap.Lateral
-		local wanted = snap.Lateral - lateral
+		-- Where the server's S-curve has the offset at OUR distance along the
+		-- route (see trackLaneChange), else the snapshot's resting offset.
+		local target, rate = snap.Lateral, 0
+		local curveOffset, curveSlope, progress = laneCurveAt(visual, path, visual.S)
+		if curveOffset then
+			target, rate = curveOffset, curveSlope
+			if progress >= 1 and math.abs(snap.Lateral - visual.Change.Goal) < 0.07 then
+				visual.Change = nil -- drawn to the end, and the server agrees
+			end
+		end
+		local lateral = visual.Lateral or target
+		local wanted = target - lateral
 		local step
 		if jumped or math.abs(wanted) > LATERAL_SNAP then
 			step = wanted
@@ -466,11 +608,23 @@ RunService.Heartbeat:Connect(function(dt)
 		visual.Lateral = lateral
 		-- The body points where it is going: forward plus the sideways drift.
 		-- Held while stopped, so a car that stops mid-change stays angled
-		-- instead of snapping straight.
+		-- instead of snapping straight. While the drawn offset is on the
+		-- predicted curve its slope IS the curve's rate; the per-frame step is
+		-- only used while it is still converging onto it (a fresh car, a
+		-- correction), since dividing two tiny per-frame numbers is noisy.
 		if moved > 1e-3 and not jumped then
-			local slope = math.clamp(step / moved, -1.5, 1.5)
+			-- Even while the drawn offset is still closing a small gap onto
+			-- the curve (the first packet of a change arrives with the car
+			-- already part-way across), it is the curve's slope that is
+			-- drawn: the catch-up step itself can be steep for a frame or two.
+			local onCurve = curveOffset ~= nil and math.abs(target - lateral) < 1.5
+			local slope = math.clamp(if onCurve then rate else step / moved, -1.5, 1.5)
 			local s0 = visual.Slope or 0
-			visual.Slope = s0 + (slope - s0) * math.min(1, YAW_FOLLOW * dt)
+			-- On the curve the slope is exact, so it is followed almost at once
+			-- (the only thing left to smooth is a packet refining the curve's
+			-- length); a lagging yaw is what left cars angled in the new lane.
+			local follow = if onCurve then YAW_FOLLOW_ON_CURVE else YAW_FOLLOW
+			visual.Slope = s0 + (slope - s0) * math.min(1, follow * dt)
 		elseif jumped then
 			visual.Slope = 0
 		end
