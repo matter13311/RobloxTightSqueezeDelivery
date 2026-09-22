@@ -606,16 +606,18 @@ local DEFAULT_TRANSMISSION = {
 }
 VehiclePhysics.DefaultTransmission = DEFAULT_TRANSMISSION
 
--- Optional turbo whistle, layered on top of the engine sound. Any car whose
--- Engine folder holds a Sound named "Turbo" (e.g. Engine/Engine/Turbo) gets it
--- driven by the 0-1 engine revs; a car without one is untouched. Nested like
--- Transmission, so it is config-file-only and a car's Configs/<name>.luau
--- overrides it key by key (a car can specify just `StartRpm`).
+-- How this car's turbo spools, IF it has one. Nothing here grants a turbo any
+-- more: that is the Induction Upgrade, bought per car (VehicleInduction.luau)
+-- and played by InductionEffects.luau, which is the only reader of this table.
+-- It stays in the physics config because it is per-car-TYPE tuning like
+-- Transmission is, and it merges the same way - a car's Configs/<name>.luau
+-- overrides it key by key (a car can specify just `StartRpm`) to give a big
+-- diesel a lazier spool than a pickup.
 --
--- The Sound's own Volume in Studio is the loudest it ever gets - the fade
--- scales it from 0 up to that, so set the level you want to hear at full boost
--- on the Sound itself. It is forced to Looped, so the clip needs to loop
--- cleanly.
+-- The whistle Sound's own Volume is the loudest it ever gets - the fade scales
+-- it from 0 up to that. For a car built with its own Engine/.../Turbo Sound
+-- that is the level set in Studio; for every other car it is the level
+-- InductionEffects creates the sound at.
 local DEFAULT_TURBO = {
 	StartRpm = 0.55, -- revs (0-1) at which the turbo begins to fade in...
 	FullRpm = 0.85, -- ...and at which it has reached full volume. Smoothstepped between
@@ -628,6 +630,8 @@ local DEFAULT_TURBO = {
 	MaxPitch = 1.3, -- ...rising to this at redline. Same resampling limits as Transmission.MaxPitch
 	PitchSmoothing = 3, -- per-second rate the pitch chases its target. Lower = slower, lazier climb
 }
+-- Exposed for InductionEffects, which is the only reader of the merged
+-- config.Turbo and wants the same fallbacks when it is handed a bare config.
 VehiclePhysics.DefaultTurbo = DEFAULT_TURBO
 
 -- Per-car-TYPE tuning lives in ModuleScripts under Configs/, one file per car
@@ -1864,109 +1868,6 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 	VehiclePhysics.UpdateEngineSound(carModel, config, input.Rpm)
 end
 
--- Per-car turbo fade/pitch state, keyed weakly by car model so a despawned car
--- takes its entry with it. `Sound` is false for a car with no Turbo, which is
--- rechecked every few seconds rather than every frame (a recursive name search
--- per car per frame is what this cache exists to avoid).
-local turboStates = setmetatable({}, { __mode = "k" })
-local TURBO_RECHECK_INTERVAL = 2 -- seconds between looks for a Turbo on a car that had none
-local TURBO_MAX_DT = 0.1 -- a hitch longer than this must not jump the fade to its end
-
-local function findTurboState(carModel, now)
-	local state = turboStates[carModel]
-	if state then
-		if state.Sound then
-			if state.Sound.Parent then
-				return state
-			end
-		elseif now < state.NextCheck then
-			return nil
-		end
-	end
-
-	local engine = carModel:FindFirstChild("Engine")
-	local sound = engine and engine:FindFirstChild("Turbo", true)
-	if not (sound and sound:IsA("Sound")) then
-		turboStates[carModel] = { Sound = false, NextCheck = now + TURBO_RECHECK_INTERVAL }
-		return nil
-	end
-
-	local newState = {
-		Sound = sound,
-		BaseVolume = sound.Volume, -- the authored level; Volume itself is overwritten every frame from here
-		Level = 0, -- 0-1 fade position
-		Pitch = nil, -- seeded on the first update, so it doesn't sweep in from nowhere
-		Last = now,
-	}
-	sound.Looped = true
-	sound.Volume = 0
-	turboStates[carModel] = newState
-	return newState
-end
-
--- Fades the Turbo in and out with revs and raises its pitch as revs climb.
--- Time-based rather than per-call, because the driver's own car reaches
--- UpdateEngineSound twice a frame (Step and the client's visuals loop) and
--- both calls have to leave the fade exactly where one would.
---
--- Client only. The server runs Step for parked cars with no revs at all, and a
--- Volume/Play written there would replicate to every player.
-local function updateTurboSound(carModel, turbo, rpm)
-	if not RunService:IsClient() then
-		return
-	end
-	local now = os.clock()
-	local state = findTurboState(carModel, now)
-	if not state then
-		return
-	end
-	local dt = math.min(now - state.Last, TURBO_MAX_DT)
-	state.Last = now
-	state.Turbo = turbo -- remembered so a parked car can finish its fade-out, see UpdateParkedTurbo
-
-	rpm = math.clamp(rpm or 0, 0, 1)
-	local target = math.clamp((rpm - turbo.StartRpm) / math.max(turbo.FullRpm - turbo.StartRpm, 1e-3), 0, 1)
-	target = target * target * (3 - 2 * target)
-
-	local fadeTime = if target > state.Level then turbo.FadeInTime else turbo.FadeOutTime
-	local step = dt / math.max(fadeTime, 0.01)
-	state.Level += math.clamp(target - state.Level, -step, step)
-
-	local pitchT = math.clamp((rpm - turbo.StartRpm) / math.max(1 - turbo.StartRpm, 1e-3), 0, 1)
-	local targetPitch = turbo.MinPitch + pitchT * (turbo.MaxPitch - turbo.MinPitch)
-	if not state.Pitch then
-		state.Pitch = targetPitch
-	end
-	state.Pitch += (targetPitch - state.Pitch) * (1 - math.exp(-turbo.PitchSmoothing * dt))
-
-	local sound = state.Sound
-	sound.PlaybackSpeed = state.Pitch
-	sound.Volume = state.BaseVolume * state.Level
-	-- Only playing while audible, so a car with its turbo faded out (every
-	-- parked one) isn't mixing a silent looping sound.
-	if state.Level > 0.001 then
-		if not sound.IsPlaying then
-			sound:Play()
-		end
-	elseif sound.IsPlaying then
-		sound:Stop()
-	end
-end
-
--- Lets a PARKED car's turbo finish fading out. The client's per-frame loop skips
--- an Anchored car entirely (the server anchors it the instant its driver gets
--- out), so UpdateEngineSound stops being called for it - and the turbo, being a
--- local looping sound nothing else stops, would drone on at whatever volume it
--- had when the driver left, for every player. Cheap enough to call every frame
--- for every parked car: a car with no turbo, or one already silent, returns at
--- once.
-function VehiclePhysics.UpdateParkedTurbo(carModel)
-	local state = turboStates[carModel]
-	if state and state.Sound and state.Level > 0 then
-		updateTurboSound(carModel, state.Turbo, 0)
-	end
-end
-
 -- Sets the engine sound's pitch from RPM (0-1, following ENGINE revs so it
 -- climbs through each gear and drops back on every shift) or, when `rpm` is
 -- nil, from road speed instead (the old fallback for a car being simulated
@@ -1982,8 +1883,6 @@ end
 -- sound lives under Engine/<enginePart>/Sound instead, so it comes from the
 -- actual engine part rather than the chassis.
 function VehiclePhysics.UpdateEngineSound(carModel, config, rpm)
-	updateTurboSound(carModel, config.Turbo or DEFAULT_TURBO, rpm)
-
 	local sound = carModel:FindFirstChild("Sound", true)
 	if not sound then
 		return

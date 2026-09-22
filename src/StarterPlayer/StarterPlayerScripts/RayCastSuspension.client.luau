@@ -10,6 +10,7 @@ local VehicleDashboard = require(script.Parent.VehicleDashboard)
 local VehicleControlsHint = require(script.Parent.VehicleControlsHint)
 local VehicleEffects = require(script.Parent.VehicleEffects)
 local ExhaustEffects = require(script.Parent.ExhaustEffects)
+local InductionEffects = require(script.Parent.InductionEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
 local VehicleReverseBeep = require(script.Parent.VehicleReverseBeep)
 local VehicleDashboardGauges = require(script.Parent.VehicleDashboardGauges)
@@ -61,6 +62,7 @@ local STEER_ACTION = "VehicleSteer"
 local HEADLIGHT_ACTION = "VehicleHeadlights"
 local TURN_SIGNAL_LEFT_ACTION = "VehicleTurnSignalLeft"
 local TURN_SIGNAL_RIGHT_ACTION = "VehicleTurnSignalRight"
+local THROTTLE_ACTION = "VehicleThrottle"
 local HORN_ACTION = "VehicleHorn"
 local THIRD_PERSON_SHOP_ACTION = "VehicleThirdPersonShop"
 
@@ -74,12 +76,25 @@ local THIRD_PERSON_SHOP_ACTION = "VehicleThirdPersonShop"
 local steerLeftHeld = false
 local steerRightHeld = false
 
+-- Whether W and S are down, tracked as TWO INDEPENDENT booleans for the same
+-- reason A/D are above: VehicleSeat.ThrottleFloat is a single axis derived from
+-- Humanoid.MoveDirection, so holding both keys cancels to exactly 0 and is
+-- indistinguishable from holding neither.
+--
+-- That mattered the moment the gearbox grew a rule about holding both. Gearbox
+-- is written for independent keys - "brake wins over gas, so holding both is
+-- always the safe outcome" - but fed from one axis it never SAW both, so W+S
+-- produced no gas AND no brake (a coast), and the two-step launch, which is
+-- defined as holding both, could not fire at all.
+local gasKeyHeld = false
+local brakeKeyHeld = false
+
 -- Dedicated GAS/BRAKE buttons for touch (VehicleTouchControls), read the same
 -- way steerLeftHeld/steerRightHeld are: an explicit override that wins over
 -- whatever the seat's own ThrottleFloat says, rather than something that has
 -- to fight it. Without this, a touch player's only throttle input is Roblox's
 -- default vehicle joystick, which is not what the two clearly-labelled pedals
--- on screen are supposed to be driving - see throttleInput below.
+-- on screen are supposed to be driving - see pedalInputs below.
 local mobileGasHeld = false
 local mobileBrakeHeld = false
 
@@ -87,7 +102,7 @@ local mobileBrakeHeld = false
 -- VehicleTouchControls/CustomPrompt do - a hybrid touchscreen device can
 -- switch between mouse and touch mid-drive. This decides whether the seat's
 -- own ThrottleFloat is even trusted as a throttle FALLBACK (see
--- throttleInput): Roblox's default touch vehicle control is a single wheel
+-- pedalInputs): Roblox's default touch vehicle control is a single wheel
 -- that blends steer and throttle into one drag, and now that GAS/BRAKE are
 -- dedicated buttons, that blend is worse than nothing - a player trying to
 -- only steer would otherwise still nudge the throttle every time they turn.
@@ -174,6 +189,8 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		or math.abs(sent.Throttle - mySession.DriveThrottle) >= NET_THROTTLE_EPSILON
 		or math.abs(sent.Rpm - mySession.DriveRpm) >= NET_RPM_EPSILON
 		or math.abs(sent.Steer - mySession.NetSteerValue) >= NET_STEER_EPSILON
+		or sent.ShiftCount ~= mySession.ShiftCount
+		or sent.TwoStep ~= mySession.TwoStep
 	if not changed then
 		return
 	end
@@ -185,6 +202,8 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 	sent.Throttle = mySession.DriveThrottle
 	sent.Rpm = mySession.DriveRpm
 	sent.Steer = mySession.NetSteerValue
+	sent.ShiftCount = mySession.ShiftCount
+	sent.TwoStep = mySession.TwoStep
 
 	vehicleNetworkState:FireServer(
 		carModel,
@@ -194,7 +213,9 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		sent.Handbrake,
 		sent.Throttle,
 		sent.Rpm,
-		sent.Steer
+		sent.Steer,
+		sent.ShiftCount,
+		sent.TwoStep
 	)
 end
 
@@ -318,29 +339,35 @@ local function steerInput(seatPart)
 	return seatPart.SteerFloat
 end
 
--- Same idea as steerInput, for the mobile GAS/BRAKE buttons. Only overrides
--- the seat when one of the two is actually held, so keyboard W/S and gamepad
--- throttle keep working exactly as before for anyone not using the dedicated
--- buttons. Both held at once cancels out rather than picking a winner, same
--- as a real car's pedals would.
+-- The two pedals, as two independent booleans rather than one signed axis.
+-- Returns (forwardHeld, backHeld) - W and S, NOT "gas" and "brake": which one
+-- is the gas depends on which way the car is pointed, and that is the
+-- gearbox's decision, not this function's (see Gearbox.Update).
 --
--- On touch, the seat's ThrottleFloat is never trusted as a fallback even when
--- neither button is held - see touchInputActive above. The default touch
--- wheel still drives SteerFloat (steerInput falls back to it exactly as
--- before), it just no longer gets a say in the throttle: that job now belongs
--- entirely to GAS/BRAKE.
-local function throttleInput(seatPart)
-	if mobileGasHeld and not mobileBrakeHeld then
-		return 1
-	elseif mobileBrakeHeld and not mobileGasHeld then
-		return -1
-	elseif mobileGasHeld and mobileBrakeHeld then
-		return 0
+-- Deciding both from one number is what broke the two-step (see gasKeyHeld
+-- above), and it also meant holding W+S coasted instead of braking - the
+-- gearbox's "brake wins" rule could never fire because it never saw both.
+--
+-- Three input families, in priority order:
+--   TOUCH    the dedicated GAS/BRAKE buttons, already two independent things.
+--            On touch the seat's own axis is never trusted as a fallback (see
+--            touchInputActive) - Roblox's default touch control blends steer
+--            and throttle into one drag, which would nudge the throttle every
+--            time a player only meant to turn.
+--   KEYBOARD W and S read straight off the keys, same as steerInput reads A/D.
+--   ANALOG   a gamepad trigger or thumbstick is genuinely one axis and CANNOT
+--            express both at once, so splitting it by sign is exactly right -
+--            and those players simply have no two-step, which is a limitation
+--            of the hardware rather than something to fake.
+local function pedalInputs(seatPart)
+	if touchInputActive or mobileGasHeld or mobileBrakeHeld then
+		return mobileGasHeld, mobileBrakeHeld
 	end
-	if touchInputActive then
-		return 0
+	if gasKeyHeld or brakeKeyHeld then
+		return gasKeyHeld, brakeKeyHeld
 	end
-	return seatPart.ThrottleFloat
+	local axis = seatPart.ThrottleFloat
+	return axis > 0.1, axis < -0.1
 end
 
 -- The driving actions themselves, pulled out of the ContextActionService
@@ -360,7 +387,7 @@ local function setHandbrake(active)
 	end
 end
 
--- These two just flip the override throttleInput reads - no session needed,
+-- These two just flip the override pedalInputs reads - no session needed,
 -- since there's nothing to do to the car itself until next frame's Step call
 -- picks the new value up.
 local function setGas(active)
@@ -431,6 +458,21 @@ local function bindDrivingControls()
 		end
 		return Enum.ContextActionResult.Pass
 	end, false, Enum.KeyCode.A, Enum.KeyCode.D, Enum.KeyCode.Left, Enum.KeyCode.Right)
+
+	-- Passed through, not sunk, for the same reason as STEER_ACTION: the seat
+	-- still needs to see W/S (it is what turns the character to face the car's
+	-- heading, and what other clients replicate), we just stop trusting its
+	-- throttle axis to tell us which keys are down.
+	ContextActionService:BindAction(THROTTLE_ACTION, function(_, inputState, inputObject)
+		local key = inputObject.KeyCode
+		local held = inputState == Enum.UserInputState.Begin
+		if key == Enum.KeyCode.W or key == Enum.KeyCode.Up then
+			gasKeyHeld = held
+		elseif key == Enum.KeyCode.S or key == Enum.KeyCode.Down then
+			brakeKeyHeld = held
+		end
+		return Enum.ContextActionResult.Pass
+	end, false, Enum.KeyCode.W, Enum.KeyCode.S, Enum.KeyCode.Up, Enum.KeyCode.Down)
 
 	ContextActionService:BindAction(EXIT_ACTION, function(_, inputState)
 		if inputState == Enum.UserInputState.Begin then
@@ -503,11 +545,16 @@ local function unbindDrivingControls()
 		TURN_SIGNAL_RIGHT_ACTION,
 		HORN_ACTION,
 		THIRD_PERSON_SHOP_ACTION,
+		THROTTLE_ACTION,
 	} do
 		ContextActionService:UnbindAction(action)
 	end
 	steerLeftHeld = false
 	steerRightHeld = false
+	-- Same leak the mobile buttons have below: a key still down when the drive
+	-- ends would otherwise carry into whatever this player sits in next.
+	gasKeyHeld = false
+	brakeKeyHeld = false
 	-- A finger still down on GAS/BRAKE when the drive ends (exiting mid-press)
 	-- would otherwise leak into whatever this player sits in next.
 	mobileGasHeld = false
@@ -600,6 +647,13 @@ local function beginDrive(humanoid, seatPart)
 		Burnout = false,
 		Braking = false,
 		Reversing = false,
+		-- Seeded from whatever the car is already carrying rather than from 0.
+		-- The counter is only ever compared against its own previous value by
+		-- the clients watching it (see InductionEffects), so restarting it at
+		-- zero for each new driver would be a CHANGE, and every bystander would
+		-- hear one phantom anti-lag crack the moment somebody got in.
+		ShiftCount = carModel:GetAttribute("NetShiftCount") or 0,
+		TwoStep = false,
 		ExitRequested = false,
 		-- Set the first frame this client actually simulates the car; see the
 		-- handover note in the drive loop below.
@@ -618,6 +672,8 @@ local function beginDrive(humanoid, seatPart)
 			Throttle = -math.huge,
 			Rpm = -math.huge,
 			Steer = -math.huge,
+			ShiftCount = -1,
+			TwoStep = false,
 		},
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
@@ -726,9 +782,10 @@ local function beginDrive(humanoid, seatPart)
 		-- Raw key state, nothing more. What W and S actually DO is the
 		-- gearbox's decision, because it depends on which way the car is
 		-- currently pointed - in D, S is the brake; in R, S is the gas.
-		local throttleFloat = if cargoLoading then 0 else throttleInput(seatPart)
-		local forwardKey = throttleFloat > 0.1
-		local backKey = throttleFloat < -0.1
+		local forwardKey, backKey = pedalInputs(seatPart)
+		if cargoLoading then
+			forwardKey, backKey = false, false
+		end
 
 		-- SIGNED speed along the car, not magnitude. The gearbox needs to
 		-- know whether the car is still rolling forwards to decide whether S
@@ -742,6 +799,11 @@ local function beginDrive(humanoid, seatPart)
 		local drive = Gearbox.Update(mySession.Gearbox, config, delta, signedSpeed, forwardKey, backKey)
 		if mySession.Gearbox.ShiftedThisFrame then
 			playSound(mySession.ShiftSound)
+			-- Bumped for the network relay, so every other client can crack an
+			-- anti-lag pop on the same shift this driver just heard. Costs
+			-- nothing for a car with no Induction Upgrade: the counter still
+			-- moves, and InductionEffects ignores it at stage 0.
+			mySession.ShiftCount += 1
 		end
 		if mySession.Gearbox.DirectionChangedThisFrame then
 			-- Swapping between forwards and backwards is the closest thing
@@ -767,12 +829,51 @@ local function beginDrive(humanoid, seatPart)
 		-- still with no gas held - the same as a real reverse light.
 		mySession.Braking = drive.Brake > 0
 		mySession.Reversing = mySession.Gearbox.Selector == "R"
+
+		-- TWO-STEP. Both pedals, sitting still, in D, on a car that has bought
+		-- the stage for it. The gearbox already makes this stance harmless -
+		-- brake beats gas, so gas is zero and the car stays put - and it
+		-- deliberately cannot flip into reverse either, because the direction
+		-- timer only counts while the gas key is NOT held. So the whole
+		-- feature is "notice a combination the controls already allow", with
+		-- nothing in the driving model to change.
+		--
+		-- HasTwoStep is asked of InductionEffects rather than of the save,
+		-- because the effects layer is already reading this car's stage off
+		-- its Attribute every frame and the driver must not get a different
+		-- answer from the bystanders watching them.
+		mySession.TwoStep = forwardKey
+			and backKey
+			and mySession.Gearbox.Selector == "D"
+			and speed < config.Transmission.StoppedSpeed
+			and InductionEffects.HasTwoStep(carModel)
 		-- Last frame's smoothed steer (Step below is what advances it). One
 		-- frame stale is nothing next to the network trip it's about to take,
 		-- and reading it here keeps the whole network payload assembled in
 		-- one place.
 		mySession.NetSteerValue = state.SmoothSteer
 		sendNetworkStateIfChanged(mySession, carModel)
+
+		-- Reached TWICE a frame for the driver's own car - here, and again in
+		-- the render loop below - which is deliberate and safe: every timer in
+		-- InductionEffects runs off os.clock deltas, so the second call gets a
+		-- delta of ~0 and advances nothing. It has to happen here as well
+		-- because Step is about to set the engine sound's pitch from whatever
+		-- Rpm it is handed, and a car held on a two-step limiter has to be
+		-- handed the limiter's revs or Step and the render loop would spend
+		-- the whole launch overwriting each other's pitch.
+		--
+		-- DriveRpm (and so NetRpm) deliberately keeps the RAW gearbox value:
+		-- bystanders get NetTwoStep of their own and apply the limiter
+		-- themselves, and sending them a value that already had it folded in
+		-- would apply it twice.
+		local engineRpm = InductionEffects.Update(carModel, config, {
+			Rpm = drive.Rpm,
+			Throttle = drive.Throttle,
+			Braking = mySession.Braking,
+			ShiftCount = mySession.ShiftCount,
+			TwoStep = mySession.TwoStep,
+		})
 
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
 			Throttle = drive.Throttle,
@@ -790,10 +891,17 @@ local function beginDrive(humanoid, seatPart)
 			-- A coupled trailer's weight is scaled back out of the drive force
 			-- and hill assist (1 when nothing is hitched) - see
 			-- TrailerDrive:MassRatio.
-			TorqueMultiplier = (drive.TorqueMultiplier or 1) * mySession.TrailerDrive:TorqueScale(config),
+			-- Boost is a third multiplier on the same number, alongside the
+			-- gear ratio and the trailer's weight scale: a turbo makes the
+			-- engine pull harder, it does not raise the top speed (GearMaxSpeed
+			-- below is untouched) and it does not change how the car handles.
+			-- 1 for a stock car, so this costs one table lookup there.
+			TorqueMultiplier = (drive.TorqueMultiplier or 1)
+				* mySession.TrailerDrive:TorqueScale(config)
+				* InductionEffects.TorqueMultiplier(carModel),
 			HillAssistMassScale = mySession.TrailerDrive:MassRatio(),
 			GearMaxSpeed = drive.GearMaxSpeed,
-			Rpm = drive.Rpm,
+			Rpm = engineRpm,
 		})
 
 		-- Same frame, same delta, immediately after the truck's own step. A
@@ -876,6 +984,7 @@ end
 workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	VehicleEffects.Clear(vehicle)
 	ExhaustEffects.Clear(vehicle)
+	InductionEffects.Clear(vehicle)
 	VehicleLights.Clear(vehicle)
 	VehicleReverseBeep.Clear(vehicle)
 	VehicleDashboardGauges.Clear(vehicle)
@@ -925,9 +1034,12 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- pitch) would freeze at whatever it was the instant the driver
 			-- got out, instead of stopping.
 			ExhaustEffects.Update(vehicle, 0)
-			-- Same for the turbo whistle: it is a local looping sound the
-			-- server never stops, so it has to be faded out from here.
-			VehiclePhysics.UpdateParkedTurbo(vehicle)
+			-- Same for the turbo whistle, and for anything the exhaust is
+			-- still doing: they are local sounds and particles the server
+			-- never stops, so they have to be wound down from here. Returns
+			-- immediately for a car with no Induction Upgrade, which is every
+			-- car until someone buys one.
+			InductionEffects.UpdateParked(vehicle)
 
 			-- The wheels have exactly the same problem, and it is far more
 			-- visible: the block below is what writes each wheel's weld C0
@@ -996,6 +1108,11 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			local isBraking = false
 			local isReversing = false
 			local rpm = 0
+			-- Both of these exist only to drive the Induction Upgrade's
+			-- effects; see InductionEffects for what a gearshift and a held
+			-- two-step each sound like.
+			local shiftCount = nil
+			local twoStep = false
 			if session and session.CarModel == vehicle then
 				-- The GEAR's drive demand, not the raw seat axis. S is the
 				-- brake now, so feeding ThrottleFloat straight in here would
@@ -1006,6 +1123,8 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				isBraking = session.Braking
 				isReversing = session.Reversing
 				rpm = session.DriveRpm or 0
+				shiftCount = session.ShiftCount
+				twoStep = session.TwoStep
 			else
 				-- Someone else's car (or nobody's driving it) - including a
 				-- car another player is driving while THIS client is also
@@ -1022,6 +1141,8 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				isBraking = vehicle:GetAttribute("NetBraking") or false
 				isReversing = vehicle:GetAttribute("NetReversing") or false
 				rpm = vehicle:GetAttribute("NetRpm") or 0
+				shiftCount = vehicle:GetAttribute("NetShiftCount")
+				twoStep = vehicle:GetAttribute("NetTwoStep") or false
 			end
 			-- Not folded into the session branch above: this client only has
 			-- a live SmoothSteer for a car it is driving ITSELF, which is a
@@ -1046,19 +1167,34 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				SlipOut = wheelSlipState[vehicle],
 			})
 			VehicleEffects.Update(vehicle, config, wheelSlipState[vehicle])
-			ExhaustEffects.Update(vehicle, rpm)
+
+			-- Runs for EVERY car in view, not just the driven one - that is
+			-- what makes another player's pops and bangs audible here. It
+			-- hands back the revs the engine should sound like, which is `rpm`
+			-- for every car except one being held on a two-step limiter; the
+			-- exhaust smoke and the tacho follow it too, so all four agree on
+			-- what the engine is doing.
+			local engineRpm = InductionEffects.Update(vehicle, config, {
+				Rpm = rpm,
+				Throttle = throttle,
+				Braking = isBraking,
+				ShiftCount = shiftCount,
+				TwoStep = twoStep,
+			})
+
+			ExhaustEffects.Update(vehicle, engineRpm)
 			-- Own car's Step() already set this from the live gearbox this
 			-- frame; for every other car, `rpm` came from NetRpm above, so
 			-- this is what makes a bystander hear an accelerating car's
 			-- pitch actually rise instead of droning at a fixed note.
-			VehiclePhysics.UpdateEngineSound(vehicle, config, rpm)
+			VehiclePhysics.UpdateEngineSound(vehicle, config, engineRpm)
 			VehicleLights.Update(vehicle, isBraking, isReversing)
 			VehicleReverseBeep.Update(vehicle, config, isReversing)
 			updateSteeringWheel(vehicle, config, smoothSteer)
 			-- Speed comes straight off the chassis' own replicated velocity
 			-- rather than the session/Net split above - see the module
 			-- comment in VehicleDashboardGauges for why that's fine.
-			VehicleDashboardGauges.UpdateGauges(vehicle, config, chassis.AssemblyLinearVelocity.Magnitude, rpm)
+			VehicleDashboardGauges.UpdateGauges(vehicle, config, chassis.AssemblyLinearVelocity.Magnitude, engineRpm)
 		end
 	end
 end)

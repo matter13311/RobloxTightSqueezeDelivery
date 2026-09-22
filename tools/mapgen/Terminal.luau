@@ -85,7 +85,25 @@ local function orientTerminal(template, pos, facing)
 	return t
 end
 
--- workbench, tool chest, tyres, pegboard, lamp - for looks only
+-- Where each bay's VehicleSpawn sits, measured in from the back wall, and
+-- where the bay-mouth fill lamp hangs. The main lamp hangs over the spawn.
+local SPAWN_FROM_BACK = 32
+local FRONT_LAMP_FROM_BACK = 58
+
+local function hangLamp(parent, x, z, height, shadows)
+	local lampY = height - 5
+	U.part(parent, "LampCord", Vector3.new(0.1, 4.5, 0.1), CFrame.new(x, height - 2.5, z), { Material = Enum.Material.SmoothPlastic, Color = Color3.new(0, 0, 0), CanCollide = false })
+	U.part(parent, "LampShade", Vector3.new(4, 1.2, 4), CFrame.new(x, lampY, z), { Material = Enum.Material.Metal, Color = Color3.fromRGB(40, 90, 60), CanCollide = false })
+	local bulb = U.part(parent, "LampBulb", Vector3.new(1.4, 0.6, 1.4), CFrame.new(x, lampY - 0.8, z), { Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 240, 210), CanCollide = false })
+	local light = Instance.new("PointLight")
+	light.Range = 34
+	light.Brightness = 1.6
+	light.Color = Color3.fromRGB(255, 235, 200)
+	light.Shadows = shadows
+	light.Parent = bulb
+end
+
+-- workbench, tool chest, tyres, pegboard, lamps - for looks only
 local function workshop(parent, x1, x2, zBack, height)
 	local wood = { Material = Enum.Material.WoodPlanks, Color = Color3.fromRGB(150, 110, 70) }
 	local steel = { Material = Enum.Material.Metal, Color = Color3.fromRGB(90, 92, 98) }
@@ -117,18 +135,13 @@ local function workshop(parent, x1, x2, zBack, height)
 			Shape = Enum.PartType.Cylinder, Material = Enum.Material.Rubber, Color = Color3.fromRGB(28, 28, 30),
 		})
 	end
-	-- hanging lamp
-	local lampY = height - 5
-	U.part(parent, "LampCord", Vector3.new(0.1, 4.5, 0.1), CFrame.new((x1 + x2) / 2, height - 2.5, zBack - 20), { Material = Enum.Material.SmoothPlastic, Color = Color3.new(0, 0, 0), CanCollide = false })
-	local shade = U.part(parent, "LampShade", Vector3.new(4, 1.2, 4), CFrame.new((x1 + x2) / 2, lampY, zBack - 20), { Material = Enum.Material.Metal, Color = Color3.fromRGB(40, 90, 60), CanCollide = false })
-	local _ = shade
-	local bulb = U.part(parent, "LampBulb", Vector3.new(1.4, 0.6, 1.4), CFrame.new((x1 + x2) / 2, lampY - 0.8, zBack - 20), { Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 240, 210), CanCollide = false })
-	local light = Instance.new("PointLight")
-	light.Range = 34
-	light.Brightness = 1.6
-	light.Color = Color3.fromRGB(255, 235, 200)
-	light.Shadows = true
-	light.Parent = bulb
+	-- Two hanging lamps: the main one directly over VehicleSpawn (the garage
+	-- view parks its preview car there, so that is where the light has to be),
+	-- and a second over the bay mouth, so the nose of a long truck and the
+	-- terminal kiosk are not left in the dark. Only the main lamp casts
+	-- shadows - sixteen extra shadow-casting lights for a fill is not worth it.
+	hangLamp(parent, (x1 + x2) / 2, zBack - SPAWN_FROM_BACK, height, true)
+	hangLamp(parent, (x1 + x2) / 2, zBack - FRONT_LAMP_FROM_BACK, height, false)
 	-- oil stain + lift outline on the floor
 	paint(parent, U.rect((x1 + x2) / 2 - 2, zBack - 30, (x1 + x2) / 2 + 2, zBack - 26), Color3.fromRGB(40, 40, 42))
 end
@@ -225,7 +238,10 @@ function Terminal.Build(map, kit, deliveryDepot, plotsFolder)
 		U.part(plot, "CollisionBox", Vector3.new(G.pitch - 3, roofY, G.backZ - boxZ1), CFrame.new(xc, roofY / 2, (boxZ1 + G.backZ) / 2), {
 			Transparency = 1, CanCollide = false, CanQuery = false, CastShadow = false,
 		})
-		U.part(plot, "VehicleSpawn", Vector3.new(4, 1, 4), CFrame.lookAt(Vector3.new(xc - 2, 5.09, G.backZ - 32), Vector3.new(xc - 2, 5.09, G.doorZ - 10)), {
+		-- Centred in the bay, directly under its main lamp (see hangLamp in
+		-- workshop). The bay floor, and so xc, runs between the two dividers.
+		local spawnZ = G.backZ - SPAWN_FROM_BACK
+		U.part(plot, "VehicleSpawn", Vector3.new(4, 1, 4), CFrame.lookAt(Vector3.new(xc, 5.09, spawnZ), Vector3.new(xc, 5.09, G.doorZ - 10)), {
 			Transparency = 1, CanCollide = false, CanQuery = false, CastShadow = false,
 		})
 		if terminalTemplate then

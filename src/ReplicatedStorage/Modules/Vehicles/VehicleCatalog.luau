@@ -10,9 +10,9 @@
 -- hand-placed car already goes through (Raycast.server.luau,
 -- VehicleCollisionSetup.server.luau, etc).
 --
--- `ImageId` is nil/"" until a thumbnail is uploaded - PlotTerminal.client.luau
--- renders an "Image Coming Soon" placeholder in its place rather than a blank
--- image, so it's fine to leave unset for a vehicle still in progress.
+-- There are no thumbnails: the garage shows every vehicle as a live model
+-- parked in the player's bay (GarageStage.luau, fed by VehiclePreviews.server
+-- .luau), so a new car needs nothing here beyond its template.
 --
 -- `RequiredDeliveries` is the second half of a vehicle's price. Money alone is
 -- a weak gate in a game where money is the reward for driving - a player can
@@ -34,7 +34,6 @@ VehicleCatalog.Vehicles = {
 		Id = "StarterVehicle",
 		DisplayName = "Starter Vehicle",
 		TemplateName = "StarterVehicle",
-		ImageId = "rbxassetid://125430916118158", -- no thumbnail rendered yet
 		Price = 0,
 		RequiredDeliveries = 0, -- the car you start in; gating it would lock a new player out of the game
 		DefaultOwned = true, -- every player starts owning this one, no purchase needed
@@ -43,11 +42,6 @@ VehicleCatalog.Vehicles = {
 		Id = "PickupTruck",
 		DisplayName = "Pickup Truck",
 		TemplateName = "PickupTruck",
-		-- Thumbnail rendered from the photo-display build (see
-		-- tools/BuildPhotoDisplayCar_CommandBar.luau) and uploaded as a Decal/
-		-- Image asset - shown large in the garage carousel and as the card
-		-- image in the shop grid (see PlotTerminal.client.luau).
-		ImageId = "rbxassetid://111532050787860",
 		-- Placeholder - adjust to taste.
 		Price = 5000,
 		-- Twenty deliveries is roughly an hour of play, and it is deliberately
@@ -62,10 +56,6 @@ VehicleCatalog.Vehicles = {
 		Id = "BoxTruck",
 		DisplayName = "Box Truck",
 		TemplateName = "BoxTruck", -- must exist under ServerStorage.VehicleTemplates
-		-- Thumbnail rendered from the photo-display build (see
-		-- tools/BuildPhotoDisplayCar_CommandBar.luau) and uploaded as a Decal/
-		-- Image asset, same as StarterVehicle/PickupTruck.
-		ImageId = "rbxassetid://70893299934109",
 		-- The next tier up from PickupTruck, so priced/gated higher.
 		-- ~2x what a typical player has earned by the delivery gate below,
 		-- the same ratio as PickupTruck's $5,000 at 20.
@@ -81,8 +71,6 @@ VehicleCatalog.Vehicles = {
 		Id = "StraightTruck",
 		DisplayName = "Straight Truck",
 		TemplateName = "StraightTruck", -- must exist under ServerStorage.VehicleTemplates
-		-- No thumbnail rendered yet - PlotTerminal.client.luau shows its
-		-- "Image Coming Soon" placeholder until an ImageId is set here.
 		-- Placeholder - adjust to taste. The tier above BoxTruck.
 		Price = 1000, --default 40,000
 		-- 200 is the next CapMilestones step up from BoxTruck's 75 (see
@@ -95,8 +83,6 @@ VehicleCatalog.Vehicles = {
 		Id = "AmericanHitchTruck",
 		DisplayName = "American Hitch Truck",
 		TemplateName = "AmericanHitchTruck", -- must exist under ServerStorage.VehicleTemplates
-		-- No thumbnail rendered yet - PlotTerminal.client.luau shows its
-		-- "Image Coming Soon" placeholder until an ImageId is set here.
 		-- Placeholder - adjust to taste. The top of the ladder, above StraightTruck.
 		Price = 1, --default 100,000
 		-- 450 is the next CapMilestones step up from StraightTruck's 200 (see

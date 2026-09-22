@@ -28,6 +28,8 @@ local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleUpgrades = require(ReplicatedStorage.Modules.Vehicles.VehicleUpgrades)
 local UpgradePasses = require(ReplicatedStorage.Modules.Vehicles.UpgradePasses)
+local VehiclePaint = require(ReplicatedStorage.Modules.Vehicles.VehiclePaint)
+local VehicleInduction = require(ReplicatedStorage.Modules.Vehicles.VehicleInduction)
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
 local ContractPool = require(script.Parent.Modules.ContractPool)
@@ -51,8 +53,8 @@ local MAX_CLAIM_DISTANCE = 12
 -- in it - there is no field here a save path has to remember to strip.
 local playerData = {}
 
--- [userId] = { ClaimedPlot = Model | nil, SpawnedVehicle = Model | nil } -
--- session-only, never saved and never even reaches PlayerDataStore.Save. Kept
+-- [userId] = { ClaimedPlot = Model | nil, SpawnedVehicle = Model | nil,
+-- SpawnedVehicleId = string | nil } - session-only, never saved and never even reaches PlayerDataStore.Save. Kept
 -- in its own table (rather than nil'd-out fields on playerData) specifically
 -- so an Instance can never accidentally ride along into a save - DataStores
 -- reject any table containing one ("Cannot store Dictionary in data store"),
@@ -87,9 +89,60 @@ local getPlotDataFunction = Instance.new("RemoteFunction")
 getPlotDataFunction.Name = "GetPlotData"
 getPlotDataFunction.Parent = ReplicatedStorage
 
-local buyVehicleEvent = Instance.new("RemoteEvent")
+-- A RemoteFunction (returns whether the purchase went through) for the same
+-- ordering reason as BuyUpgrade below: the garage re-fetches GetPlotData right
+-- after buying, and only a blocking call guarantees the purchase has landed
+-- before that read.
+local buyVehicleEvent = Instance.new("RemoteFunction")
 buyVehicleEvent.Name = "BuyVehicle"
 buyVehicleEvent.Parent = ReplicatedStorage
+
+-- Bodywork (see VehiclePaint.luau) and the Induction Upgrade (see
+-- VehicleInduction.luau). All RemoteFunctions, all for the BuyUpgrade reason:
+-- the garage redraws from GetPlotData straight after.
+--   BuyPaintColor(colorId) -> bool        unlocks a colour for every car, for money
+--   BuyPaintMaterial(materialId) -> bool  likewise for a material
+--   SetVehiclePaint(vehicleId, value) -> bool      nil/"" = stock
+--   SetVehicleMaterial(vehicleId, value) -> bool   nil/"" = stock
+--   BuyInductionStage(vehicleId) -> bool  buys the NEXT stage; no stage argument
+--                                         at all, so a forged call cannot skip
+--                                         rungs or re-buy one already owned
+--   SetInductionStage(vehicleId, level) -> bool  switches DOWN to (or back up
+--                                         to) a stage already bought; buying is
+--                                         the only way the ceiling ever rises
+local buyPaintColorFunction = Instance.new("RemoteFunction")
+buyPaintColorFunction.Name = "BuyPaintColor"
+buyPaintColorFunction.Parent = ReplicatedStorage
+
+local buyPaintMaterialFunction = Instance.new("RemoteFunction")
+buyPaintMaterialFunction.Name = "BuyPaintMaterial"
+buyPaintMaterialFunction.Parent = ReplicatedStorage
+
+local setVehiclePaintFunction = Instance.new("RemoteFunction")
+setVehiclePaintFunction.Name = "SetVehiclePaint"
+setVehiclePaintFunction.Parent = ReplicatedStorage
+
+local setVehicleMaterialFunction = Instance.new("RemoteFunction")
+setVehicleMaterialFunction.Name = "SetVehicleMaterial"
+setVehicleMaterialFunction.Parent = ReplicatedStorage
+
+local buyInductionStageFunction = Instance.new("RemoteFunction")
+buyInductionStageFunction.Name = "BuyInductionStage"
+buyInductionStageFunction.Parent = ReplicatedStorage
+
+local setInductionStageFunction = Instance.new("RemoteFunction")
+setInductionStageFunction.Name = "SetInductionStage"
+setInductionStageFunction.Parent = ReplicatedStorage
+
+-- Client -> server: this player opened/closed the garage view. Only drives the
+-- "In Garage" marker other players see over their head (GarageIndicators.
+-- client.luau) - the garage itself is entirely local, so from everyone else's
+-- side the player is otherwise just standing at the terminal.
+local setGarageOpenEvent = Instance.new("RemoteEvent")
+setGarageOpenEvent.Name = "SetGarageOpen"
+setGarageOpenEvent.Parent = ReplicatedStorage
+
+local IN_GARAGE_ATTRIBUTE = "InGarage"
 
 -- A RemoteFunction, not a fire-and-forget RemoteEvent, on purpose: the client
 -- immediately re-fetches GetPlotData after buying to redraw the row unlocked,
@@ -520,6 +573,66 @@ local function despawnVehicle(session)
 		session.SpawnedVehicle:Destroy()
 	end
 	session.SpawnedVehicle = nil
+	session.SpawnedVehicleId = nil
+end
+
+-- A vehicle's saved paint value, or nil for stock.
+local function getVehiclePaint(data, vehicleId)
+	local entry = data.Customization and data.Customization[vehicleId]
+	return entry and VehiclePaint.Sanitize(entry.Paint)
+end
+
+-- ...and the material half, which is stored in the same entry.
+local function getVehicleMaterial(data, vehicleId)
+	local entry = data.Customization and data.Customization[vehicleId]
+	return entry and VehiclePaint.SanitizeMaterial(entry.Material)
+end
+
+-- The highest stage BOUGHT for this car - the ceiling, not what is switched on.
+local function getInductionStage(data, vehicleId)
+	return VehicleInduction.ClampStage((data.InductionStages or {})[vehicleId])
+end
+
+-- The stage actually switched on, which is what the car wears and what the
+-- effects read. Clamped against the ceiling on the way out as well as on the
+-- way in, so there is no ordering in which a stale setting can outlive the
+-- purchase it was clamped against.
+--
+-- A missing setting means "everything bought", which is both what a player who
+-- has never touched the arrows expects and what every save written before the
+-- setting existed reconciles to.
+local function getInductionSetting(data, vehicleId)
+	local owned = getInductionStage(data, vehicleId)
+	local active = (data.InductionSetting or {})[vehicleId]
+	if type(active) ~= "number" then
+		return owned
+	end
+	return math.clamp(VehicleInduction.ClampStage(active), 0, owned)
+end
+
+-- The Customization entry for a car, created on demand. Both paint and
+-- material write through here so neither can clobber the other by replacing
+-- the table wholesale.
+local function customizationEntry(data, vehicleId)
+	data.Customization = data.Customization or {}
+	local entry = data.Customization[vehicleId]
+	if not entry then
+		entry = {}
+		data.Customization[vehicleId] = entry
+	end
+	return entry
+end
+
+-- The spawned car, if it is this vehicle - the one thing every "apply what was
+-- just bought to the car already on the road" branch needs, so they all ask
+-- the same question rather than each writing their own version of it.
+local function liveVehicleFor(player, vehicleId)
+	local session = sessionState[player.UserId]
+	local spawned = session and session.SpawnedVehicle
+	if spawned and spawned.Parent and session.SpawnedVehicleId == vehicleId then
+		return spawned
+	end
+	return nil
 end
 
 -- This vehicle's Upgrades spec table (from its Configs/<Name>.luau file), or
@@ -598,6 +711,15 @@ local function spawnVehicle(player, data, session)
 	else
 		warn("PlotManager: " .. clone:GetFullName() .. " has no PrimaryPart - can't apply ConfigName/upgrade attributes")
 	end
+	-- Painted before it is parented, so nobody ever sees it pop from stock to
+	-- its colour. The garage preview was painted by the same function.
+	VehiclePaint.Apply(clone, getVehiclePaint(data, vehicleId), getVehicleMaterial(data, vehicleId))
+	-- On the MODEL, not the Chassis like the tuning stats: every client reads
+	-- this for every car it can see (see InductionEffects), and the model is
+	-- the thing those loops already hold. Written before parenting for the
+	-- same reason as the paint - a car that arrives stock and turns into a
+	-- turbo car a frame later would whistle on spawn.
+	clone:SetAttribute(VehicleInduction.ATTRIBUTE, getInductionSetting(data, vehicleId))
 	-- Atomic, not Default: a Default model streams its parts out one by one
 	-- while the Model itself stays in workspace.Vehicles, leaving PrimaryPart
 	-- nil and no ChildRemoved for the client caches to react to. Atomic
@@ -609,6 +731,7 @@ local function spawnVehicle(player, data, session)
 	clone.Parent = VehicleFolder
 
 	session.SpawnedVehicle = clone
+	session.SpawnedVehicleId = vehicleId
 end
 
 --============================================================================
@@ -623,7 +746,7 @@ end
 local function initPlayerData(player)
 	local saved = PlayerDataStore.Load(player)
 	playerData[player.UserId] = saved
-	sessionState[player.UserId] = { ClaimedPlot = nil, SpawnedVehicle = nil }
+	sessionState[player.UserId] = { ClaimedPlot = nil, SpawnedVehicle = nil, SpawnedVehicleId = nil }
 
 	-- Built fresh every join rather than persisted itself - it's derived
 	-- entirely from saved.Money, which IS persisted (see PlayerDataStore).
@@ -727,11 +850,34 @@ local function prefetchUpgradePasses(player)
 	for _, passId in UpgradePasses.PassIdByVehicleId do
 		table.insert(passIds, passId)
 	end
+	for _, passId in VehiclePaint.CustomPaintPassIdByVehicleId do
+		table.insert(passIds, passId)
+	end
 	PassOwnership.Prefetch(player, passIds)
+end
+
+-- Does this player own this car's custom colour picker? A car with no pass id
+-- yet (absent from the table) has no picker to sell, so nobody owns it - the
+-- garage shows "coming soon" rather than a button that opens nothing.
+local function ownsCustomPaint(player, vehicleId)
+	local passId = VehiclePaint.CustomPaintPassIdFor(vehicleId)
+	if not passId then
+		return false
+	end
+	return PassOwnership.Owns(player, passId)
+end
+
+-- A respawned character is not standing at the garage any more, whatever the
+-- client last said.
+local function watchGarageFlag(player)
+	player.CharacterAdded:Connect(function()
+		player:SetAttribute(IN_GARAGE_ATTRIBUTE, nil)
+	end)
 end
 
 Players.PlayerAdded:Connect(initPlayerData)
 Players.PlayerAdded:Connect(prefetchUpgradePasses)
+Players.PlayerAdded:Connect(watchGarageFlag)
 Players.PlayerRemoving:Connect(flushPlayerData)
 
 -- BindToClose blocks server shutdown until this returns, which is what makes
@@ -775,6 +921,7 @@ end)
 for _, player in Players:GetPlayers() do
 	initPlayerData(player)
 	prefetchUpgradePasses(player)
+	watchGarageFlag(player)
 end
 
 --============================================================================
@@ -808,11 +955,19 @@ claimPlotEvent.OnServerEvent:Connect(function(player, plotModel)
 	session.ClaimedPlot = plotModel
 end)
 
-spawnVehicleEvent.OnServerEvent:Connect(function(player)
+-- The garage passes the vehicle it is showing. SelectVehicle is a separate
+-- remote and Roblox does not order calls across two remotes, so a player who
+-- picks a car and hits Spawn in the same breath could otherwise get the car
+-- they had selected BEFORE. Optional, so an old client firing it bare still
+-- spawns the saved selection.
+spawnVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
 	local data = playerData[player.UserId]
 	local session = sessionState[player.UserId]
 	if not data or not session or not session.ClaimedPlot then
 		return
+	end
+	if typeof(vehicleId) == "string" and data.OwnedVehicleIds[vehicleId] then
+		data.SelectedVehicleId = vehicleId
 	end
 	spawnVehicle(player, data, session)
 end)
@@ -828,37 +983,232 @@ selectVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
 	data.SelectedVehicleId = vehicleId
 end)
 
-buyVehicleEvent.OnServerEvent:Connect(function(player, vehicleId)
+buyVehicleEvent.OnServerInvoke = function(player, vehicleId)
 	local data = playerData[player.UserId]
 	if not data or typeof(vehicleId) ~= "string" then
-		return
+		return false
 	end
 	if data.OwnedVehicleIds[vehicleId] then
-		return -- already owned, nothing to buy
+		return false -- already owned, nothing to buy
 	end
 	local vehicleDef = VehicleCatalog.Get(vehicleId)
 	if not vehicleDef then
-		return
+		return false
 	end
 	if data.Money < vehicleDef.Price then
-		return
+		return false
 	end
-	-- The other half of the price. The shop already greys this card out and
-	-- refuses to fire the remote (see PlotTerminal's makeShopCard), so this only
-	-- ever bites a forged request - the same relationship every other check in
+	-- The other half of the price. The garage already shows this car locked
+	-- and never offers the buy button (see PlotTerminal), so this only ever
+	-- bites a forged request - the same relationship every other check in
 	-- this file has with the client's own UI.
 	if (data.Deliveries or 0) < VehicleCatalog.RequiredDeliveries(vehicleDef) then
-		return
+		return false
 	end
 
 	setMoney(player, data, data.Money - vehicleDef.Price)
 	data.OwnedVehicleIds[vehicleId] = true
+	-- Bought from the garage while looking at it, so it becomes the car the
+	-- Spawn button spawns.
+	data.SelectedVehicleId = vehicleId
 
 	-- A freshly bought car starts at every stat's free level-0 default -
 	-- CarConfigs isn't populated yet, but PlayerDataStore.reconcile fills it
 	-- in (and clamps it) the NEXT time this player's data round-trips a Load,
 	-- so leaving it empty here is safe; SetCarConfigValue below also treats a
 	-- missing entry as "at the default" for exactly this reason.
+	return true
+end
+
+buyPaintColorFunction.OnServerInvoke = function(player, colorId)
+	local data = playerData[player.UserId]
+	if not data or typeof(colorId) ~= "string" then
+		return false
+	end
+	local color = VehiclePaint.ColorsById[colorId]
+	if not color then
+		return false
+	end
+	data.PaintColors = data.PaintColors or {}
+	if data.PaintColors[colorId] then
+		return false -- already owned
+	end
+	if data.Money < color.Price then
+		return false
+	end
+	setMoney(player, data, data.Money - color.Price)
+	data.PaintColors[colorId] = true
+	return true
+end
+
+setVehiclePaintFunction.OnServerInvoke = function(player, vehicleId, value)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" then
+		return false
+	end
+	if not data.OwnedVehicleIds[vehicleId] then
+		return false
+	end
+	if value ~= nil and typeof(value) ~= "string" then
+		return false
+	end
+	local paint = VehiclePaint.Sanitize(value)
+	-- Anything that is not stock has to be paid for: a colour bought with
+	-- money, or any colour at all with the pass. A malformed value sanitizes
+	-- to stock, which is always allowed - so only a value that genuinely IS
+	-- stock gets through as nil.
+	if value ~= nil and value ~= "" and not paint then
+		return false
+	end
+	if paint then
+		if VehiclePaint.IsCustom(paint) then
+			if not ownsCustomPaint(player, vehicleId) then
+				return false
+			end
+		elseif not (data.PaintColors and data.PaintColors[paint]) then
+			return false
+		end
+	end
+
+	customizationEntry(data, vehicleId).Paint = paint
+
+	-- Repaint the car already out on the road too, if it is this one, rather
+	-- than making the player respawn to see what they just bought.
+	local live = liveVehicleFor(player, vehicleId)
+	if live then
+		VehiclePaint.Apply(live, paint, getVehicleMaterial(data, vehicleId))
+	end
+	return true
+end
+
+buyPaintMaterialFunction.OnServerInvoke = function(player, materialId)
+	local data = playerData[player.UserId]
+	if not data or typeof(materialId) ~= "string" then
+		return false
+	end
+	local material = VehiclePaint.MaterialsById[materialId]
+	if not material then
+		return false
+	end
+	data.PaintMaterials = data.PaintMaterials or {}
+	if data.PaintMaterials[materialId] then
+		return false -- already owned
+	end
+	if data.Money < material.Price then
+		return false
+	end
+	setMoney(player, data, data.Money - material.Price)
+	data.PaintMaterials[materialId] = true
+	return true
+end
+
+setVehicleMaterialFunction.OnServerInvoke = function(player, vehicleId, value)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" then
+		return false
+	end
+	if not data.OwnedVehicleIds[vehicleId] then
+		return false
+	end
+	if value ~= nil and typeof(value) ~= "string" then
+		return false
+	end
+	local material = VehiclePaint.SanitizeMaterial(value)
+	-- Same shape as the paint handler above: anything that is not stock has to
+	-- have been bought, and a malformed value sanitizes to stock rather than
+	-- being silently accepted as something else.
+	if value ~= nil and value ~= "" and not material then
+		return false
+	end
+	if material and not (data.PaintMaterials and data.PaintMaterials[material]) then
+		return false
+	end
+
+	customizationEntry(data, vehicleId).Material = material
+
+	local live = liveVehicleFor(player, vehicleId)
+	if live then
+		VehiclePaint.Apply(live, getVehiclePaint(data, vehicleId), material)
+	end
+	return true
+end
+
+-- Buys the NEXT stage of the Induction Upgrade for one car. The stage is never
+-- passed in: the server reads what the player has, works out what comes next
+-- and charges for that, so there is no argument a forged call could use to jump
+-- to stage 4 or to pay for a stage it already owns.
+buyInductionStageFunction.OnServerInvoke = function(player, vehicleId)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" then
+		return false
+	end
+	if not data.OwnedVehicleIds[vehicleId] then
+		return false
+	end
+	local current = getInductionStage(data, vehicleId)
+	local nextStage = VehicleInduction.NextStage(current)
+	if not nextStage then
+		return false -- already at the top of the ladder
+	end
+	if data.Money < nextStage.Price then
+		return false
+	end
+
+	setMoney(player, data, data.Money - nextStage.Price)
+	data.InductionStages = data.InductionStages or {}
+	data.InductionStages[vehicleId] = nextStage.Level
+	-- Buying SWITCHES IT ON, the same as buying a stat upgrade applies its new
+	-- level: a child's first purchase has to visibly - here audibly - do
+	-- something. The arrows are how you turn it back down, not how you finish
+	-- the purchase.
+	data.InductionSetting = data.InductionSetting or {}
+	data.InductionSetting[vehicleId] = nextStage.Level
+
+	-- Straight onto the car already parked outside, so a player who buys the
+	-- turbo and walks out to their truck hears it on the way to the next job
+	-- rather than having to respawn the car first.
+	local live = liveVehicleFor(player, vehicleId)
+	if live then
+		live:SetAttribute(VehicleInduction.ATTRIBUTE, nextStage.Level)
+	end
+	return true
+end
+
+-- Switching between stages already bought. The counterpart to BuyInductionStage
+-- and the exact shape of SetCarConfigValue below: the purchase raises a
+-- ceiling, this picks a rung at or under it, and the clamp is what stops a
+-- forged call from switching on a stage that was never paid for.
+--
+-- WHY IT EXISTS. Anti-lag is loud on purpose, and a player who bought it for
+-- the bangs and then wants a quiet truck for a careful delivery would otherwise
+-- have no way back - the ladder would be a one-way door on a thing bought for
+-- how it sounds.
+setInductionStageFunction.OnServerInvoke = function(player, vehicleId, level)
+	local data = playerData[player.UserId]
+	if not data or typeof(vehicleId) ~= "string" or typeof(level) ~= "number" then
+		return false
+	end
+	if not data.OwnedVehicleIds[vehicleId] then
+		return false
+	end
+	local owned = getInductionStage(data, vehicleId)
+	local clamped = math.clamp(VehicleInduction.ClampStage(level), 0, owned)
+
+	data.InductionSetting = data.InductionSetting or {}
+	data.InductionSetting[vehicleId] = clamped
+
+	local live = liveVehicleFor(player, vehicleId)
+	if live then
+		live:SetAttribute(VehicleInduction.ATTRIBUTE, clamped)
+	end
+	return true
+end
+
+setGarageOpenEvent.OnServerEvent:Connect(function(player, isOpen)
+	if typeof(isOpen) ~= "boolean" then
+		return
+	end
+	player:SetAttribute(IN_GARAGE_ATTRIBUTE, if isOpen then true else nil)
 end)
 
 buyPermitFunction.OnServerInvoke = function(player, permitId)
@@ -1004,10 +1354,27 @@ getPlotDataFunction.OnServerInvoke = function(player)
 	local upgradeLevels = {}
 	local carConfigs = {}
 	local upgradePassOwned = {}
+	local customPaintOwned = {}
+	local vehiclePaint = {}
+	local vehicleMaterial = {}
+	local inductionStages = {}
+	local inductionSetting = {}
 	for id in data.OwnedVehicleIds do
 		table.insert(ownedVehicleIds, id)
 		upgradeLevels[id] = data.UpgradeLevels[id] or {}
 		carConfigs[id] = data.CarConfigs[id] or {}
+		vehiclePaint[id] = getVehiclePaint(data, id)
+		vehicleMaterial[id] = getVehicleMaterial(data, id)
+		inductionStages[id] = getInductionStage(data, id)
+		inductionSetting[id] = getInductionSetting(data, id)
+	end
+	local paintColors = {}
+	for colorId in data.PaintColors or {} do
+		table.insert(paintColors, colorId)
+	end
+	local paintMaterials = {}
+	for materialId in data.PaintMaterials or {} do
+		table.insert(paintMaterials, materialId)
 	end
 
 	-- A SECOND pass, deliberately not folded into the loop above: Owns yields
@@ -1022,6 +1389,7 @@ getPlotDataFunction.OnServerInvoke = function(player)
 	-- critical path of the panel opening.
 	for _, id in ownedVehicleIds do
 		upgradePassOwned[id] = ownsUpgradePass(player, id)
+		customPaintOwned[id] = ownsCustomPaint(player, id)
 	end
 
 	return {
@@ -1051,5 +1419,22 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		-- the same reason TutorialDone is: the panel already makes this call
 		-- every time it opens.
 		UpgradePassOwned = upgradePassOwned,
+		-- [vehicleId] = saved paint value (nil = stock), the colour ids this
+		-- player has bought, and whether the custom picker is theirs. See
+		-- VehiclePaint.luau for the shapes.
+		VehiclePaint = vehiclePaint,
+		VehicleMaterial = vehicleMaterial,
+		PaintColors = paintColors,
+		PaintMaterials = paintMaterials,
+		-- [vehicleId] = the Induction Upgrade stage BOUGHT for that car, and the
+		-- one switched on, 0 for stock. Both always present for every owned car
+		-- (the getters clamp a missing entry) so the terminal never has to
+		-- distinguish "not bought" from "not sent". Same pair, same meaning, as
+		-- UpgradeLevels and CarConfigs above.
+		InductionStages = inductionStages,
+		InductionSetting = inductionSetting,
+		-- Keyed by vehicle id, like UpgradePassOwned above and for the same
+		-- reason: the palette passes are per car.
+		CustomPaintOwned = customPaintOwned,
 	}
 end
