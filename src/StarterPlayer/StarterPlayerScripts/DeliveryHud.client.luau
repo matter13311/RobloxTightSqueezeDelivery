@@ -1360,7 +1360,7 @@ local function fillRow(row, line)
 	end
 end
 
-local function showReceipt(completed)
+local function showReceipt(completed, failed)
 	-- Token, not a cancelled thread: a second delivery arriving mid-animation
 	-- would otherwise have the first one's timers stamping lines onto, and then
 	-- hiding, the second one's clipboard.
@@ -1372,7 +1372,27 @@ local function showReceipt(completed)
 	summaryToken += 1
 	summary.Visible = false
 
-	local lines = receiptLines(completed)
+	local lines
+	if failed then
+		local cargoType = CargoTypes.GetOrDefault(completed.TypeId)
+		lines = {
+			{ Name = "Cargo", Value = string.format("%d x %s", completed.Units or 0, cargoType.DisplayName) },
+			{ Name = "Bound for", Value = tostring(completed.Destination) },
+			{ Name = "Cargo condition", Value = "0%", Color = INK_BAD },
+		}
+		clipTitle.Text = "DELIVERY FAILED"
+		earnedCaption.Text = "RESULT"
+		earnedAmount.Text = "FAILED"
+		earnedAmount.TextColor3 = INK_BAD
+		earnedBalance.Text = "Cargo destroyed - no payment"
+	else
+		lines = receiptLines(completed)
+		clipTitle.Text = "DELIVERED!"
+		earnedCaption.Text = "YOU EARNED"
+		earnedAmount.TextColor3 = INK_GOOD
+		earnedAmount.Text = string.format("+$%d", completed.Payout)
+		earnedBalance.Text = if completed.Balance then string.format("You now have $%d", completed.Balance) else ""
+	end
 	for index, row in clipRows do
 		row.Frame.Visible = false
 		local line = lines[index]
@@ -1381,8 +1401,6 @@ local function showReceipt(completed)
 		end
 	end
 	earnedGroup.Visible = false
-	earnedAmount.Text = string.format("+$%d", completed.Payout)
-	earnedBalance.Text = if completed.Balance then string.format("You now have $%d", completed.Balance) else ""
 
 	clipboard.Position = CLIPBOARD_HIDDEN
 	clipboard.Visible = true
@@ -1410,7 +1428,7 @@ local function showReceipt(completed)
 			return
 		end
 		stampIn(earnedGroup, earnedScale)
-		playSound(COIN_SOUND_ID)
+		playSound(if failed then STAMP_SOUND_ID else COIN_SOUND_ID)
 
 		task.wait(CLIPBOARD_HOLD_SECONDS)
 		if receiptToken ~= token then
@@ -1478,6 +1496,8 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 		showReceipt(update.Completed)
 	elseif update.Cancelled then
 		showCancelled(update.Cancelled)
+	elseif update.Failed then
+		showReceipt(update.Failed, true)
 	end
 end)
 

@@ -520,6 +520,19 @@ function CargoManager.ApplyImpact(carModel, severity)
 	for index = #crates, shouldRemain + 1, -1 do
 		ejectCrate(crates[index], debrisFolder)
 	end
+
+	-- The weight leaves with the crates: re-solve the ballast and the handling
+	-- fraction for what is actually still aboard, so the springs rise and the
+	-- truck stops driving like it is laden once the bed is empty.
+	local remaining = math.min(#crates, shouldRemain)
+	local chassis = carModel.PrimaryPart
+	local ballast = folder:FindFirstChild(BALLAST_NAME)
+	if chassis and ballast then
+		local config = VehiclePhysics.GetConfig(chassis)
+		local emptyMass = getEmptyMass(carModel, chassis)
+		applyBallast(carModel, chassis, folder, CFrame.identity, CargoLoad.AddedMass(config, emptyMass, remaining, load.TypeId))
+		carModel:SetAttribute(CargoLoad.Attributes.LoadFraction, CargoLoad.LoadFraction(config, remaining))
+	end
 end
 
 return CargoManager

@@ -404,6 +404,21 @@ RunService.Heartbeat:Connect(function(delta)
 			continue
 		end
 
+		-- Goods reduced to nothing: the mission is over on the spot, wherever the
+		-- truck is. Checked before the arrival logic so a wrecked load can never
+		-- be paid out at the destination.
+		local wrecked = CargoManager.GetLoad(carModel)
+		if wrecked.Units > 0 and wrecked.Condition <= 0 then
+			setActiveContract(player, nil)
+			stoppedFor[player] = nil
+			CargoManager.Unload(carModel)
+			deliveryUpdateEvent:FireClient(player, {
+				Active = nil,
+				Failed = { Destination = contract.Stops[1], TypeId = wrecked.TypeId, Units = wrecked.Units },
+			})
+			continue
+		end
+
 		-- Must be the one driving it on arrival. Otherwise a player could load
 		-- up, get out, and have a friend deliver it for them while they are
 		-- somewhere else entirely.
