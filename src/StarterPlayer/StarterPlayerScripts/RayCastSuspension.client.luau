@@ -995,6 +995,15 @@ workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	parkedPoseFrames[vehicle] = nil
 end)
 
+-- A trailer has no pedals or column stalk of its own - VehicleNetworkState
+-- and VehicleLightSwitches mirror its tow tractor's NetBraking/NetReversing/
+-- TurnSignal Attributes onto it (see those scripts), so its own rig can be
+-- driven exactly like a car's, just reading a different pair of attributes
+-- instead of a live drive session.
+workspace.Trailers.ChildRemoved:Connect(function(trailer)
+	VehicleLights.Clear(trailer)
+end)
+
 -- Wheel visuals for every car in view, not just the one being driven, so this
 -- is bound once for the client rather than per character spawn.
 RunService:BindToRenderStep("MoveWheels", 5, function()
@@ -1196,6 +1205,18 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- comment in VehicleDashboardGauges for why that's fine.
 			VehicleDashboardGauges.UpdateGauges(vehicle, config, chassis.AssemblyLinearVelocity.Magnitude, engineRpm)
 		end
+	end
+
+	-- Trailer brake/reverse/turn-signal lights, driven off the mirrored
+	-- Attributes rather than a drive session - see the ChildRemoved comment
+	-- above. No headlights: VehicleLights.EnsureHeadlights is never called
+	-- here because a trailer has no Lights.FrontLights folder to build one
+	-- from.
+	for _, trailer in workspace.Trailers:GetChildren() do
+		VehicleLights.EnsureTurnSignals(trailer)
+		local isBraking = trailer:GetAttribute("NetBraking") or false
+		local isReversing = trailer:GetAttribute("NetReversing") or false
+		VehicleLights.Update(trailer, isBraking, isReversing)
 	end
 end)
 

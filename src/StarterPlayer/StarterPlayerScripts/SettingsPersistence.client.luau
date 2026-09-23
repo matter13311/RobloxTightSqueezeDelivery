@@ -53,13 +53,17 @@ task.spawn(function()
 		if ok and type(data) == "table" then
 			GameSettings.ApplySaved(data.Settings)
 			loaded = true
+			GameSettings.MarkReady()
 			return
 		end
 		waited += LOAD_RETRY_INTERVAL
 		task.wait(LOAD_RETRY_INTERVAL)
 	end
 	-- Gave up: this session runs on defaults and never saves, so whatever is
-	-- stored stays intact for next time.
+	-- stored stays intact for next time. Still marks ready - a consumer
+	-- waiting on this (BackgroundMusic) shouldn't stay silent forever over a
+	-- load that's never coming back.
+	GameSettings.MarkReady()
 end)
 
 -- The player is leaving with a save still pending in the debounce: fire it

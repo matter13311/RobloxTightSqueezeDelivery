@@ -142,6 +142,37 @@ local listeners = {}
 -- would be a bug, not a feature.
 local actionHandlers = {}
 
+-- False until SettingsPersistence has applied the player's saved values (or
+-- given up and decided to stick with defaults). Lets a consumer whose effect
+-- would be noticeable - BackgroundMusic's volume, chiefly - tell "this is
+-- still just the default" apart from "this is the player's real setting", so
+-- it can stay quiet until the real one is known instead of playing the
+-- default and then jumping.
+GameSettings.Ready = false
+local readyListeners = {}
+
+-- Called once by SettingsPersistence.client.luau, whichever way its load
+-- resolves. Idempotent so a stray second call can't fire listeners twice.
+function GameSettings.MarkReady()
+	if GameSettings.Ready then
+		return
+	end
+	GameSettings.Ready = true
+	for _, listener in readyListeners do
+		listener()
+	end
+end
+
+-- Fires callback once, either now (already ready) or the moment it becomes
+-- ready.
+function GameSettings.OnReady(callback)
+	if GameSettings.Ready then
+		callback()
+		return
+	end
+	table.insert(readyListeners, callback)
+end
+
 local function clampToDefinition(definition, value)
 	if definition.Type == "Toggle" then
 		return value and true or false

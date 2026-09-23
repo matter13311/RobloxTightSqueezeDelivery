@@ -29,6 +29,11 @@ if not templatesFolder then
 	return
 end
 local VehicleFolder = workspace:WaitForChild("Vehicles")
+-- A towed trailer is its own Model in workspace.Trailers (see TrailerHitch),
+-- not a descendant of the tractor's Model in VehicleFolder - so without this,
+-- NPCs only ever "see" the truck and happily drive into the trailer hanging
+-- off the back of it until they're bumper-to-bumper with the cab.
+local TrailerFolder = workspace:WaitForChild("Trailers")
 
 local SNAPSHOT_INTERVAL = 0.1
 -- A camera report older than this is ignored and the player's character is
@@ -152,21 +157,31 @@ local function vehicleExtents(model)
 	return size
 end
 
+-- Shared by getObstacles and isClearOfVehicles' sibling loops below: one
+-- oriented-box obstacle for any Model with a PrimaryPart, whether it's a
+-- player's car in VehicleFolder or a trailer in TrailerFolder.
+local function addModelObstacle(obstacles, model)
+	local root = model:IsA("Model") and model.PrimaryPart
+	if root then
+		local size = vehicleExtents(model)
+		local cf = root.CFrame
+		table.insert(obstacles, {
+			Position = flat(cf.Position),
+			Look = flat(cf.LookVector).Unit,
+			Right = flat(cf.RightVector).Unit,
+			HalfLength = size.Z / 2,
+			HalfWidth = size.X / 2,
+		})
+	end
+end
+
 local function getObstacles()
 	local obstacles = {}
 	for _, model in VehicleFolder:GetChildren() do
-		local root = model:IsA("Model") and model.PrimaryPart
-		if root then
-			local size = vehicleExtents(model)
-			local cf = root.CFrame
-			table.insert(obstacles, {
-				Position = flat(cf.Position),
-				Look = flat(cf.LookVector).Unit,
-				Right = flat(cf.RightVector).Unit,
-				HalfLength = size.Z / 2,
-				HalfWidth = size.X / 2,
-			})
-		end
+		addModelObstacle(obstacles, model)
+	end
+	for _, model in TrailerFolder:GetChildren() do
+		addModelObstacle(obstacles, model)
 	end
 	for _, player in Players:GetPlayers() do
 		local character = player.Character
@@ -187,6 +202,12 @@ end
 
 local function isClearOfVehicles(position, clearance)
 	for _, model in VehicleFolder:GetChildren() do
+		local root = model:IsA("Model") and model.PrimaryPart
+		if root and (flat(root.Position) - position).Magnitude < clearance then
+			return false
+		end
+	end
+	for _, model in TrailerFolder:GetChildren() do
 		local root = model:IsA("Model") and model.PrimaryPart
 		if root and (flat(root.Position) - position).Magnitude < clearance then
 			return false

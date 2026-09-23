@@ -56,6 +56,8 @@ local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local TweenService = game:GetService("TweenService")
 
+local LoadingGate = require(ReplicatedFirst:WaitForChild("LoadingGate"))
+
 local player = Players.LocalPlayer
 
 -- Matches TutorialGuide's palette (its ACCENT is TutorialConfig.Color) so this
@@ -220,6 +222,12 @@ end
 
 local function reveal()
 	unfreezeCharacter()
+
+	-- Opens the gate while the cover is still fully opaque, so anything
+	-- waiting on it (BackgroundMusic's real volume, SettingsPersistence's
+	-- ApplySaved) has the whole fade to take effect before there is
+	-- anything left to notice it happening.
+	LoadingGate.MarkFinished()
 
 	local fade = TweenInfo.new(FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 	TweenService:Create(cover, fade, { BackgroundTransparency = 1 }):Play()

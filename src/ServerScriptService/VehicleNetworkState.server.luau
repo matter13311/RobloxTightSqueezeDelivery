@@ -12,6 +12,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local remote = Instance.new("RemoteEvent")
@@ -85,9 +86,20 @@ remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, i
 		return
 	end
 
-	vehicle:SetAttribute("NetBraking", toBoolean(isBraking))
-	vehicle:SetAttribute("NetReversing", toBoolean(isReversing))
+	local netBraking = toBoolean(isBraking)
+	local netReversing = toBoolean(isReversing)
+	vehicle:SetAttribute("NetBraking", netBraking)
+	vehicle:SetAttribute("NetReversing", netReversing)
 	vehicle:SetAttribute("NetBurnout", toBoolean(isBurnout))
+
+	-- A towed trailer has no pedals of its own - its brake/reverse lights
+	-- just repeat whatever the tractor towing it is doing, the same way a
+	-- real trailer's lights are wired through to the tow vehicle's.
+	local trailer = TrailerHitch.GetHitchedTrailer(vehicle)
+	if trailer then
+		trailer:SetAttribute("NetBraking", netBraking)
+		trailer:SetAttribute("NetReversing", netReversing)
+	end
 	vehicle:SetAttribute("NetHandbrake", toBoolean(isHandbrake))
 	vehicle:SetAttribute("NetThrottle", toThrottle(throttle))
 	vehicle:SetAttribute("NetRpm", toRpm(rpm))

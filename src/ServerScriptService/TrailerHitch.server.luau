@@ -627,6 +627,14 @@ local function uncouple(trailerModel)
 	end
 	trailerModel:SetAttribute(TrailerHitch.Attributes.Hitched, false)
 	trailerModel:SetAttribute(TrailerHitch.Attributes.ClaimedBy, nil)
+
+	-- A dropped trailer has no tractor to mirror anymore - without this an
+	-- unhitch mid-brake (or mid-turn-signal) would leave the trailer's lights
+	-- stuck on forever, since nothing else ever writes these again once
+	-- VehicleNetworkState/VehicleLightSwitches have no coupling to find.
+	trailerModel:SetAttribute("NetBraking", false)
+	trailerModel:SetAttribute("NetReversing", false)
+	trailerModel:SetAttribute("TurnSignal", "None")
 end
 
 -- Everything that must be true for `player` to couple `tractorModel` to

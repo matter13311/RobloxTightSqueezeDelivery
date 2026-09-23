@@ -7,6 +7,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local toggleHeadlights = Instance.new("RemoteEvent")
@@ -46,5 +47,14 @@ toggleTurnSignal.OnServerEvent:Connect(function(player, vehicle, side)
 	-- Pressing the side that's already active turns it off; pressing the
 	-- other side switches straight to it - never both signals at once.
 	local current = vehicle:GetAttribute("TurnSignal")
-	vehicle:SetAttribute("TurnSignal", if current == side then "None" else side)
+	local newSignal = if current == side then "None" else side
+	vehicle:SetAttribute("TurnSignal", newSignal)
+
+	-- Same reasoning as VehicleNetworkState's brake/reverse mirroring: a
+	-- towed trailer has no signal stalk of its own, so it just repeats
+	-- whichever side the tractor towing it is indicating.
+	local trailer = TrailerHitch.GetHitchedTrailer(vehicle)
+	if trailer then
+		trailer:SetAttribute("TurnSignal", newSignal)
+	end
 end)
