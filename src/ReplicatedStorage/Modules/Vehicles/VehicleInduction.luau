@@ -84,7 +84,8 @@ VehicleInduction.Sounds = {
 			"rbxassetid://17651322809", -- 0.09s, the original subtle pop
 			"rbxassetid://138924952728704", -- 0.28s
 			"rbxassetid://140725059135838", -- 0.22s
-			"rbxassetid://140562715692021", -- 0.32s
+			"rbxassetid://72845095527361", 
+			"rbxassetid://17651322643", 
 		},
 	},
 
@@ -95,10 +96,11 @@ VehicleInduction.Sounds = {
 		Volume = 0.7,
 		MaxDistance = 450,
 		SoundIds = {
-			"rbxassetid://113851709234787", -- 0.50s
-			"rbxassetid://110637070452104", -- 0.50s
 			"rbxassetid://132331652249520", -- 0.47s
-			"rbxassetid://112720519011313", -- 0.44s
+			"rbxassetid://18633134773", -- 2.37s
+			"rbxassetid://18633131180", -- 1.81s
+			"rbxassetid://17651322246", -- 1.81s
+			"rbxassetid://17651322371", -- 1.81s
 		},
 	},
 
@@ -112,9 +114,7 @@ VehicleInduction.Sounds = {
 		Volume = 0.85,
 		MaxDistance = 600,
 		SoundIds = {
-			"rbxassetid://115910190178407", -- 2.35s
-			"rbxassetid://18633134773", -- 2.37s
-			"rbxassetid://18633131180", -- 1.81s
+			"rbxassetid://112720519011313", -- 0.44s
 		},
 	},
 }
@@ -135,10 +135,11 @@ VehicleInduction.Sounds = {
 --            one - the crackle-and-grumble people buy exhausts for - and it can
 --            carry a genuine bang and real flame.
 --   Upshift  The ignition is cut for a fraction of a second to make the shift
---            at full throttle, so ONE charge or two goes out unburnt. Real (it
---            is the flat-foot-shift bang on every fast road car) but it is a
---            short sharp blip, not a burble: the throttle is still wide open
---            and the engine is still making power either side of it.
+--            at full throttle. Deliberately reduced to ONE small crackle and
+--            nothing else - no bang, no flame - because it fires several times
+--            per pull and anything bigger stops being punctuation and starts
+--            being the thing you hear instead of the engine. Popping, banging
+--            and fire belong to lifting off; this is only a blip.
 --   TwoStep  A limiter bouncing the engine off a rev ceiling, over and over.
 --            Rapid and small, because it repeats several times a second.
 --   Launch   The moment the brake comes off with everything spooled. The one
@@ -151,9 +152,11 @@ VehicleInduction.Sounds = {
 -- Bang      nil = never. Otherwise it may OPEN the burst, above MinIntensity
 --           and only Chance of the time.
 -- Volume    Scale on the pool's own level, for the whole burst.
--- Flames    Weighted per crack. "None" is a style like any other, and on
---           Upshift it dominates: a truck throwing fire out of the pipe on
---           every single gearchange is the thing that reads as wrong.
+-- Flames    Weighted per crack. nil means the event NEVER shows anything at
+--           the exhaust - not "almost never", which is what a heavily weighted
+--           "None" gives you and which still throws the odd spark out on a
+--           gearchange. Fire is a lift-off thing; nil is how an event opts out
+--           of it completely.
 --
 -- To silence an event entirely, give it Volume = 0 and Flames = None only;
 -- to stop upshifts popping at all, delete the Upshift entry (a missing recipe
@@ -173,25 +176,26 @@ VehicleInduction.Bursts = {
 		},
 	},
 
-	-- Short, quiet and nearly invisible. Every value here is deliberately
-	-- meaner than LiftOff's: this fires on EVERY upshift, several times per
-	-- pull, and anything that happens that often has to sit under the engine
-	-- rather than on top of it.
+	-- ONE small crackle, quiet, and nothing visible. Every value here is
+	-- deliberately meaner than LiftOff's, because this fires several times per
+	-- pull whether the player wanted it to or not - and a noise that frequent
+	-- has to sit under the engine rather than on top of it.
+	--
+	-- Count is exactly 1 (Spread 0): a stutter is what an overrun does, and
+	-- stuttering on the way UP made the truck sound like it was misfiring
+	-- rather than shifting.
 	Upshift = {
-		Count = { Min = 1, Spread = 2 },
+		Count = { Min = 1, Spread = 0 },
 		-- Crackle only. The longest sample in that pool is 0.32s, which fits
 		-- inside the 0.35s ignition cut - so the blip is over before the engine
 		-- picks back up instead of being interrupted by it.
 		Pools = { { Pool = "Crackle", Weight = 100 } },
-		Bang = nil, -- never: a two-second sample on every gearchange was the complaint
-		Volume = 0.45,
+		Bang = nil, -- never: bangs belong to lifting off
+		Volume = 0.3,
 		-- Tighter and higher than LiftOff. A shift blip is a crack, not a
 		-- burble, and the low end of the pitch range is what sounds burbly.
-		Pitch = { Min = 1, Max = 1.4 },
-		Flames = {
-			{ Style = "None", Weight = 88 },
-			{ Style = "Spark", Weight = 12 },
-		},
+		Pitch = { Min = 1.05, Max = 1.35 },
+		Flames = nil, -- never: no fire, no sparks, nothing at the pipe
 	},
 
 	TwoStep = {

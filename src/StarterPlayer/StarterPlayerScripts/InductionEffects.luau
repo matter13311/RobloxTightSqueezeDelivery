@@ -35,9 +35,15 @@
 -- THE AUTOMATIC GEARBOX. Real anti-lag fires when the throttle shuts, and in a
 -- game with no clutch pedal there are exactly two moments that happens: the
 -- player lifting off, and the box cutting drive for its own shift (see
--- Gearbox's ShiftTime). Both are used - the second is why the pops keep coming
--- while you are accelerating flat out through the gears rather than only when
--- you slow down.
+-- Gearbox's ShiftTime).
+--
+-- They are NOT given the same treatment, and the split is the whole character
+-- of the feature. Lifting off is the event: the crackle, the bangs and the
+-- flames all live there, it is something the player did on purpose, and it is
+-- the sound they bought the upgrade for. An upshift happens by itself several
+-- times per pull, so it gets one small crackle, no bang and nothing visible -
+-- punctuation between gears rather than a second performance competing with
+-- the first. See VehicleInduction.Bursts for both recipes.
 
 local RunService = game:GetService("RunService")
 
@@ -73,6 +79,20 @@ local UPSHIFT_MIN_SPOOL = 0.62
 -- Floor on the gap between two lift-off events, so feathering the throttle
 -- does not machine-gun.
 local EVENT_COOLDOWN = 0.32
+
+-- THE SAFETY CAP on the shift mask, as a multiple of the gearbox's own
+-- ShiftTime plus a margin. It is a BACKSTOP, not the mechanism: the mask
+-- normally ends the moment the throttle comes back up (see the lift-off block),
+-- and this only decides how long it may last if the throttle never does.
+--
+-- Deliberately generous, because the cap and the gearbox measure time with
+-- different clocks - this one runs on os.clock while the gearbox counts down
+-- the frame delta it is handed - and a cap that expires while drive is still
+-- cut reads the cut as a lift-off and fires a full bang-and-flames burst
+-- mid-gearchange. The only cost of it being too long is that a lift-off which
+-- happened DURING a shift is heard a fraction late.
+local SHIFT_MASK_SCALE = 2
+local SHIFT_MASK_MARGIN = 0.25
 
 -- Gap between cracks, in seconds, picked fresh for every gap. Short enough to
 -- read as machine-gun rather than as a series of separate noises. Shared by
@@ -457,6 +477,9 @@ local function getState(vehicle, now)
 			Turbo = nil,
 			PrevThrottle = 0,
 			PrevShiftCount = nil,
+			-- While os.clock() is under this, the gearbox is mid-shift and the
+			-- throttle being at zero means nothing - see the lift-off block.
+			ShiftUntil = 0,
 			TwoStepHeld = false,
 			NextEventAt = 0,
 			NextTwoStepBangAt = 0,
@@ -577,7 +600,11 @@ local function queueBurst(state, recipe, intensity)
 			Pool = pool,
 			Volume = volume * recipe.Volume,
 			Pitch = recipe.Pitch.Min + math.random() * (recipe.Pitch.Max - recipe.Pitch.Min),
-			Flame = pickWeighted(recipe.Flames, "Style"),
+			-- No Flames table at all means this event never shows anything at
+			-- the exhaust. Checked here rather than left to a "None"-only
+			-- weight table, so an event that opts out cannot be given a stray
+			-- spark by a later edit to the weights.
+			Flame = if recipe.Flames then pickWeighted(recipe.Flames, "Style") else "None",
 		})
 
 		at += (CRACK_GAP_MIN + math.random() * (CRACK_GAP_MAX - CRACK_GAP_MIN)) * gapScale
@@ -757,10 +784,68 @@ function InductionEffects.Update(vehicle, config, input)
 	state.LaunchLeft = math.max(0, state.LaunchLeft - dt)
 
 	--------------------------------------------------------------------
+	-- Gearshifts. CHECKED BEFORE LIFT-OFF, and that order is load-bearing.
+	--
+	-- Gearbox.Update returns Throttle = 0 for the whole ShiftTime window -
+	-- that drive cut IS the shift, it is what you feel between gears. But it
+	-- is indistinguishable, from here, from the player taking their foot off:
+	-- both arrive as the throttle going from 1 to 0 in one frame. Detected in
+	-- the other order, every single upshift fired a full LiftOff burst - bangs,
+	-- flames and a blow-off chirp - on top of its own blip, which is exactly
+	-- "I still hear other sounds when accelerating".
+	--
+	-- So a shift opens a window, and inside it lift-off is not looked for at
+	-- all. The window is the gearbox's own ShiftTime plus a margin, because the
+	-- shift count and the throttle drop can land a frame apart for a bystander
+	-- reading them off replicated attributes.
+	--------------------------------------------------------------------
+	local shiftCount = input.ShiftCount
+	if shiftCount ~= nil then
+		if state.PrevShiftCount ~= nil and shiftCount ~= state.PrevShiftCount then
+			local transmission = config.Transmission or VehiclePhysics.DefaultTransmission
+			state.ShiftUntil = now + transmission.ShiftTime * SHIFT_MASK_SCALE + SHIFT_MASK_MARGIN
+
+			-- A HIGHER BAR than the other events (UPSHIFT_MIN_SPOOL, not
+			-- MIN_EVENT_SPOOL): an upshift happens several times per pull
+			-- whether the player is driving hard or pottering to a delivery,
+			-- and only the hard ones should make any noise at all. Everything
+			-- else about how small this is lives in the Upshift recipe.
+			if VehicleInduction.Has(stage, "AntiLag") and state.Spool >= UPSHIFT_MIN_SPOOL and not twoStep then
+				queueBurst(state, VehicleInduction.Bursts.Upshift, state.Spool)
+			end
+		end
+		state.PrevShiftCount = shiftCount
+	end
+
+	--------------------------------------------------------------------
 	-- Lift-off: the blow-off chirp and the anti-lag crackle.
 	--------------------------------------------------------------------
-	local lifted = state.PrevThrottle >= LIFT_FROM and throttleMag <= LIFT_TO
-	state.PrevThrottle = throttleMag
+	local inShift = now < state.ShiftUntil
+	if inShift and throttleMag > LIFT_TO then
+		-- THE THROTTLE CAME BACK, so the drive cut is over whatever the clock
+		-- says - and THIS, not the timer, is what normally ends the mask. The
+		-- timer only exists as a cap for the case where the throttle never
+		-- returns because the player genuinely lifted off mid-shift.
+		--
+		-- Ending it on the signal itself rather than on a duration is what
+		-- makes this robust: the mask no longer has to predict how long the
+		-- gearbox will hold drive down, so the two cannot disagree.
+		state.ShiftUntil = 0
+		inShift = false
+	end
+
+	local lifted = false
+	if not inShift then
+		lifted = state.PrevThrottle >= LIFT_FROM and throttleMag <= LIFT_TO
+		state.PrevThrottle = throttleMag
+	end
+	-- PrevThrottle is deliberately FROZEN for the length of the window rather
+	-- than tracking the cut down to zero and back. That is what makes a genuine
+	-- lift-off during a gearchange still count: the window ends, PrevThrottle is
+	-- still the value from before the shift, and if the player really has come
+	-- off the gas the very next frame sees the drop and fires normally. Letting
+	-- it track would leave PrevThrottle at 0 when the window closed, and a real
+	-- lift-off mid-shift would be swallowed entirely.
 
 	-- BRAKING IS NOT LIFTING OFF. A blow-off valve opens because the throttle
 	-- plate shut on a spinning turbo, which is a thing that happens when you
@@ -777,26 +862,6 @@ function InductionEffects.Update(vehicle, config, input)
 			-- decides how long the stutter runs and whether it earns a bang.
 			queueBurst(state, VehicleInduction.Bursts.LiftOff, state.Spool)
 		end
-	end
-
-	--------------------------------------------------------------------
-	-- Gearshifts. The automatic box cuts drive for ShiftTime on every shift,
-	-- which is a closed throttle at full revs - textbook anti-lag territory,
-	-- and the only way the pops show up while you are accelerating.
-	--------------------------------------------------------------------
-	local shiftCount = input.ShiftCount
-	if shiftCount ~= nil then
-		if state.PrevShiftCount ~= nil and shiftCount ~= state.PrevShiftCount then
-			-- A HIGHER BAR than the other events (UPSHIFT_MIN_SPOOL, not
-			-- MIN_EVENT_SPOOL): an upshift happens several times per pull
-			-- whether the player is driving hard or pottering to a delivery,
-			-- and only the hard ones should make any noise at all. Everything
-			-- else about how small this is lives in the Upshift recipe.
-			if VehicleInduction.Has(stage, "AntiLag") and state.Spool >= UPSHIFT_MIN_SPOOL and not twoStep then
-				queueBurst(state, VehicleInduction.Bursts.Upshift, state.Spool)
-			end
-		end
-		state.PrevShiftCount = shiftCount
 	end
 
 	drainQueue(state, rig, dt, now)
