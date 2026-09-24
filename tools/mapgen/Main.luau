@@ -11,6 +11,7 @@
 
 local ServerStorage = game:GetService("ServerStorage")
 local HttpService = game:GetService("HttpService")
+local CollectionService = game:GetService("CollectionService")
 
 local U = require(script.Parent.Util)
 local L = require(script.Parent.Layout)
@@ -20,11 +21,49 @@ local Connector = require(script.Parent.Connector)
 local Terminal = require(script.Parent.Terminal)
 local Traffic = require(script.Parent.Traffic)
 local Incidents = require(script.Parent.Incidents)
+local Bounds = require(script.Parent.Bounds)
+local Backdrop = require(script.Parent.Backdrop)
 
 local Main = {}
 
 local BACKUP_NAME = "CityV2_Backup"
 local FURNITURE = { "lamp", "tree", "bench", "bin", "hydrant", "news", "meter", "busstop", "bollard" }
+
+-- The street lamps light the city after dark (see
+-- StarterPlayerScripts.StreetLamps). Both the light itself and the tag the
+-- client finds it by live on the KIT TEMPLATE, not on the placed copies:
+-- Instance:Clone() carries tags and children, so every lamp U.place puts down
+-- - in a zone, on a connector, this run or any future one - comes out already
+-- lit and already tagged. That is what makes this survive a RunZones, which
+-- destroys and rebuilds every placed lamp in the city.
+--
+-- The lamp head is Neon and has always looked lit; this is the light it never
+-- actually cast. Enabled is false here because it is the client that decides
+-- when a lamp is on - after dark, and only near the camera.
+local function ensureLampLight(furniture)
+	local lamp = furniture:FindFirstChild("lamp")
+	if not lamp then
+		return
+	end
+	CollectionService:AddTag(lamp, "StreetLamp")
+
+	local head = lamp:FindFirstChild("LampHead", true)
+	if not head or not head:IsA("BasePart") then
+		return
+	end
+	if head:FindFirstChildWhichIsA("PointLight") then
+		return -- already done on an earlier run
+	end
+
+	local bulb = Instance.new("PointLight")
+	bulb.Name = "Bulb"
+	bulb.Color = Color3.fromRGB(255, 226, 170)
+	bulb.Brightness = 1.4
+	bulb.Range = 34
+	bulb.Shadows = false -- a lamp post casting its own shadow buys nothing and costs on every device
+	bulb.Enabled = false
+	bulb.Parent = head
+end
 
 local function ensureKit()
 	local kit = ServerStorage:WaitForChild("MapKit")
@@ -67,6 +106,7 @@ local function ensureKit()
 			pf.Parent = templates
 		end
 	end
+	ensureLampLight(furniture)
 	return { Props = kit.Props, Templates = templates, Cars = kit.Cars, Furniture = furniture, Root = kit }
 end
 
@@ -233,8 +273,9 @@ function Main.Run(seed)
 			parts += 1
 		end
 	end
-	return string.format("City v%d built in %.1fs: %d map parts, %d destinations, %d plots",
-		L.Version, os.clock() - t0, parts, #destinations:GetChildren(), #plots:GetChildren())
+	local boundsReport = Bounds.Build() .. " " .. Backdrop.Build() -- last: they wrap whatever the map turned out to be
+	return string.format("City v%d built in %.1fs: %d map parts, %d destinations, %d plots. %s",
+		L.Version, os.clock() - t0, parts, #destinations:GetChildren(), #plots:GetChildren(), boundsReport)
 end
 
 -- Rebuilds ONLY the three zones (and everything that comes from them: the
@@ -244,8 +285,23 @@ end
 --
 --   require(game.ServerStorage.MapGen.Main).RunZones()
 --
+-- What a zone contains comes from Layout, so a new junction treatment, pavement
+-- or hand fix belongs THERE (Roundabouts, Style.sidewalk, Nudges) and then
+-- survives every re-run. In particular the mini-roundabouts on Market
+-- (Junctions.luau) and the NPC detours round them (Traffic.detour) are built
+-- from the zone's `Roundabouts` list; after changing it, copy the regenerated
+-- MapKit attribute TrafficRoutesSource into TrafficRoutes.luau.
+--
+-- It touches only workspace.Map's zone models, Delivery.Destinations, the
+-- express gates, Bounds/Backdrop and two MapKit attributes. It never reads or
+-- writes ReplicatedStorage (the wheel templates in ReplicatedStorage.Wheels
+-- included) or any WeldConstraint outside the models it generates.
+--
 -- Safe as long as the zone ENDS the connectors join (Market's position and
 -- width at the zone edge, and the zone frames) are unchanged.
+-- Finishes by rebuilding the invisible walls round the playable area
+-- (Bounds.Build), which fence off the sea so nobody can walk or jump out, and
+-- the distant-city backdrop outside them (Backdrop.Build).
 -- The zones are built first in Run too, so the same seed gives the same zones.
 function Main.RunZones(seed)
 	U.reseed(seed)
@@ -311,7 +367,8 @@ function Main.RunZones(seed)
 	kit.Root:SetAttribute("LayoutJSON", HttpService:JSONEncode(summary))
 	kit.Root:SetAttribute("TrafficRoutesSource", Traffic.Source(zones))
 
-	return string.format("Zones rebuilt in %.1fs: %d destinations", os.clock() - t0, #destinations:GetChildren())
+	local boundsReport = Bounds.Build() .. " " .. Backdrop.Build() -- the zone edges moved, so the walls and skyline do too
+	return string.format("Zones rebuilt in %.1fs: %d destinations. %s", os.clock() - t0, #destinations:GetChildren(), boundsReport)
 end
 
 -- Rebuilds ONLY the connectors between the zones - the one local road each
@@ -368,7 +425,8 @@ function Main.RunConnectors(seed)
 			end
 		end
 	end
-	return string.format("%d connectors rebuilt in %.1fs: %d parts", #L.Connectors, os.clock() - t0, parts)
+	local boundsReport = Bounds.Build() .. " " .. Backdrop.Build() -- the terraces moved, so the walls and skyline do too
+	return string.format("%d connectors rebuilt in %.1fs: %d parts. %s", #L.Connectors, os.clock() - t0, parts, boundsReport)
 end
 
 return Main

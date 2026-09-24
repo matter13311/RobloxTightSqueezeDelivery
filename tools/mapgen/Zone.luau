@@ -9,6 +9,7 @@ local Props = require(script.Parent.Props)
 local Alleys = require(script.Parent.Alleys)
 local Dock = require(script.Parent.Dock)
 local Landmarks = require(script.Parent.Landmarks)
+local Junctions = require(script.Parent.Junctions)
 
 local Zone = {}
 
@@ -686,10 +687,16 @@ function Zone.Build(spec, kit, ctx)
 		Traffic = U.folder(model, "Traffic"),
 		Landmarks = U.folder(model, "Landmarks"),
 		Edges = U.folder(model, "Edges"),
+		Junctions = U.folder(model, "Junctions"),
 		Dest = U.folder(model, "Destinations"),
 	}
 	local styleKey = spec.Style
 	local style = Style.Zones[styleKey]
+	-- the zone's own pavement (cobbles / flagstones / boardwalk), see Style
+	local swProps = {
+		Material = style.sidewalk and style.sidewalk.material or Enum.Material.Concrete,
+		Color = style.sidewalk and style.sidewalk.color or Style.Sidewalk,
+	}
 	local out = {
 		model = model,
 		junctions = {},
@@ -707,6 +714,11 @@ function Zone.Build(spec, kit, ctx)
 		table.insert(roads, { spec = cr, rect = U.rect(L.WestSt.x1, cr.zc - cr.w / 2, L.EastSt.x2, cr.zc + cr.w / 2) })
 	end
 	local firstRoad, lastRoad = roads[1], roads[#roads]
+	-- Market junctions that are mini-roundabouts (Layout `Roundabouts`), by road index
+	local roundaboutAt = {}
+	for _, ra in spec.Roundabouts or {} do
+		roundaboutAt[ra.road] = { cz = roads[ra.road].spec.zc, radius = ra.radius or L.Roundabout.Radius }
+	end
 	local marketZ1 = lastRoad.rect.z2 -- Market runs between the first and last cross roads
 	local marketZ2 = firstRoad.rect.z1
 	local rampS, rampN = spec.Ramps.South, spec.Ramps.North
@@ -862,6 +874,17 @@ function Zone.Build(spec, kit, ctx)
 			end
 		end
 	end
+	-- No pothole in a roundabout junction. Dropped AFTER the loop above, not
+	-- rejected inside it, so the random sequence (and with it every building
+	-- and prop generated later) is exactly what it was before roundabouts.
+	for i = #potholes, 1, -1 do
+		for _, ra in roundaboutAt do
+			if math.abs(potholes[i].X) < 24 and math.abs(potholes[i].Z - ra.cz) < 24 then
+				table.remove(potholes, i)
+				break
+			end
+		end
+	end
 	-- land slab, holed for the potholes
 	local land = U.rect(-L.HalfWidth, exitEdge, L.HalfWidth, entryEdge)
 	local potRects = {}
@@ -906,7 +929,7 @@ function Zone.Build(spec, kit, ctx)
 				kind = "cross"
 			end
 			for _, piece in U.subtractAll({ entry[1] }, holes, 2) do
-				U.box(f.Sidewalks, "Sidewalk", piece, 0, SIDEWALK_TOP, { Material = Enum.Material.Concrete, Color = Style.Sidewalk })
+				U.box(f.Sidewalks, "Sidewalk", piece, 0, SIDEWALK_TOP, swProps)
 				table.insert(strips, { rect = piece, dir = entry[2], kind = kind })
 			end
 		end
@@ -1058,7 +1081,7 @@ function Zone.Build(spec, kit, ctx)
 		end
 		-- the zone-end promenades own the last 6 studs of pavement
 		walk = U.rect(walk.x1, spec.QuayFrom and walk.z1 or walk.z1 + 6, walk.x2, spec.Id ~= 1 and walk.z2 - 6 or walk.z2)
-		U.box(f.Sidewalks, "Sidewalk", walk, 0, SIDEWALK_TOP, { Material = Enum.Material.Concrete, Color = Style.Sidewalk })
+		U.box(f.Sidewalks, "Sidewalk", walk, 0, SIDEWALK_TOP, swProps)
 		table.insert(strips, { rect = walk, dir = Vector3.new(sx < 0 and 1 or -1, 0, 0), kind = "parking" })
 		fillLot(f.Buildings, lot, styleKey, { { face = sx < 0 and "E" or "W", at = sx < 0 and lot.x2 or lot.x1 } }, 12)
 	end
@@ -1067,7 +1090,7 @@ function Zone.Build(spec, kit, ctx)
 	local function edgeRail(gaps, promenadeZ1, promenadeZ2)
 		local promenade = U.rect(L.WestSt.x1 - SW, promenadeZ1, L.EastSt.x2 + SW, promenadeZ2)
 		for _, piece in U.subtractAll({ promenade }, gaps, 1) do
-			U.box(f.Edges, "Promenade", piece, 0, SIDEWALK_TOP, { Material = Enum.Material.Concrete, Color = Style.Sidewalk })
+			U.box(f.Edges, "Promenade", piece, 0, SIDEWALK_TOP, swProps)
 		end
 	end
 	-- Only Market leaves the zone (v4.3 - the connector carries one local road
@@ -1428,6 +1451,11 @@ function Zone.Build(spec, kit, ctx)
 		end
 	end
 
+	------------------------------------------------------------ mini-roundabouts
+	for _, ra in roundaboutAt do
+		Junctions.Roundabout(f.Junctions, styleKey, 0, ra.cz, ra.radius)
+	end
+
 	------------------------------------------------------------ roadworks (inner lanes, barriers along the lane)
 	for _, rw in spec.Roadworks or {} do
 		local x = L.MarketLanes[rw.lane]
@@ -1557,7 +1585,7 @@ function Zone.Build(spec, kit, ctx)
 	local busstop = furn:FindFirstChild("busstop")
 	local tl = furn:FindFirstChild("TrafficLight")
 	for i, rd in roads do
-		if tl then
+		if tl and not roundaboutAt[i] then -- a roundabout junction has no signals
 			-- north-east corner, arm reaching west over the northbound lanes;
 			-- south-west corner, arm reaching east over the southbound lanes
 			local ne = rd.rect.z1 - 2
@@ -1682,7 +1710,11 @@ function Zone.Build(spec, kit, ctx)
 			if d:IsA("BasePart") and names[d.Name] then
 				local p = d.Position
 				if math.abs(p.X - n.From.X) < 2.5 and math.abs(p.Z - n.From.Z) < 2.5 and math.abs(p.Y - n.From.Y) < 1 then
-					d.CFrame += n.Delta
+					if n.Delete then
+						d:Destroy()
+					else
+						d.CFrame += n.Delta
+					end
 				end
 			end
 		end

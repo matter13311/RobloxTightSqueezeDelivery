@@ -79,6 +79,15 @@ function ParkGrade.IsStopped(chassis)
 	if not chassis then
 		return false
 	end
+	-- A parked car in this game is an Anchored chassis, and anchoring a part
+	-- does not clear its velocity - the property keeps the last value it had
+	-- and the solver stops acting on it. Asked the ordinary way, a truck that
+	-- was doing 40 studs/s when it was anchored answers "40" forever. Anchored
+	-- means it cannot move, which is as stopped as anything gets.
+	if chassis.Anchored then
+		return true
+	end
+
 	local velocity = chassis.AssemblyLinearVelocity
 	local parking = DeliveryConfig.Parking
 	local horizontal = Vector3.new(velocity.X, 0, velocity.Z).Magnitude

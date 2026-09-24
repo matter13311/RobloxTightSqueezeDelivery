@@ -423,6 +423,33 @@ VehicleCollision.NO_DETACH_ATTRIBUTE = "NoDetach"
 VehicleCollision.DEBRIS_ATTRIBUTE = "IsDebris"
 VehicleCollision.CONDITION_ATTRIBUTE = "Condition"
 
+--=============================================================================
+-- How fast is this car going?
+--=============================================================================
+
+-- The one place anything is allowed to ask, because the obvious way to ask is
+-- wrong on exactly the cars it matters most for.
+--
+-- Anchoring a part does NOT clear its velocity. The property keeps whatever
+-- value it last had; the solver simply stops acting on it. A parked car in
+-- this game is an Anchored chassis (see Raycast.server.luau), so a truck whose
+-- driver got out at 60 studs/s reads as STILL DOING 60 studs/s for as long as
+-- it sits there - forever, for a car nobody ever gets back into.
+--
+-- That is the whole of the "I walked into my own parked truck and got
+-- ragdolled" bug: VehiclePlayerImpact's Touched backstop asked a parked
+-- chassis how fast it was going, was told 60, and knocked the player down for
+-- being run over by a stationary vehicle. Anything else that asks the same
+-- question - park grading, a HUD readout - has the same trap waiting for it.
+--
+-- Anchored means "cannot move", so the only honest answer is zero.
+function VehicleCollision.ChassisVelocity(chassis)
+	if not chassis or chassis.Anchored then
+		return Vector3.zero
+	end
+	return chassis.AssemblyLinearVelocity
+end
+
 function VehicleCollision.GetHullFolder(carModel)
 	return carModel:FindFirstChild(VehicleCollision.HULL_FOLDER)
 end

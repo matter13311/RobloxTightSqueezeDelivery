@@ -40,6 +40,8 @@ Style.Zones = {
 		shopfrontChance = 0.8, awningChance = 0.6, balconyChance = 0.45, waterTankChance = 0.05,
 		shopModuleChance = 0.55, sawtoothChance = 0, gableChance = 0, pipeChance = 0.1,
 		material = Enum.Material.Brick,
+		-- the pavement is what a driver sees at the roadside, so it differs per zone
+		sidewalk = { material = Enum.Material.Cobblestone, color = Color3.fromRGB(150, 130, 112) }, -- warm cobbles
 	},
 	Mill = {
 		textures = {
@@ -55,6 +57,7 @@ Style.Zones = {
 		shopModuleChance = 0.12, sawtoothChance = 0.45, gableChance = 0, pipeChance = 0.5,
 		material = Enum.Material.Brick,
 		metalChance = 0.35, -- corrugated sheds
+		sidewalk = { material = Enum.Material.Slate, color = Color3.fromRGB(96, 94, 92) }, -- dark flagstones
 	},
 	Harbour = {
 		textures = {
@@ -70,8 +73,30 @@ Style.Zones = {
 		material = Enum.Material.Concrete,
 		metalChance = 0.5,
 		containerLotChance = 0.25, -- some lots are container stacks instead of buildings
+		sidewalk = { material = Enum.Material.WoodPlanks, color = Color3.fromRGB(132, 112, 90) }, -- weathered boardwalk
 	},
 }
+
+-- Mini-roundabouts (Junctions.luau): island surface, kerb, the monument that
+-- stands on it, and its colours. Old Town has none.
+Style.Roundabouts = {
+	Mill = {
+		surface = { material = Enum.Material.Slate, color = Color3.fromRGB(88, 88, 86) },
+		kerb = Color3.fromRGB(38, 38, 40),
+		hazard = Color3.fromRGB(230, 185, 40), -- yellow blocks on the black kerb
+		monument = "cog",
+		metal = Color3.fromRGB(58, 60, 64),
+		accent = Color3.fromRGB(176, 92, 48), -- rusty cog
+	},
+	Harbour = {
+		surface = { material = Enum.Material.Cobblestone, color = Color3.fromRGB(118, 110, 100) },
+		kerb = Color3.fromRGB(196, 194, 188),
+		monument = "anchor",
+		metal = Color3.fromRGB(46, 56, 64),
+		accent = Color3.fromRGB(150, 68, 46),
+	},
+}
+Style.Roundabouts.default = Style.Roundabouts.Mill
 
 Style.Awnings = {
 	BrickColor.new("Dark orange").Color,

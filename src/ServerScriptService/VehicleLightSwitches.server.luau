@@ -4,11 +4,13 @@
 -- when it was toggled), so there's exactly one source of truth for whether
 -- the lights are on.
 
+local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+local DayNight = require(ReplicatedStorage.Modules.World.DayNight)
 
 local toggleHeadlights = Instance.new("RemoteEvent")
 toggleHeadlights.Name = "ToggleHeadlights"
@@ -56,5 +58,34 @@ toggleTurnSignal.OnServerEvent:Connect(function(player, vehicle, side)
 	local trailer = TrailerHitch.GetHitchedTrailer(vehicle)
 	if trailer then
 		trailer:SetAttribute("TurnSignal", newSignal)
+	end
+end)
+
+
+-- ===== Automatic headlights =====
+--
+-- The lights come on at dusk and go off at dawn, for every car at once.
+--
+-- ONLY ON THE TRANSITIONS, WHICH IS THE WHOLE DESIGN. A driver who flicks
+-- their own lights off at midnight keeps them off: nothing here touches the
+-- attribute again until dawn actually breaks. Re-asserting it on a timer would
+-- mean the switch silently undoing the player a second after they pressed it,
+-- which reads as a broken switch rather than a convenience. The cost of that
+-- choice is that manual state is forgotten at the next transition, which is
+-- also what a real automatic headlight does.
+--
+-- A car that spawns between transitions gets the right starting position from
+-- Raycast.server.luau instead, which reads the same clock.
+local wasDark = DayNight.IsDark(Lighting.ClockTime)
+
+Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+	local isDark = DayNight.IsDark(Lighting.ClockTime)
+	if isDark == wasDark then
+		return
+	end
+	wasDark = isDark
+
+	for _, vehicle in workspace.Vehicles:GetChildren() do
+		vehicle:SetAttribute("HeadlightsOn", isDark)
 	end
 end)

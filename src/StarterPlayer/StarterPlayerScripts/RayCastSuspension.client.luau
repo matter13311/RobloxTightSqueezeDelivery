@@ -1015,6 +1015,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 		-- unconditionally rather than inside the Anchored check below.
 		VehicleLights.EnsureHeadlights(vehicle)
 		VehicleLights.EnsureTurnSignals(vehicle)
+		VehicleLights.EnsureInteriorLights(vehicle)
 		VehicleDashboardGauges.EnsureGauges(vehicle)
 		VehicleDashboardGauges.EnsureBlinkers(vehicle)
 

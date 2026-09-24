@@ -38,6 +38,12 @@
 --   degrees): at 45 degrees and alley width a truck could not make the turn
 --   without banging both walls.
 --
+-- ZONE IDENTITY. The grid is shared (it has to be: the connectors join at
+-- Market), so a zone gets its own feel from what is built ON it: Style (facades,
+-- and `sidewalk` - cobbles / flagstones / boardwalk, the roadside a driver sees),
+-- and `Roundabouts` (Old Town: the plain signalled grid; Mill: two mini-
+-- roundabouts round a cog; Harbour: one round an anchor).
+--
 -- DESTINATIONS: most sit INSIDE the alleys (access facing an alley leg), so
 -- that the alleys are where the work is - play testers who stuck to the main
 -- roads never found them. The rig destinations stay on the open roads.
@@ -114,6 +120,15 @@ L.AlleyCurve = { Extra = 4, Min = 17, Flare = 14 }
 -- revert it; regenerating now reproduces 15.7/24.3 exactly, so it will not.
 L.RoadworksHalf = 4.3
 
+-- Mini-roundabouts on Market Ave (a zone's `Roundabouts` list, see
+-- Junctions.luau). Drivable: the kerbed island tops out at pavement height.
+--   Radius   default island radius
+--   Kerb     kerb ring around it
+--   CarHalf  half the widest NPC car; the detour that steers NPC traffic round
+--            the island passes at Radius + Kerb + CarHalf from its centre, which
+--            has to stay inside the 34-deep cross road (so Radius <= ~6)
+L.Roundabout = { Radius = 6, Kerb = 0.9, CarHalf = 5.4 }
+
 L.SpaceSize = Vector2.new(16, 42)
 L.RigSpaceSize = Vector2.new(18, 82)
 L.WarehouseDepth = 30
@@ -121,6 +136,14 @@ L.WarehouseDepth = 30
 L.SeaY = -6 -- water surface
 L.LandBottom = -9 -- land slabs reach down past the water, so their sides read as quay walls
 L.World = { x1 = -2400, z1 = -3900, x2 = 900, z2 = 800 } -- the sea
+
+-- The city seen from inside (see Backdrop.luau): the sea outside the walls is
+-- covered by ground and a low-poly skyline, EXCEPT these rects, which stay
+-- open water. Harbour's quay faces east, so its sea is the one that is kept.
+L.Backdrop = {
+	WaterRects = { { x1 = -700, z1 = -3900, x2 = 900, z2 = -2450 } },
+	EdgeBand = 320, -- skyline kept along the world edge even beside open water
+}
 
 --=============================================================================
 -- Zones
@@ -282,6 +305,14 @@ L.Zones = {
 			{ Kind = "GasHolder", x = 90, z = -760, Label = "Gas Holder" },
 		},
 		Roadworks = { { lane = "NBInner", z1 = -520, z2 = -480 } },
+		-- Mini-roundabouts on Market: `road` indexes CrossRoads. No traffic
+		-- lights at these junctions; NPC crossings are steered round the island.
+		Roundabouts = { { road = 2 }, { road = 3 } },
+		-- A lamp on the express link that was deleted by hand in Studio (local
+		-- frame). Delete = true removes the matching part instead of moving it.
+		Nudges = {
+			{ Folder = "Express", Names = { "DeckLight" }, From = Vector3.new(-15.7, 33, -304), Delete = true },
+		},
 		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
 		-- for where they are allowed: never on a stretch a Block circuit drives).
 		Incidents = {
@@ -344,6 +375,8 @@ L.Zones = {
 			{ Kind = "Cranes", x = -250, z = -720, Label = "Quay Cranes" },
 		},
 		Roadworks = { { lane = "NBInner", z1 = -470, z2 = -430 } },
+		-- Chandler St is the one Harbour junction no NPC circuit crosses.
+		Roundabouts = { { road = 2 } },
 		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
 		-- for where they are allowed: never on a stretch a Block circuit drives).
 		Incidents = {

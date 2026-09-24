@@ -38,6 +38,7 @@ local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleColli
 local VehicleExits = require(ReplicatedStorage.Modules.Vehicles.VehicleExits)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+local VehicleUnstick = require(ReplicatedStorage.Modules.Vehicles.VehicleUnstick)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -269,7 +270,20 @@ local function applyExitCollisionGrace(character)
 		end
 	end
 
-	task.delay(EXIT_COLLISION_GRACE_TIME, function()
+	task.spawn(function()
+		-- Released as soon as the character is genuinely clear of every car,
+		-- and only held for the full EXIT_COLLISION_GRACE_TIME if they never
+		-- get clear. The window has to be long enough to cover a jump-exit on
+		-- foot, but every frame of it is a frame in which this character can
+		-- fall THROUGH a car - climb onto the roof of the truck you just got
+		-- out of inside the window and you drop into the cab. Waiting on the
+		-- condition instead of the clock makes the window as short as the
+		-- situation allows while still covering the case it was added for.
+		--
+		-- A stud of padding, so "clear" means clear rather than a hair off the
+		-- hull with a foot still moving towards it.
+		VehicleUnstick.WaitUntilClear(character, EXIT_COLLISION_GRACE_TIME, 1)
+
 		-- Only restore if nothing else has claimed this character's collision
 		-- group since - a later jump-exit's own grace period, or the
 		-- character having been ragdolled (RagdollUtility owns that group

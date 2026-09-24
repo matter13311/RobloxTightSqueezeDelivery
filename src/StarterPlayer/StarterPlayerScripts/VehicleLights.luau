@@ -479,10 +479,82 @@ function VehicleLights.EnsureTurnSignals(vehicle)
 	getTurnSignalRig(vehicle)
 end
 
+-- ===== Interior =====
+
+-- The cab light: a dim PointLight on a Dashboard.CabLight part, switched by
+-- the same HeadlightsOn Attribute the exterior headlights use, exactly like a
+-- real car's instrument illumination.
+--
+-- WHY A POINTLIGHT AND NOT JUST NEON. Making the dash Neon was the obvious
+-- first idea and it does not work: Neon makes the Neon part itself look lit
+-- but emits no light onto anything around it, in any lighting technology. A
+-- Neon dash in an unlit cab is a glowing slab floating in the dark, with the
+-- wheel, seats and door cards still invisible. Only an actual light source
+-- lights the interior, so that is what this is.
+--
+-- AND WHY NOT DETECT DARKNESS. There is no API to read the light level at a
+-- point, so "is this player in the dark" can only ever be approximated
+-- (raycasts, time-of-day guesses) - a running cost for a guess. Tying it to a
+-- switch the player already controls is free, is exactly what a real car
+-- does, and costs one Attribute listener per car with no per-frame work at
+-- all.
+local INTERIOR_LIGHT_PART = "CabLight"
+local INTERIOR_LIGHT_NAME = "Interior"
+
+local interiorRigs = {} -- [vehicle] = { Light, Connection }
+
+local function getInteriorRig(vehicle)
+	local rig = interiorRigs[vehicle]
+	if rig then
+		return rig
+	end
+
+	-- Every dashboard piece is optional (see VehiclePhysics.GetDashboardPart),
+	-- and a car with no CabLight part is a car with no interior light - not an
+	-- error. Unlike the headlight rig this never retries into existence,
+	-- because there is nothing to wait for: the part is authored in the
+	-- template, not built at spawn.
+	local part = VehiclePhysics.GetDashboardPart(vehicle, INTERIOR_LIGHT_PART)
+	local light = part and part:FindFirstChild(INTERIOR_LIGHT_NAME)
+	if not light or not light:IsA("PointLight") then
+		return nil
+	end
+
+	rig = { Light = light }
+
+	-- Sync to the switch's current position rather than assuming off - same
+	-- reasoning as the headlight rig: a client that starts watching this car
+	-- after its lights were switched on must not show a dark cab.
+	light.Enabled = vehicle:GetAttribute("HeadlightsOn") == true
+
+	rig.Connection = vehicle:GetAttributeChangedSignal("HeadlightsOn"):Connect(function()
+		light.Enabled = vehicle:GetAttribute("HeadlightsOn") == true
+	end)
+
+	interiorRigs[vehicle] = rig
+	return rig
+end
+
+-- Builds the interior light rig the first time this car is seen. Same
+-- call-it-whenever-convenient contract as EnsureHeadlights.
+function VehicleLights.EnsureInteriorLights(vehicle)
+	getInteriorRig(vehicle)
+end
+
 -- ===== Cleanup =====
 
 -- Called when a car goes away, and when the client stops tracking it.
 function VehicleLights.Clear(vehicle)
+	-- The interior light instance is authored in the vehicle template, not
+	-- built here, so it is switched off and left alone rather than destroyed -
+	-- the same car can be tracked again later and must still have its light.
+	local interiorRig = interiorRigs[vehicle]
+	if interiorRig then
+		interiorRig.Connection:Disconnect()
+		interiorRig.Light.Enabled = false
+		interiorRigs[vehicle] = nil
+	end
+
 	local rig = rigs[vehicle]
 	if rig then
 		for _, instances in rig do

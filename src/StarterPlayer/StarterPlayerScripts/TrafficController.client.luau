@@ -18,6 +18,7 @@
 -- is shown here immediately and reported to the server, which stops the car
 -- for everyone and tells the other clients to play the same bump.
 
+local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -26,6 +27,7 @@ local TrafficConfig = require(ReplicatedStorage.Modules.Traffic.TrafficConfig)
 local TrafficPath = require(ReplicatedStorage.Modules.Traffic.TrafficPath)
 local TrafficNet = require(ReplicatedStorage.Modules.Traffic.TrafficNet)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
+local DayNight = require(ReplicatedStorage.Modules.World.DayNight)
 
 local player = Players.LocalPlayer
 
@@ -89,17 +91,56 @@ local pools = {} -- [templateIndex] = { model record }
 -- Defined with the bump handling below; Touched needs it first.
 local onTouched
 
+-- ===== Headlights =====
+--
+-- Switched by time of day alone - an NPC has no reason to differ from every
+-- other NPC, so there is one shared on/off for the whole city rather than any
+-- per-car state. See TrafficConfig.HeadlightOnColor for why these are Neon
+-- only, with no PointLight behind them.
+--
+-- Every record ever built is kept here, not just the ones currently driving:
+-- a pooled car that was parked in the pool by day must come back out lit if it
+-- is reused after dusk, and it is cheaper to fix them all once at the
+-- transition than to re-check on every reuse.
+local records = {}
+local dark = DayNight.IsDark(Lighting.ClockTime)
+
+local function setHeadlights(record, on)
+	local color = if on then TrafficConfig.HeadlightOnColor else TrafficConfig.HeadlightOffColor
+	local material = if on then Enum.Material.Neon else Enum.Material.SmoothPlastic
+	for _, part in record.Headlights do
+		part.Material = material
+		part.Color = color
+	end
+end
+
+-- ClockTime is replicated from DayNight.server.luau at 2Hz, so this fires
+-- about twice a second and does nothing at all on almost every one of them.
+-- The whole cost of NPC headlights is this comparison.
+Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+	local nowDark = DayNight.IsDark(Lighting.ClockTime)
+	if nowDark == dark then
+		return
+	end
+	dark = nowDark
+	for _, record in records do
+		setHeadlights(record, dark)
+	end
+end)
+
 local function buildModel(templateIndex)
 	local model = templates[templateIndex]:Clone()
 	local root = model.PrimaryPart
 
-	local parts, offsets, lights = { root }, { CFrame.identity }, {}
+	local parts, offsets, lights, headlights = { root }, { CFrame.identity }, {}, {}
 	for _, part in model:GetDescendants() do
 		if part:IsA("BasePart") and part ~= root then
 			table.insert(parts, part)
 			table.insert(offsets, root.CFrame:ToObjectSpace(part.CFrame))
 			if part.Name == "BrakeLight" then
 				table.insert(lights, part)
+			elseif part.Name == "Headlight" then
+				table.insert(headlights, part)
 			end
 		end
 	end
@@ -120,6 +161,7 @@ local function buildModel(templateIndex)
 		Parts = parts,
 		Offsets = offsets,
 		Lights = lights,
+		Headlights = headlights,
 		Horn = horn,
 		Height = root.Size.Y / 2,
 		Visual = nil, -- the car currently using this model
@@ -129,6 +171,11 @@ local function buildModel(templateIndex)
 			onTouched(record.Visual, hit)
 		end
 	end)
+
+	-- Built mid-session, so it has to match what every other car is already
+	-- doing rather than whatever the template happens to be saved as.
+	setHeadlights(record, dark)
+	table.insert(records, record)
 	return record
 end
 

@@ -68,6 +68,47 @@ local CIRCUITS = {
 	end,
 }
 
+-- A circuit segment that runs straight across a roundabout junction (a U-turn
+-- across Market, or a ring/block circuit crossing it) would drive over the
+-- island, so it is bent round the near side of it: out along the lane, round a
+-- half circle at Radius + Kerb + CarHalf, back onto the lane. `spec.Roundabouts`
+-- says which junctions; points are in the zone's local frame, {x, z}.
+local function detour(points, spec)
+	if not spec.Roundabouts then
+		return points
+	end
+	local RB = L.Roundabout
+	local result = {}
+	for i, a in points do
+		table.insert(result, a)
+		local b = points[i + 1]
+		if not b or math.abs(a[2] - b[2]) > 0.01 or a[1] * b[1] >= 0 then
+			continue -- only a level segment that crosses x = 0 can meet the island
+		end
+		for _, ra in spec.Roundabouts do
+			local cz = spec.CrossRoads[ra.road].zc
+			local pass = (ra.radius or RB.Radius) + RB.Kerb + RB.CarHalf
+			local dz = a[2] - cz
+			if math.abs(dz) >= pass then
+				continue -- runs outside the island already
+			end
+			if math.abs(a[1]) < pass + 5 or math.abs(b[1]) < pass + 5 then
+				warn(string.format("Traffic.detour: no room to bend a %s crossing at z %.0f round its roundabout", spec.Key, a[2]))
+				continue
+			end
+			local d = b[1] > a[1] and 1 or -1 -- direction of travel along x
+			local s = dz >= 0 and 1 or -1 -- which side of the island it passes
+			local c = 0.7071 * pass
+			for _, w in {
+				{ -d * (pass + 4), a[2] }, { -d * c, cz + s * c }, { 0, cz + s * pass }, { d * c, cz + s * c }, { d * (pass + 4), a[2] },
+			} do
+				table.insert(result, w)
+			end
+		end
+	end
+	return result
+end
+
 local function fmt(n)
 	local s = string.format("%.1f", n):gsub("%.0$", "")
 	return s
@@ -103,7 +144,7 @@ function Traffic.Source(zones)
 		end
 		for _, c in CIRCUITS[spec.Key](roads) do
 			local pts = {}
-			for _, p in c[3] do
+			for _, p in detour(c[3], spec) do
 				local w = spec.Frame * Vector3.new(p[1], 0, p[2])
 				table.insert(pts, string.format("{ %s, %s }", fmt(w.X), fmt(w.Z)))
 			end

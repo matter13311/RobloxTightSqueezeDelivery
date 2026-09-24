@@ -455,6 +455,9 @@ local CLIPBOARD_LINE_INTERVAL = 1
 -- as one more line.
 local CLIPBOARD_MONEY_DELAY = 0.6
 local CLIPBOARD_HOLD_SECONDS = 4
+-- Studs/second of the player's assembly (the vehicle, when seated) that counts
+-- as "driving off" and dismisses the clipboard early.
+local DRIVE_OFF_SPEED = 6
 -- Rows built up front, one per fact.
 --
 -- There is deliberately no progression line ("3 deliveries until 4 max
@@ -1411,6 +1414,28 @@ local function showReceipt(completed, failed)
 	):Play()
 
 	task.spawn(function()
+		-- Waits up to `seconds`, returning true early once the player drives off
+		-- (or the receipt was superseded). A driver who is used to the flow
+		-- pulls away the moment the cargo is down, and the clipboard is in the
+		-- way of the road.
+		local function waitOrDriveOff(seconds)
+			local deadline = os.clock() + seconds
+			repeat
+				task.wait(0.05)
+				if receiptToken ~= token then
+					return true
+				end
+				local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+				if root and root:IsA("BasePart") and root.AssemblyLinearVelocity.Magnitude > DRIVE_OFF_SPEED then
+					return true
+				end
+			until os.clock() >= deadline
+			return false
+		end
+
+		local droveOff = false
+		-- The delivery is only registered once parked, so the first beat is not
+		-- checked: a car still rolling to a stop must not dismiss its own receipt.
 		task.wait(CLIPBOARD_SLIDE_SECONDS + CLIPBOARD_FIRST_LINE_DELAY)
 
 		for index = 1, math.min(#lines, CLIPBOARD_MAX_LINES) do
@@ -1420,23 +1445,30 @@ local function showReceipt(completed, failed)
 			local row = clipRows[index]
 			stampIn(row.Frame, row.Scale)
 			playSound(STAMP_SOUND_ID)
-			task.wait(CLIPBOARD_LINE_INTERVAL)
+			if waitOrDriveOff(CLIPBOARD_LINE_INTERVAL) then
+				droveOff = true
+				break
+			end
 		end
 
-		task.wait(CLIPBOARD_MONEY_DELAY)
+		if not droveOff then
+			droveOff = waitOrDriveOff(CLIPBOARD_MONEY_DELAY)
+		end
 		if receiptToken ~= token then
 			return
 		end
 		stampIn(earnedGroup, earnedScale)
 		playSound(if failed then STAMP_SOUND_ID else COIN_SOUND_ID)
 
-		task.wait(CLIPBOARD_HOLD_SECONDS)
+		if not droveOff then
+			droveOff = waitOrDriveOff(CLIPBOARD_HOLD_SECONDS)
+		end
 		if receiptToken ~= token then
 			return
 		end
 		local slideOut = TweenService:Create(
 			clipboard,
-			TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			TweenInfo.new(if droveOff then 0.15 else 0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
 			{ Position = CLIPBOARD_HIDDEN }
 		)
 		slideOut:Play()

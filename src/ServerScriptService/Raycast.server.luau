@@ -1,3 +1,4 @@
+local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -7,6 +8,7 @@ local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 -- Only for the entry damage-grace stamp on the seat path below; this script
 -- owns no other part of the collision system.
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
+local DayNight = require(ReplicatedStorage.Modules.World.DayNight)
 
 local wheelsFolder = ReplicatedStorage.Wheels
 local defaultWheelModel = wheelsFolder.StarterVehicleWheel
@@ -87,6 +89,15 @@ local function SettleThenAnchor(carModel, chassis, attachments, driverSeat)
 
 	carModel:SetAttribute(VehicleCollision.SETTLING_ATTRIBUTE, false)
 	if not driverSeat.Occupant then
+		-- Zeroed BEFORE anchoring, because anchoring does not do it for you:
+		-- the velocity property keeps whatever it last held and the solver just
+		-- stops acting on it, so a car frozen mid-drop reads as permanently
+		-- falling to anything that asks. See VehicleCollision.ChassisVelocity
+		-- for the bug that came out of one script taking that answer at face
+		-- value; this is the same fix at the source, so no other reader
+		-- inherits it.
+		chassis.AssemblyLinearVelocity = Vector3.zero
+		chassis.AssemblyAngularVelocity = Vector3.zero
 		chassis.Anchored = true
 	end
 end
@@ -209,7 +220,12 @@ local function AddCar(carModel)
 	-- start off/centered and stay wherever a driver last left them, rather
 	-- than resetting when the car is vacated (see the Occupant listener
 	-- below, which only resets the Net* driving telemetry).
-	carModel:SetAttribute("HeadlightsOn", false)
+	-- Starting position is whatever a driver who had just parked here would
+	-- have left them at: on if it is dark out. A car that spawned dark at
+	-- midnight and stayed dark until the next dusk would otherwise be the one
+	-- unlit vehicle on the road, since VehicleLightSwitches only ever acts on
+	-- the transitions.
+	carModel:SetAttribute("HeadlightsOn", DayNight.IsDark(Lighting.ClockTime))
 	carModel:SetAttribute("TurnSignal", "None")
 
 	-- Engine starts off: the Sound instance is pre-placed in the model and may
@@ -360,6 +376,13 @@ local function AddCar(carModel)
 			pcall(function()
 				chassis:SetNetworkOwner(nil)
 			end)
+			-- Before anchoring, and for the same reason as in SettleThenAnchor:
+			-- an Anchored part keeps its last velocity value forever. A truck
+			-- parked straight off a 60 studs/s run would otherwise read as
+			-- doing 60 studs/s for the rest of the round - see
+			-- VehicleCollision.ChassisVelocity.
+			chassis.AssemblyLinearVelocity = Vector3.zero
+			chassis.AssemblyAngularVelocity = Vector3.zero
 			chassis.Anchored = true
 
 			task.spawn(function()

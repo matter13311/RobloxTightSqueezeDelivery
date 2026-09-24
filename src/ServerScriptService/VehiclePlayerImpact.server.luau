@@ -56,6 +56,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 local RagdollUtility = require(ReplicatedStorage.Modules.RagdollUtility)
+local VehicleUnstick = require(ReplicatedStorage.Modules.Vehicles.VehicleUnstick)
 
 local VehicleFolder = workspace.Vehicles
 
@@ -97,28 +98,19 @@ end
 --
 -- So the recovery timer is a first attempt, not a deadline: while the body is
 -- still inside a car it stays a ragdoll and asks again shortly. It gets a
--- bounded number of tries and then stands up regardless, because a player who
--- can never get up again because somebody parked on them is a far worse
--- outcome than one brief shove.
+-- bounded number of tries, and if it is STILL under a car at the end of them -
+-- somebody has parked over it, or it came to rest deep enough inside a hull
+-- that there is no short way out for the solver to shove it along - it is
+-- moved out from under the car rather than stood up inside it. Standing up
+-- inside it is what used to pin a player in place until they respawned, which
+-- is a far worse outcome than a few studs of teleport. See VehicleUnstick,
+-- which owns both halves of that and is shared with the watchdog in
+-- CharacterUnstick.server.luau.
 local RECOVERY_RETRY_INTERVAL = 0.5
-local RECOVERY_MAX_RETRIES = 12 -- ~6 seconds of being parked on before giving up and standing anyway
-
-local function isInsideACar(character)
-	local root = character:FindFirstChild("HumanoidRootPart")
-	if not root then
-		return false
-	end
-	local params = OverlapParams.new()
-	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = { VehicleFolder }
-	-- Cosmetic panels and plot trigger volumes are non-collidable, so standing
-	-- up "inside" one of those is not standing up inside anything.
-	params.RespectCanCollide = true
-	params.MaxParts = 1
-	return #workspace:GetPartBoundsInBox(root.CFrame, root.Size + Vector3.one * 2, params) > 0
-end
+local RECOVERY_MAX_RETRIES = 12 -- ~6 seconds of being parked on before giving up and moving them out from under it
 
 local function standUp(humanoid, character, myGeneration)
+	local stuckIn = nil
 	for _ = 1, RECOVERY_MAX_RETRIES do
 		if recoveryGeneration[humanoid] ~= myGeneration then
 			return -- a later hit re-armed this; that hit's own timer owns the recovery now
@@ -126,7 +118,8 @@ local function standUp(humanoid, character, myGeneration)
 		if not humanoid.Parent or humanoid.Health <= 0 then
 			return
 		end
-		if not isInsideACar(character) then
+		stuckIn = VehicleUnstick.FindOverlappingVehicle(character, VehicleUnstick.StandUpPadding)
+		if not stuckIn then
 			break
 		end
 		task.wait(RECOVERY_RETRY_INTERVAL)
@@ -135,11 +128,26 @@ local function standUp(humanoid, character, myGeneration)
 	if recoveryGeneration[humanoid] ~= myGeneration then
 		return
 	end
-	if humanoid.Parent and humanoid.Health > 0 then
-		RagdollUtility.Stop(character)
-		humanoid.PlatformStand = false
-		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	if not humanoid.Parent or humanoid.Health <= 0 then
+		return
 	end
+
+	-- Still under a car after every retry: somebody has parked on them, or
+	-- they came to rest deep enough inside a hull that there is no shortest
+	-- way out for the solver to shove them along. Restoring ordinary collision
+	-- here is precisely the thing that used to pin a player in place until they
+	-- respawned - so move them out from under it FIRST, while they are still a
+	-- ragdoll and can therefore pass through the car on the way, and stand
+	-- them up on clear ground.
+	if stuckIn then
+		log("%s is still under %s after %.0fs - moving them clear", character.Name, stuckIn.Name,
+			RECOVERY_MAX_RETRIES * RECOVERY_RETRY_INTERVAL)
+		VehicleUnstick.MoveClear(character, stuckIn)
+	end
+
+	RagdollUtility.Stop(character)
+	humanoid.PlatformStand = false
+	humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 end
 
 --=============================================================================
@@ -298,7 +306,7 @@ local function validate(player, carModel, humanoid)
 		return false, string.format("target is %.0f studs from the chassis", distance)
 	end
 
-	local velocity = chassis.AssemblyLinearVelocity
+	local velocity = VehicleCollision.ChassisVelocity(chassis)
 	-- Halved against the client's own threshold: the client tested the live
 	-- velocity it owns, this tests a replicated echo of it, and a car braking
 	-- hard can genuinely have shed real speed in between. Rejecting a true hit
@@ -357,13 +365,40 @@ end
 
 local pushGraceGeneration = {} -- [Character] = number, same "don't let an older grace restore over a newer one" guard VehicleDoors uses
 
+-- Is this character on top of the car rather than beside it? Answered from the
+-- car's own bounding box: a player standing on the roof has their feet at or
+-- above its top, and one leaning against a flank does not.
+local function isStandingOnCar(character, carModel)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root or not carModel then
+		return false
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local feet = root.Position.Y - root.Size.Y / 2 - (humanoid and humanoid.HipHeight or 2)
+	local carCF, carSize = carModel:GetBoundingBox()
+	-- A stud of slack, since the surface they are standing on is a hull box
+	-- that can sit slightly under the bodywork it stands in for.
+	return feet >= carCF.Position.Y + carSize.Y / 2 - 1
+end
+
 -- Moves a character out of the way of a settling car's collision for a beat,
 -- rather than leaving them to physically shove it. Doesn't undo a push that
 -- already happened on the frame Touched fired - the two are already in
 -- contact by the time this runs - but it stops the shove from continuing for
 -- as long as the player keeps leaning on it, which is the actual complaint.
-local function applyPushGrace(character)
+local function applyPushGrace(character, carModel)
 	if not character or not character.Parent then
+		return
+	end
+
+	-- Never taken away from somebody who is STANDING ON the car. The grace
+	-- makes them non-solid to vehicle geometry, and a player on the roof of a
+	-- truck is only up there because that geometry is holding them up - take it
+	-- away and they drop straight through the bodywork into the cab, which is
+	-- the other half of the "jumped on my parked car and fell inside it" bug.
+	-- Somebody on top of a settling car cannot be shoving it sideways anyway;
+	-- their weight is the one thing it is supposed to feel.
+	if isStandingOnCar(character, carModel) then
 		return
 	end
 
@@ -380,6 +415,15 @@ local function applyPushGrace(character)
 		end
 	end
 
+	-- Held for the full window rather than released as soon as the character is
+	-- clear of the car, which is what the exit grace in VehicleDoors does. The
+	-- two want opposite things: an exiting player is clear the moment they step
+	-- away and should be solid again immediately, whereas a player LEANING on a
+	-- settling car never overlaps it at all - the whole point is that they are
+	-- being held off it - so "are they clear yet" is true on the first check and
+	-- would end the grace before it did anything. The fall-through case this
+	-- would otherwise have to guard is handled above, by never applying the
+	-- grace to somebody standing on the car in the first place.
 	task.delay(PUSH_GRACE_TIME, function()
 		if pushGraceGeneration[character] ~= generation then
 			return -- a later touch's own grace owns the restore now
@@ -416,7 +460,7 @@ local function onHullTouched(carModel, other)
 	-- anyone down for touching one, and push them clear instead of letting
 	-- them shove it.
 	if carModel:GetAttribute(VehicleCollision.SETTLING_ATTRIBUTE) then
-		applyPushGrace(character)
+		applyPushGrace(character, carModel)
 		return
 	end
 
@@ -430,9 +474,15 @@ local function onHullTouched(carModel, other)
 		return
 	end
 
+	-- ChassisVelocity, not AssemblyLinearVelocity: a parked car is an Anchored
+	-- chassis, and anchoring does not clear the velocity property - a truck
+	-- whose driver got out at 60 studs/s reads as still doing 60 for as long as
+	-- it sits there. That is the whole of "I touched my own parked car and got
+	-- instantly ragdolled": this check passed on a stale number for a vehicle
+	-- that could not move at all. See VehicleCollision.ChassisVelocity.
 	local chassis = carModel.PrimaryPart
-	local velocity = chassis and chassis.AssemblyLinearVelocity
-	if not velocity or velocity.Magnitude < VehicleCollision.KnockdownMinSpeed then
+	local velocity = VehicleCollision.ChassisVelocity(chassis)
+	if velocity.Magnitude < VehicleCollision.KnockdownMinSpeed then
 		return
 	end
 

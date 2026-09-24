@@ -78,6 +78,17 @@ TrafficConfig.RoadY = 0
 TrafficConfig.BrakeLightOnColor = Color3.fromRGB(255, 40, 30)
 TrafficConfig.BrakeLightOffColor = Color3.fromRGB(90, 12, 12)
 
+-- Headlights, switched by time of day rather than by anything the car is
+-- doing (TrafficController.client.luau). Deliberately Neon-only, with no
+-- PointLight behind them: 140 cars means up to 280 CONSTANTLY MOVING lights,
+-- and a moving light re-dirties the voxel lighting around it every frame -
+-- unlike the static street lamps, whose contribution is computed once. Past a
+-- few dozen studs a headlight reads as the glowing lamp anyway, not as the
+-- pool it throws, so the glow alone buys nearly all of the look for none of
+-- the cost.
+TrafficConfig.HeadlightOnColor = Color3.fromRGB(255, 244, 214)
+TrafficConfig.HeadlightOffColor = Color3.fromRGB(70, 68, 60)
+
 -- Horn. Reuses the player horn recording (VehiclePhysics.Defaults.HonkSoundId),
 -- tapped rather than held. Each car gets its own pitch so a street full of
 -- them doesn't sound like one horn.
