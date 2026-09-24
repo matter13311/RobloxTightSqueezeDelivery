@@ -217,13 +217,9 @@ R.KeepClear = {
 -- Things parked in a lane for good (roadworks): NPC cars treat them as
 -- obstacles and change lanes round them.
 R.Static = {
-	-- Narrowed by hand from the generator's default (x-6, x+6) to match the
-	-- barriers pulled in at OldTown RoadWorks_480 - wide vehicles (e.g. Blue
-	-- Box Truck, HalfWidth ~5.4) couldn't fit the escape lane at the default
-	-- width. Regenerating TrafficRoutes.luau will revert this to 14/26.
 	{ 15.7, -480, 24.3, -440 },
-	{ -940, -1866, -900, -1854 },
-	{ -1010, -3096, -970, -3084 },
+	{ -940, -1864.3, -900, -1855.7 },
+	{ -1010, -3094.3, -970, -3085.7 },
 }
 
 return R

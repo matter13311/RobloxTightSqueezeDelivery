@@ -74,6 +74,17 @@ local TRACK = Color3.fromRGB(40, 44, 54)
 local LIGHTING_SETTLE_SECONDS = 0.6
 local FADE_SECONDS = 0.4
 local PRELOAD_BATCH_SIZE = 50
+-- A batch that has not come back by then is abandoned, and the whole preload
+-- gives up at the total cap, so a stalled fetch can never hold the cover up.
+local PRELOAD_BATCH_TIMEOUT = 5
+local PRELOAD_TOTAL_TIMEOUT = 20
+-- Only classes that actually pull content; everything else in game:GetDescendants()
+-- was just padding the batches.
+local PRELOAD_CLASSES = {
+	"MeshPart", "SpecialMesh", "SurfaceAppearance", "MaterialVariant", "Decal", "Texture",
+	"ImageLabel", "ImageButton", "Sound", "Animation", "ParticleEmitter", "Sky",
+	"Shirt", "Pants", "ShirtGraphic",
+}
 
 --=============================================================================
 -- The cover
@@ -194,30 +205,74 @@ end
 -- Batched rather than one call over game:GetDescendants(), so the bar climbs
 -- with real progress instead of sitting at 0% and jumping straight to 100%
 -- once everything happens to be cached.
+local function isPreloadable(instance)
+	for _, className in PRELOAD_CLASSES do
+		if instance:IsA(className) then
+			return true
+		end
+	end
+	return false
+end
+
+-- PreloadAsync has no timeout of its own, and pcall only catches thrown
+-- errors, so one stalled fetch used to freeze the bar (and the whole join)
+-- silently. Each batch runs in its own thread and is abandoned - with a warn
+-- naming what was in it - if it outlives its budget.
+local function preloadBatch(batch, deadline)
+	local finished = false
+	task.spawn(function()
+		pcall(ContentProvider.PreloadAsync, ContentProvider, batch)
+		finished = true
+	end)
+
+	local started = os.clock()
+	while not finished and os.clock() - started < PRELOAD_BATCH_TIMEOUT and os.clock() < deadline do
+		task.wait()
+	end
+
+	if not finished then
+		local names = {}
+		for i = 1, math.min(#batch, 5) do
+			table.insert(names, batch[i]:GetFullName())
+		end
+		warn(`LoadingScreen: preload batch stalled, skipping ({#batch} assets, first: {table.concat(names, ", ")})`)
+	end
+end
+
 local function preloadAssets()
-	local assets = game:GetDescendants()
+	local assets = {}
+	for _, descendant in game:GetDescendants() do
+		if isPreloadable(descendant) then
+			table.insert(assets, descendant)
+		end
+	end
+
 	local total = #assets
 	if total == 0 then
 		setProgress(1)
 		return
 	end
 
+	local deadline = os.clock() + PRELOAD_TOTAL_TIMEOUT
 	local batch = table.create(PRELOAD_BATCH_SIZE)
 	local doneCount = 0
 	for _, asset in assets do
+		if os.clock() >= deadline then
+			warn("LoadingScreen: preload hit the overall time cap, continuing without the rest")
+			break
+		end
 		table.insert(batch, asset)
 		if #batch >= PRELOAD_BATCH_SIZE then
-			pcall(ContentProvider.PreloadAsync, ContentProvider, batch)
+			preloadBatch(batch, deadline)
 			doneCount += #batch
 			setProgress(doneCount / total)
-			table.clear(batch)
+			batch = table.create(PRELOAD_BATCH_SIZE)
 		end
 	end
-	if #batch > 0 then
-		pcall(ContentProvider.PreloadAsync, ContentProvider, batch)
-		doneCount += #batch
-		setProgress(doneCount / total)
+	if #batch > 0 and os.clock() < deadline then
+		preloadBatch(batch, deadline)
 	end
+	setProgress(1)
 end
 
 local function reveal()

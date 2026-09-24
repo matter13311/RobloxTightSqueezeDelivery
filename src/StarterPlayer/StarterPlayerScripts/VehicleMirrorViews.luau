@@ -31,10 +31,12 @@
 -- itself (with a one-time warning) if it isn't, so this works either way.
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local GameSettings = require(script.Parent.GameSettings)
 local VehicleEyePoint = require(script.Parent.VehicleEyePoint)
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 
 local VehicleMirrorViews = {}
 
@@ -675,6 +677,50 @@ local function queryNearby(state)
 	end)
 	if not ok then
 		return nil
+	end
+	return parts
+end
+
+-- A trailer's Body is deliberately CanQuery = false (see setUpTrailerCollision
+-- in TrailerHitch.server.luau - cosmetic panels must never answer someone
+-- else's raycast) and that setting is permanent, not tied to hitch state. But
+-- CanQuery is exactly what GetPartBoundsInRadius filters on, so queryNearby
+-- can NEVER see a trailer's visible geometry, hitched or not - which is why
+-- lining up to one in the mirror didn't work.
+--
+-- Fixed by reading workspace.Trailers directly instead of relying on the
+-- spatial query, the same way state.CarPartList sidesteps it for the driven
+-- car's own bodywork. Distance-gated to sceneRadius() of the chassis so a
+-- trailer parked elsewhere on the map isn't scanned and diffed every refresh
+-- - there are normally only a handful of trailers in the world at all, but
+-- there is no reason to pay for the ones nowhere near the mirror.
+--
+-- Folded into the ordinary `nearby` candidate list rather than pinned like
+-- the driven car: unlike the car, a trailer is not guaranteed to be near the
+-- mirror, so it should rank and compete for the MirrorDetail budget like any
+-- other piece of scenery. In practice it wins anyway - while backing up to
+-- one it is the closest thing behind the truck by a wide margin.
+local function queryTrailerParts(state)
+	local trailersFolder = workspace:FindFirstChild(TrailerHitch.WorkspaceFolderName)
+	if not trailersFolder then
+		return nil
+	end
+
+	local chassisPos = (state.SmoothChassisCF or state.Chassis.CFrame).Position
+	local radius = sceneRadius()
+
+	local parts = nil
+	for _, trailer in trailersFolder:GetChildren() do
+		if trailer:IsA("Model") and trailer.PrimaryPart then
+			if (trailer.PrimaryPart.Position - chassisPos).Magnitude <= radius then
+				parts = parts or {}
+				for _, descendant in trailer:GetDescendants() do
+					if descendant:IsA("BasePart") then
+						table.insert(parts, descendant)
+					end
+				end
+			end
+		end
 	end
 	return parts
 end
@@ -1369,6 +1415,16 @@ local function onRenderStep(dt)
 			debug.profilebegin("MirrorQuery")
 		end
 		nearby = queryNearby(state)
+		-- Trailers never come back from queryNearby (see queryTrailerParts) so
+		-- they are gathered separately and folded into the same candidate list.
+		local trailerParts = queryTrailerParts(state)
+		if trailerParts then
+			if nearby then
+				table.move(trailerParts, 1, #trailerParts, #nearby + 1, nearby)
+			else
+				nearby = trailerParts
+			end
+		end
 		if DEBUG_MIRROR_PROFILE then
 			debug.profileend()
 		end

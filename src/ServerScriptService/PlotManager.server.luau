@@ -220,7 +220,9 @@ local function buildOwnerLabel(screen)
 	gui.Name = "OwnerLabel"
 	gui.Face = Enum.NormalId.Front
 	gui.LightInfluence = 0
-	gui.AlwaysOnTop = true
+	-- Not AlwaysOnTop: that draws the name over a third-person player standing
+	-- in front of the terminal. Normal depth lets the character occlude it.
+	gui.AlwaysOnTop = false
 	gui.Enabled = false
 
 	local label = Instance.new("TextLabel")
