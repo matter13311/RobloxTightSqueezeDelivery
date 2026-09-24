@@ -319,6 +319,32 @@ function U.quad(parent, name, p1, p2, p3, p4, thick, props)
 	U.tri(parent, name, p1, p3, p4, thick, props)
 end
 
+-- One paving quad, as cheaply as it can be built. Call it the way U.quad is
+-- called on a road strip: p1-p2 is the cross-section at one end, p4-p3 the
+-- cross-section at the other.
+--
+-- When that quad is an exact rectangle lying flat - which is EVERY segment of
+-- a straight run, and straight runs are most of the city - it is a single box
+-- part. U.quad would spend four WedgeParts on the same rectangle, and on a
+-- long connector that difference is thousands of parts the mirrors then have
+-- to rank and draw (see VehicleMirrorViews' query cap). Anything that is not
+-- a flat rectangle - the curves - falls back to the exact triangle pair, so
+-- neighbouring surfaces still share edges exactly and nothing z-fights.
+function U.slab(parent, name, p1, p2, p3, p4, thick, props)
+	local y = p1.Y
+	if math.abs(p2.Y - y) < 1e-3 and math.abs(p3.Y - y) < 1e-3 and math.abs(p4.Y - y) < 1e-3 then
+		local w0, w1 = p2 - p1, p3 - p4
+		local run = p4 - p1
+		if (w0 - w1).Magnitude < 0.02 and w0.Magnitude > 0.05 and run.Magnitude > 0.05
+			and math.abs(run:Dot(w0.Unit)) < 0.02
+		then
+			local c = (p1 + p2 + p3 + p4) / 4 - Vector3.new(0, thick / 2, 0)
+			return U.part(parent, name, Vector3.new(w0.Magnitude, thick, run.Magnitude), CFrame.lookAt(c, c + run), props)
+		end
+	end
+	U.quad(parent, name, p1, p2, p3, p4, thick, props)
+end
+
 -- A wall along a polyline of base points (y = foot of the wall, may slope),
 -- one box per span. Each box is lengthened only by what closes the outside
 -- corner of its bend, so straight runs abut exactly (no coplanar overlap to

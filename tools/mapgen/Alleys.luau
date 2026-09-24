@@ -23,6 +23,8 @@ local Props = require(script.Parent.Props)
 
 local Alleys = {}
 
+-- litter templates that come out too big beside a vehicle, and by how much
+local LITTER_SCALE = { garbage_milkcarton001a = 0.55 }
 local CHANNEL = 14
 local CAR_BAND = 9
 
@@ -243,6 +245,14 @@ function Alleys.DressLeg(folder, kit, leg, avoid, ctx)
 			local t = kit.Props:FindFirstChild(U.pick(flats))
 			if t then
 				local c = U.place(t, folder, x, 0, z, CFrame.Angles(0, U.range(0, 6.28), 0).LookVector)
+					-- some litter reads too big from a driver's seat; shrink it
+					-- about its base so it still sits on the ground
+					local shrink = LITTER_SCALE[t.Name]
+					if shrink and c:IsA("BasePart") then
+						local h = c.Size.Y
+						c.Size *= shrink
+						c.CFrame -= Vector3.new(0, h * (1 - shrink) / 2, 0)
+					end
 				for _, d in (c:IsA("Model") and c:GetDescendants() or { c }) do
 					if d:IsA("BasePart") then
 						d.CanCollide = false

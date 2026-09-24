@@ -64,18 +64,55 @@ L.Express = { deckTop = 24, deckThick = 2, width = 28, rampLength = 200, pillarE
 -- end, runs over Market's west (local -x) lanes to the zone edge, then over
 -- the connector's Market road to the next zone. Centre line at local x
 -- LinkX inside a zone; high walls all the way; it climbs to LinkFlyoverTop to
--- clear the railway. LinkMerge = how long the deck and link run side by side.
+-- clear the railway. LinkMerge = length of the S-curve taper that peels the
+-- link off the deck (max ~16 deg of heading change; the shortest deck, Harbour's,
+-- is 166 long, so keep it under that).
 L.LinkX = -28.5
 L.LinkWallHeight = 12
 L.LinkFlyoverTop = 34
-L.LinkMerge = 80
--- Connector roads narrow to tight local streets once they leave a zone.
-L.ConnectorWidths = { Market = 36, Street = 26 }
+L.LinkMerge = 150
+-- Straight pieces the taper is cut into. Each one costs 4 wedges of deck plus
+-- a wall box, so this is the knob for part count vs smoothness (16 looked
+-- silky; 5 is visibly faceted but still turns in gentle ~9 deg steps).
+L.LinkTaperSteps = 5
+-- Market narrows to a tight local street once it leaves a zone.
+L.ConnectorWidths = { Market = 36 }
+
+-- How far the terrace beside a connector road reaches out from the kerb:
+-- SidewalkWidth of footpath, then the buildings. Zone needs it too, to know
+-- how wide a mouth to leave in its end wall for the connector to pass.
+L.ConnectorBand = L.SidewalkWidth + 30
+
+-- How finely a connector is sampled, and so how many parts it costs. Every
+-- surface on a connector - road, pavements, express deck - is tiled from the
+-- SAME sample points, so these two numbers set the part count of the whole
+-- thing almost on their own.
+--
+-- v4.3 raised them a long way (both were effectively 16). The curves used to
+-- be tiled so finely that a connector ran to thousands of triangles, and the
+-- door mirrors - which can only rank and draw so many parts before the
+-- spatial query stops returning a stable set - dropped triangles out of the
+-- road behind you as you drove. The turns now read as polygons rather than
+-- smooth arcs, which is the trade that was wanted: the samples still share
+-- their edges exactly, so a blockier curve has no gaps, no overlaps and
+-- nothing to flicker.
+L.ConnectorSample = { Straight = 40, Curve = 56, MinCurve = 5 }
 
 -- Angled alley legs: perpendicular width = max(alley w + Extra, Min), and the
 -- straight legs either side widen to the angled leg's horizontal width for
 -- Flare studs before the bend, so a vehicle can start and finish the turn.
 L.AlleyCurve = { Extra = 4, Min = 17, Flare = 14 }
+
+-- Roadworks (each zone's `Roadworks` list; override per entry with `half`).
+-- Half-width of the closed-off works in the inner Market lane, and so also
+-- half the Static obstacle the NPC traffic changes lanes around.
+--
+-- 4.3, not the 6 this used to be: at 6 the escape lane past the works was too
+-- narrow for a wide vehicle (a Box Truck is 11.3) and NPC cars queued in it
+-- instead of getting by. Narrowed by hand in Studio at Old Town first - and
+-- in TrafficRoutes.luau, which carried a warning that regenerating would
+-- revert it; regenerating now reproduces 15.7/24.3 exactly, so it will not.
+L.RoadworksHalf = 4.3
 
 L.SpaceSize = Vector2.new(16, 42)
 L.RigSpaceSize = Vector2.new(18, 82)
@@ -97,8 +134,7 @@ L.World = { x1 = -2400, z1 = -3900, x2 = 900, z2 = 800 } -- the sea
 -- An alley's north end x must EQUAL the next segment's south end x on the
 -- same side, so the two mouths face each other across the cross road and a
 -- driver coming out can see straight down the next alley (play testers who
--- came out of Bin Juice Row missed Mirror Snapper 44 studs to the left). The
--- ends that meet a connector's tight lane stay where the connector expects.
+-- came out of Bin Juice Row missed Mirror Snapper 44 studs to the left).
 
 L.Zones = {
 	{
@@ -165,7 +201,15 @@ L.Zones = {
 			{ Kind = "Paifang", x = 150, z = -656, Label = "Noodle Row Gate" },
 			{ Kind = "Church", x = 215, z = -780, Label = "Canal Church" },
 		},
-		Roadworks = { { lane = "NBInner", z1 = -480, z2 = -440 } },
+		-- ExtraCones: a cone at the works' south mouth, added by hand in Studio
+		Roadworks = { { lane = "NBInner", z1 = -480, z2 = -440, ExtraCones = { { 20, -440.5 } } } },
+		-- Hand moves the generator can't derive, applied after the zone is
+		-- built (local frame). Any part in `Folder` named in `Names` within 2.5
+		-- studs (XZ) of `From` is shifted by `Delta`. This blade sat where the
+		-- express deck blocked it, so it was slid up the street.
+		Nudges = {
+			{ Folder = "Signs", Names = { "AlleyNeonBlade", "AlleyNeonEdge" }, From = Vector3.new(41, 12.1, -58.4), Delta = Vector3.new(0, 0, -21.5) },
+		},
 		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
 		-- for where they are allowed: never on a stretch a Block circuit drives).
 		Incidents = {
@@ -316,15 +360,46 @@ L.Zones = {
 -- Connectors
 --=============================================================================
 
--- Each connector carries the three roads (plus one tight lane) from the end of
--- one zone to the start of the next. Roads are built along smooth curves from
--- a list of "stations": world position + heading for each road. Between the
--- zones the roads pinch into a bundle 100 apart, cross a gated bridge or
--- tunnel together, then fan back out.
+-- Each connector carries ONE local road - Market, under the express link -
+-- from the end of one zone to the start of the next, along a smooth curve
+-- through a straight "bundle" section where it crosses a gated bridge or
+-- tunnel.
 --
--- `Lane` is the tight lane's lateral position in the bundle (the alley spine
--- line it continues): the canal footbridge in C1, the low rail tunnel in C2.
-L.Bundle = { West = -100, Market = 0, East = 100 }
+-- v4.3: there used to be FOUR local roads here (West St, Market, East St and
+-- a tight lane) plus the express link. Four parallel ways between two zones
+-- meant none of them was ever busy, so the slow local route was no slower
+-- than the toll road and the permit bought nothing. One local road carries
+-- all of it, and the Hazards below make sure it earns its reputation. West St
+-- and East St now stop at the water's edge at each zone end (Zone rails them
+-- off), and traffic for the next zone turns onto Market at the last cross
+-- road, which every zone already has within ~20 studs of its edge.
+L.Bundle = { Market = 0 }
+
+-- What is parked on the one local road, as a fraction of the way along it
+-- (0 = leaving the first zone, 1 = arriving at the second). `side` is which
+-- half of the road it takes: -1 is the driver's left leaving the first zone.
+-- Anything landing on the bridge/tunnel span is skipped by the builder, and
+-- every piece leaves the other half of the 36-wide road open.
+--
+--   works      a dug-up lane: trench, plates, barriers, cones, ROADWORKS
+--   breakdown  a car with hazards, a warning triangle and a cone
+--   roadblock  barriers across one half, SINGLE FILE, a taper of cones
+--   rubbish    a skip, bins and bags spilling off the kerb into the lane
+local HAZARDS_CANAL = {
+	{ at = 0.14, kind = "rubbish", side = 1 },
+	{ at = 0.58, kind = "works", side = -1 }, -- the Canal bundle IS the bridge: nothing fits between 0.17 and 0.38
+	{ at = 0.44, kind = "breakdown", side = 1 },
+	{ at = 0.72, kind = "roadblock", side = -1 },
+	{ at = 0.86, kind = "rubbish", side = -1 },
+}
+local HAZARDS_RAIL = {
+	{ at = 0.1, kind = "breakdown", side = -1 },
+	{ at = 0.22, kind = "works", side = 1 },
+	{ at = 0.34, kind = "rubbish", side = -1 },
+	{ at = 0.62, kind = "roadblock", side = 1 },
+	{ at = 0.76, kind = "works", side = -1 },
+	{ at = 0.9, kind = "rubbish", side = 1 },
+}
 
 L.Connectors = {
 	{
@@ -333,7 +408,7 @@ L.Connectors = {
 		To = 2,
 		Permit = "CanalBridge",
 		Crossing = "Bridge",
-		TightLane = { from = "West", bundle = -60, w = 11.5 },
+		Hazards = HAZARDS_CANAL,
 		-- bundle centre line: heading north along x = 0
 		Bundle = { origin = Vector3.new(0, 0, -1240), dir = Vector3.new(0, 0, -1), length = 80 },
 		ConvergeLength = 250, -- zone exit -> bundle start
@@ -345,7 +420,7 @@ L.Connectors = {
 		To = 3,
 		Permit = "HarbourTunnel",
 		Crossing = "Tunnel",
-		TightLane = { from = "East", bundle = 60, w = 11.5, clear = 9 },
+		Hazards = HAZARDS_RAIL,
 		-- bundle heading north along x = -1760
 		Bundle = { origin = Vector3.new(-1760, 0, -2360), dir = Vector3.new(0, 0, -1), length = 240 },
 		Gap = { from = 80, to = 160 }, -- the embankment, along the bundle

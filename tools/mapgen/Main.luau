@@ -168,23 +168,13 @@ function Main.Run(seed)
 	for _, spec in L.Zones do
 		table.insert(zones, { spec = spec })
 	end
-	-- the tight lanes a connector carries join alley spines at either end
-	local function spineX(zone, segIndex, side, which)
-		local seg = zone.spec.Segments[segIndex]
-		local a = seg[side]
-		return which == "north" and a.Path[#a.Path].x or a.Path[1].x, a.w
-	end
 	for i, z in zones do
 		local ctx = {}
 		for _, c in L.Connectors do
 			if c.From == i then
-				local x, w = spineX(z, #z.spec.Segments, c.TightLane.from, "north")
-				ctx.exitLane = { x = x, w = w }
 				ctx.linkNorth = true -- the express link leaves from this end
 			end
 			if c.To == i then
-				local x, w = spineX(z, 1, c.TightLane.from, "south")
-				ctx.entryLane = { x = x, w = w }
 				ctx.linkSouth = true
 			end
 		end
@@ -206,10 +196,7 @@ function Main.Run(seed)
 
 	-- connectors
 	for _, c in L.Connectors do
-		local from, to = zones[c.From], zones[c.To]
-		local laneFromX = spineX(from, #from.spec.Segments, c.TightLane.from, "north")
-		local laneToX = spineX(to, 1, c.TightLane.from, "south")
-		Connector.Build(map, kit, c, from, to, { permitGates = permitGates, laneFromX = laneFromX, laneToX = laneToX })
+		Connector.Build(map, kit, c, zones[c.From], zones[c.To], { permitGates = permitGates })
 	end
 
 	-- terminal
@@ -257,8 +244,8 @@ end
 --
 --   require(game.ServerStorage.MapGen.Main).RunZones()
 --
--- Safe as long as the zone ENDS the connectors join (Layout's spine x at a
--- connector's tight lane, the road positions, the zone frames) are unchanged.
+-- Safe as long as the zone ENDS the connectors join (Market's position and
+-- width at the zone edge, and the zone frames) are unchanged.
 -- The zones are built first in Run too, so the same seed gives the same zones.
 function Main.RunZones(seed)
 	U.reseed(seed)
@@ -290,13 +277,9 @@ function Main.RunZones(seed)
 		local ctx = {}
 		for _, c in L.Connectors do
 			if c.From == i then
-				local a = z.spec.Segments[#z.spec.Segments][c.TightLane.from]
-				ctx.exitLane = { x = a.Path[#a.Path].x, w = a.w }
 				ctx.linkNorth = true
 			end
 			if c.To == i then
-				local a = z.spec.Segments[1][c.TightLane.from]
-				ctx.entryLane = { x = a.Path[1].x, w = a.w }
 				ctx.linkSouth = true
 			end
 		end
@@ -329,6 +312,63 @@ function Main.RunZones(seed)
 	kit.Root:SetAttribute("TrafficRoutesSource", Traffic.Source(zones))
 
 	return string.format("Zones rebuilt in %.1fs: %d destinations", os.clock() - t0, #destinations:GetChildren())
+end
+
+-- Rebuilds ONLY the connectors between the zones - the one local road each
+-- carries, its pavements and buildings, the crossing, the express link over
+-- it, the permit gates and the hazards parked on it:
+--
+--   require(game.ServerStorage.MapGen.Main).RunConnectors()
+--
+-- Leaves the zones, the Terminal (hand-edited in Studio since 2026-09-21) and
+-- everything in Delivery alone, so it is the one to use while tuning
+-- Layout's ConnectorSample or Hazards. It has to rebuild the zones in memory
+-- first - a connector is drawn from the exact edge each zone ends at - but
+-- those throwaway models never reach the world, and the same seed gives the
+-- same zones, so the connectors land where the real ones do.
+function Main.RunConnectors(seed)
+	U.reseed(seed)
+	local t0 = os.clock()
+	local kit = ensureKit()
+	local map = workspace:WaitForChild("Map")
+	local permitGates = map.Permits.PermitGates
+
+	local zones = {}
+	for _, spec in L.Zones do
+		table.insert(zones, { spec = spec })
+	end
+	for i, z in zones do
+		local ctx = {}
+		for _, c in L.Connectors do
+			if c.From == i then
+				ctx.linkNorth = true
+			end
+			if c.To == i then
+				ctx.linkSouth = true
+			end
+		end
+		z.result = Zone.Build(z.spec, kit, ctx)
+		z.result.model:Destroy() -- only the edges it reports are wanted here
+	end
+
+	-- the gates belong to the connectors, so clear the ones they own first
+	for _, g in permitGates:GetChildren() do
+		g:Destroy()
+	end
+	local parts = 0
+	for _, c in L.Connectors do
+		local old = map:FindFirstChild("Connector_" .. c.Key)
+		if old then
+			old:Destroy()
+		end
+		local f = Connector.Build(map, kit, c, zones[c.From], zones[c.To], { permitGates = permitGates })
+		for _, d in f:GetDescendants() do
+			if d:IsA("BasePart") then
+				parts += 1
+			end
+		end
+	end
+	return string.format("%d connectors rebuilt in %.1fs: %d parts", #L.Connectors, os.clock() - t0, parts)
 end
 
 return Main

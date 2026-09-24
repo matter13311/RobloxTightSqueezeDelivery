@@ -1,25 +1,38 @@
--- The roads between two zones, in WORLD space. Each road runs:
+-- The road between two zones, in WORLD space. It runs:
 --
 --   zone exit --(smooth curve)--> bundle start --(straight)--> bundle end
 --   --(smooth curve)--> next zone's entry
 --
--- The roads pinch together into a "bundle" (100 apart) for the crossing: a
--- water gap bridged road by road (Canal), or a rail embankment each road
--- tunnels through (Rail). Every road - including the tight lane - is gated by
--- permit where it starts to cross.
+-- The straight "bundle" section is where it crosses: a water gap it bridges
+-- (Canal) or a rail embankment it tunnels through (Rail), gated by permit
+-- where the crossing starts.
 --
--- Between the zones the city carries on: the roads narrow to tight local
--- streets (Market 36, the streets 26) lined with buildings, no verges. Every
--- surface on the curves - roads, pavements, the express deck - is tiled from
--- exact triangles (U.tri), so nothing overlaps and nothing flickers.
+-- Between the zones the city carries on: Market narrows to a tight local
+-- street (36) lined with buildings, no verges.
 --
--- Above Market runs the EXPRESS LINK: a walled elevated road that branches
--- off one zone's express deck (Zone builds that end of it) and joins the next
+-- Above it runs the EXPRESS LINK: a walled elevated road that branches off
+-- one zone's express deck (Zone builds that end of it) and joins the next
 -- zone's. It is part of the toll road, and has its own permit gate.
 --
--- All roads are sampled at the SAME curve parameters so point i on one road
--- sits beside point i on its neighbour; everything between them is built quad
--- by quad from those pairs.
+-- ONE LOCAL ROAD (v4.3). There used to be four down here - West St, Market,
+-- East St and a tight lane - and the trouble with four was that none of them
+-- was ever busy: the local route cost nothing but distance, so the express
+-- permit bought nothing. Now everything not paying the toll shares Market,
+-- and the Hazards in Layout park roadworks, breakdowns, roadblocks and
+-- rubbish on it so the slow way round is genuinely slow. The buildings that
+-- lined the other three roads went with them.
+--
+-- PART COUNT. Every surface here - road, pavements, express deck - is tiled
+-- from the SAME sample points, so a surface's neighbour shares its edge
+-- exactly and nothing overlaps or flickers. A straight segment is ONE box
+-- part (U.slab); only the curves spend exact triangles (U.tri), and they are
+-- sampled coarsely enough (L.ConnectorSample) to read as polygons. That
+-- matters because the door mirrors can only rank and draw so many parts
+-- before their spatial query stops returning a stable set, and the old
+-- finely-tiled connectors were dense enough to drop triangles out of the
+-- road behind you.
+
+local CollectionService = game:GetService("CollectionService")
 
 local U = require(script.Parent.Util)
 local L = require(script.Parent.Layout)
@@ -27,14 +40,19 @@ local Style = require(script.Parent.Style)
 
 local Connector = {}
 
-local STEP = 16
+local SAMPLE = L.ConnectorSample
+local STEP = SAMPLE.Straight
 local SW = L.SidewalkWidth
-local OUTER = SW + 30 -- pavement + building row outside the outermost roads
-local DMAX = 40 -- deepest a building gets
+local OUTER = L.ConnectorBand -- footpath + terrace outside the road
 local METAL = Color3.fromRGB(70, 72, 78)
 local BRICK = Color3.fromRGB(125, 72, 56)
 local YELLOW = Color3.fromRGB(230, 185, 40)
 local CONCRETE = Color3.fromRGB(170, 166, 158)
+local ORANGE = Color3.fromRGB(240, 110, 20)
+local HAZARD_OFF = Color3.fromRGB(120, 60, 10) -- StalledCarHazards.client blinks these
+local BOARD = Color3.fromRGB(235, 235, 230)
+local BOARD_RED = Color3.fromRGB(190, 45, 40)
+local DECO = { CanCollide = false, CanQuery = false, CastShadow = false }
 
 local function rightOf(d)
 	return Vector3.new(-d.Z, 0, d.X)
@@ -86,12 +104,263 @@ local function sampleRoad(p0, d0, b0, b1, dir, p1, d1, n1, n3, gap, length)
 	return pts, inGap, blend, dedup
 end
 
-local function segDist(p, a, b)
-	local ab = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
-	local ap = Vector3.new(p.X - a.X, 0, p.Z - a.Z)
-	local l2 = ab:Dot(ab)
-	local t = l2 > 0 and math.clamp(ap:Dot(ab) / l2, 0, 1) or 0
-	return (ap - ab * t).Magnitude
+--=============================================================================
+-- Hazards: what makes the one local road the slow way round
+--=============================================================================
+-- With a single local road between zones, this is where the "inconvenient
+-- route" actually lives. Each piece takes ONE half of the 36-wide road and
+-- leaves the other open, so the road is always passable - just slow, blind
+-- and awkward in a long vehicle - and each is built around a sample point on
+-- the curve, in world space.
+--
+-- `x` is the frame a piece is built in: x.c the road centre at that sample,
+-- x.rgt across it, x.fwd along it (towards the second zone), x.half the road
+-- half-width there, x.side which half the piece takes.
+
+local function hzAt(x, lat, along, y)
+	return x.c + x.rgt * lat + x.fwd * (along or 0) + Vector3.new(0, y or 0, 0)
+end
+
+local function hzCone(x, lat, along)
+	local p = hzAt(x, lat, along, 1.2)
+	U.part(x.parent, "Cone", Vector3.new(1.2, 2.4, 1.2), CFrame.new(p), { Material = Enum.Material.SmoothPlastic, Color = ORANGE })
+	U.part(x.parent, "ConeStripe", Vector3.new(1.3, 0.35, 1.3), CFrame.new(p + Vector3.new(0, 0.3, 0)), {
+		Material = Enum.Material.SmoothPlastic, Color = Color3.new(1, 1, 1), CanCollide = false, CanQuery = false, CastShadow = false,
+	})
+end
+
+-- a red-and-white board on legs. `face` is the way it looks; its width runs
+-- across that, so pass x.fwd for a board ACROSS the road and x.rgt for one
+-- running ALONG it.
+local function hzBarrier(x, lat, along, width, face)
+	local p = hzAt(x, lat, along, 3.1)
+	local cf = CFrame.lookAt(p, p + face)
+	U.part(x.parent, "Barrier", Vector3.new(width, 1.1, 0.8), cf, { Material = Enum.Material.SmoothPlastic, Color = BOARD })
+	for k = -1, 1 do
+		U.part(x.parent, "BarrierStripe", Vector3.new(width / 5, 1.16, 0.9), cf * CFrame.new(k * width / 3, 0, 0), {
+			Material = Enum.Material.SmoothPlastic, Color = BOARD_RED, CanCollide = false, CanQuery = false, CastShadow = false,
+		})
+	end
+	for _, sx in { -1, 1 } do
+		U.part(x.parent, "BarrierLeg", Vector3.new(0.5, 3.4, 0.5), cf * CFrame.new(sx * (width / 2 - 0.6), -1.4, 0), {
+			Material = Enum.Material.Metal, Color = METAL,
+		})
+	end
+end
+
+local function hzSign(x, text, lat, along, colour)
+	local p = hzAt(x, lat, along, 3.6)
+	local cf = CFrame.lookAt(p, p + x.fwd)
+	local sign = U.part(x.parent, "HazardSign", Vector3.new(7, 2.6, 0.25), cf, {
+		Material = Enum.Material.SmoothPlastic, Color = colour, CanCollide = false, CanQuery = false,
+	})
+	for _, fc in { Enum.NormalId.Front, Enum.NormalId.Back } do
+		U.label(sign, fc, text, { PixelsPerStud = 20, TextColor3 = Color3.new(0, 0, 0) })
+	end
+	for _, dx in { -2.9, 2.9 } do
+		U.part(x.parent, "HazardSignLeg", Vector3.new(0.25, 2.3, 0.25), cf * CFrame.new(dx, -2.45, 0), {
+			Material = Enum.Material.Metal, Color = METAL, CanCollide = false, CanQuery = false,
+		})
+	end
+end
+
+-- Cones closing a half of the road off, narrowing from the centre line out
+-- to `outer`, starting `from` studs away and walking in. Called once per
+-- direction: the road is two-way, and a taper facing one way only leaves the
+-- other lot meeting a barrier with no warning at all.
+local function hzTaper(x, outer, from, count, step)
+	local dir = from < 0 and 1 or -1
+	for k = 0, count - 1 do
+		hzCone(x, x.side * (1.5 + (math.abs(outer) - 1.5) * k / (count - 1)), from + dir * k * step)
+	end
+end
+
+local CIVILIAN = { "Blue Sedan", "Green Station Wagon", "Red Hatchback", "Blue Pickup", "Taxi" }
+
+local function hzCar(x, lat, along, yawDeg)
+	local p = hzAt(x, lat, along, 0)
+	local look = x.fwd
+	if yawDeg and yawDeg ~= 0 then
+		look = CFrame.Angles(0, math.rad(yawDeg), 0):VectorToWorldSpace(look)
+	end
+	local t = x.kit.Cars and x.kit.Cars:FindFirstChild(U.pick(CIVILIAN))
+	if not t then
+		-- no kit car: a car-sized block still reads as something in the way
+		local cf = CFrame.lookAt(p + Vector3.new(0, 2.6, 0), p + Vector3.new(0, 2.6, 0) + look)
+		return U.part(x.parent, "StalledCar", Vector3.new(8, 5.2, 17), cf, { Material = Enum.Material.Metal, Color = Color3.fromRGB(110, 115, 120) })
+	end
+	local m = U.place(t, x.parent, p.X, 0, p.Z, look)
+	local cf, size = m:GetBoundingBox()
+	for _, sx in { -1, 1 } do
+		for _, sz in { -1, 1 } do
+			U.part(m, "HazardLight", Vector3.new(0.9, 0.5, 0.25),
+				cf * CFrame.new(sx * (size.X / 2 - 0.9), -size.Y * 0.12, sz * (size.Z / 2 + 0.02)), {
+					Material = Enum.Material.SmoothPlastic, Color = HAZARD_OFF, CanCollide = false, CanQuery = false, CastShadow = false,
+				})
+		end
+	end
+	CollectionService:AddTag(m, "StalledCar")
+	return m
+end
+
+-- a MapKit prop if the kit has one, otherwise a rough box of the same size
+local function hzProp(x, names, lat, along, y, fallback)
+	local p = hzAt(x, lat, along, y or 0)
+	local t
+	for _, n in names do
+		t = x.kit.Props and x.kit.Props:FindFirstChild(n)
+		if t then
+			break
+		end
+	end
+	if t then
+		local look = CFrame.Angles(0, U.range(0, 6.28), 0):VectorToWorldSpace(x.fwd)
+		local c = U.place(t, x.parent, p.X, p.Y, p.Z, look)
+		if fallback.loose then
+			for _, d in (c:IsA("Model") and c:GetDescendants() or { c }) do
+				if d:IsA("BasePart") then
+					d.CanCollide = false
+					d.CanTouch = false
+				end
+			end
+		end
+		return c
+	end
+	return U.part(x.parent, fallback.name, fallback.size, CFrame.new(p + Vector3.new(0, fallback.size.Y / 2, 0)) * CFrame.Angles(0, U.range(0, 6.28), 0), {
+		Material = fallback.material or Enum.Material.SmoothPlastic,
+		Color = fallback.color,
+		CanCollide = not fallback.loose,
+	})
+end
+
+local HAZ = {}
+
+-- a dug-up half: trench, spoil, a plate, barriers all round and a taper in
+function HAZ.works(x)
+	local sd = x.side
+	local inner, outer = sd * 2.5, sd * (x.half - 0.5)
+	local mid = (inner + outer) / 2
+	local wide = math.abs(outer - inner)
+	U.part(x.parent, "Excavation", Vector3.new(wide - 2.5, 0.1, 26), CFrame.lookAt(hzAt(x, mid, 0, 0.06), hzAt(x, mid, 1, 0.06)), {
+		Material = Enum.Material.Ground, Color = Color3.fromRGB(58, 48, 38), CanCollide = false, CanQuery = false, CastShadow = false,
+	})
+	U.part(x.parent, "SteelPlate", Vector3.new(wide - 4, 0.3, 7), CFrame.lookAt(hzAt(x, mid, 4, 0.15), hzAt(x, mid, 5, 0.15)), {
+		Material = Enum.Material.DiamondPlate, Color = Color3.fromRGB(105, 105, 110),
+	})
+	for _, along in { -11, 11 } do
+		U.part(x.parent, "Spoil", Vector3.new(wide - 4, 2.2, 5), CFrame.lookAt(hzAt(x, mid, along, 1.1), hzAt(x, mid, along + 1, 1.1)), {
+			Material = Enum.Material.Ground, Color = Color3.fromRGB(78, 64, 50),
+		})
+	end
+	for _, along in { -15, 15 } do
+		hzBarrier(x, mid, along, wide, x.fwd)
+	end
+	for _, along in { -7.5, 7.5 } do
+		hzBarrier(x, inner, along, 15, x.rgt * -sd)
+	end
+	hzTaper(x, outer, -34, 4, 5)
+	hzTaper(x, outer, 34, 4, 5)
+	for _, along in { -42, 42 } do
+		hzSign(x, "ROADWORKS", mid, along, Color3.fromRGB(240, 150, 20))
+	end
+end
+
+-- one car with its hazards on, a triangle behind it and a cone
+function HAZ.breakdown(x)
+	local sd = x.side
+	local lane = sd * x.half * 0.55
+	hzCar(x, lane, 0, 5 * sd)
+	local p = hzAt(x, lane, -16, 1)
+	local tri = U.part(x.parent, "WarningTriangle", Vector3.new(1.8, 1.6, 0.1), CFrame.lookAt(p, p + x.fwd), {
+		Transparency = 1, CanCollide = false, CanQuery = false, CastShadow = false,
+	})
+	for _, fc in { Enum.NormalId.Front, Enum.NormalId.Back } do
+		U.label(tri, fc, "\u{25B2}", { PixelsPerStud = 30, TextColor3 = Color3.fromRGB(230, 30, 30) })
+	end
+	hzCone(x, lane, -23)
+end
+
+-- half the road boarded off, with a long taper you have to read early
+function HAZ.roadblock(x)
+	local sd = x.side
+	local inner, outer = sd * 2.5, sd * (x.half - 0.5)
+	local mid = (inner + outer) / 2
+	local wide = math.abs(outer - inner)
+	hzBarrier(x, mid, 0, wide, x.fwd)
+	hzBarrier(x, mid, 3.5, wide, x.fwd)
+	hzSign(x, "SINGLE FILE", mid, -6, BOARD)
+	hzTaper(x, outer, -32, 5, 5.5)
+	hzCar(x, mid, 16, -4 * sd)
+	-- the stalled car is 16 up the closed half, so the far taper starts past it
+	hzTaper(x, outer, 40, 4, 5)
+	hzSign(x, "SINGLE FILE", mid, 48, BOARD)
+end
+
+-- a skip and the bins around it, spilling off the kerb into the lane
+function HAZ.rubbish(x)
+	local sd = x.side
+	local kerb = sd * (x.half - 4)
+	U.part(x.parent, "Skip", Vector3.new(9, 5.5, 16), CFrame.lookAt(hzAt(x, kerb, 0, 2.75), hzAt(x, kerb, 1, 2.75)), {
+		Material = Enum.Material.CorrodedMetal, Color = Color3.fromRGB(150, 95, 40),
+	})
+	local bins = { Color3.fromRGB(40, 90, 50), Color3.fromRGB(60, 60, 64), Color3.fromRGB(40, 70, 130) }
+	for k, col in bins do
+		local p = hzAt(x, sd * (x.half + 3), -12 + k * 3.4, 0)
+		U.part(x.parent, "WheelieBin", Vector3.new(2.9, 3.1, 3), CFrame.lookAt(p + Vector3.new(0, 2.05, 0), p + Vector3.new(0, 2.05, 0) + x.rgt * sd), {
+			Material = Enum.Material.SmoothPlastic, Color = col,
+		})
+	end
+	for k = 0, 4 do
+		hzProp(x, { "garbage_bag001a", "trashcluster01a_cluster", "garbage_carboard001a" },
+			sd * U.range(x.half * 0.35, x.half - 1), U.range(-16, 16), 0,
+			{ name = "GarbageBag", size = Vector3.new(2.6, 1.8, 2.6), color = Color3.fromRGB(35, 35, 38), loose = true })
+	end
+	hzProp(x, { "garbage128_composite001a", "garbage128_composite001b", "food_pile01" }, sd * (x.half - 2), -19, 0,
+		{ name = "GarbagePile", size = Vector3.new(5, 1.6, 4), color = Color3.fromRGB(70, 62, 52), loose = true })
+	hzCone(x, sd * x.half * 0.35, -21)
+end
+
+-- `road` is the built Market road: pts, right, ws and inGap per sample.
+local function buildHazards(f, kit, spec, road, count, gapFromI, gapToI)
+	local list = spec.Hazards
+	if not list or #list == 0 then
+		return
+	end
+	local hz = U.folder(f, "Hazards")
+	-- arc length, so `at` is a fraction of the DRIVE rather than of the sample
+	-- count (the curves are sampled coarser than the straight)
+	local cum, total = { 0 }, 0
+	for i = 2, count do
+		total += (road.pts[i] - road.pts[i - 1]).Magnitude
+		cum[i] = total
+	end
+	local sFrom, sTo = cum[gapFromI], cum[gapToI]
+	for _, h in list do
+		local target = h.at * total
+		local i = count - 1
+		for k = 2, count - 1 do
+			if cum[k] >= target then
+				i = k
+				break
+			end
+		end
+		-- never on the bridge/tunnel span, and never close enough to the
+		-- permit gate to be mistaken for part of it
+		local clear = not road.inGap[i] and not road.inGap[i - 1]
+			and math.abs(cum[i] - sFrom) > 70 and math.abs(cum[i] - sTo) > 70
+		if clear and HAZ[h.kind] then
+			local rgt = road.right[i]
+			HAZ[h.kind]({
+				parent = U.model(hz, h.kind .. "_" .. math.floor(h.at * 100)),
+				kit = kit,
+				c = road.pts[i],
+				rgt = rgt,
+				fwd = Vector3.new(rgt.Z, 0, -rgt.X),
+				half = road.ws[i] / 2,
+				side = h.side,
+			})
+		end
+	end
 end
 
 function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
@@ -110,24 +379,18 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 	local d0 = ffr.LookVector
 	local d1 = tfr.LookVector
 	local CW = L.ConnectorWidths
-	-- road list in left-to-right order across the bundle
-	local tl = spec.TightLane
+	-- the one local road the connector carries, kept as a list: the crossing,
+	-- the pavements and the permit gates are all written per road
 	local roads = {
-		{ key = "West", zw = L.WestSt.w, cw = CW.Street, fromX = L.WestSt.x, toX = L.WestSt.x, off = L.Bundle.West },
 		{ key = "Market", zw = L.Market.w, cw = CW.Market, fromX = 0, toX = 0, off = L.Bundle.Market },
-		{ key = "East", zw = L.EastSt.w, cw = CW.Street, fromX = L.EastSt.x, toX = L.EastSt.x, off = L.Bundle.East },
-		{ key = "Lane", zw = tl.w, cw = tl.w, fromX = ctx.laneFromX, toX = ctx.laneToX, off = tl.bundle, tight = true, clear = tl.clear },
 	}
-	table.sort(roads, function(a, c)
-		return a.off < c.off
-	end)
-	-- same sample counts for every road
 	local mStart = ffr * Vector3.new(0, 0, fromZone.result.exitEdge)
 	local mEnd = tfr * Vector3.new(0, 0, toZone.result.entryEdge)
 	local bm0 = b.origin
 	local bm1 = b.origin + dir * b.length
-	local n1 = math.max(6, math.ceil((bm0 - mStart).Magnitude * 1.3 / STEP))
-	local n3 = math.max(6, math.ceil((mEnd - bm1).Magnitude * 1.3 / STEP))
+	-- 1.3 is roughly how much longer the hermite arc is than its chord
+	local n1 = math.max(SAMPLE.MinCurve, math.ceil((bm0 - mStart).Magnitude * 1.3 / SAMPLE.Curve))
+	local n3 = math.max(SAMPLE.MinCurve, math.ceil((mEnd - bm1).Magnitude * 1.3 / SAMPLE.Curve))
 	local market
 	local stations
 	for _, r in roads do
@@ -142,9 +405,8 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 		for i, bl in r.blend do
 			r.ws[i] = r.zw + (r.cw - r.zw) * bl
 		end
-		-- kerb-to-building setback: pavement for streets, none for the walled lane
-		r.front = r.tight and 1.2 or SW
-		r.edge = r.tight and 1.2 or 0
+		r.front = SW -- kerb-to-building setback
+		r.edge = 0
 		if r.key == "Market" then
 			market = r
 		end
@@ -201,17 +463,6 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 		end
 		return false
 	end
-	local function onRoad(p)
-		for _, r in roads do
-			for i = 1, count - 1 do
-				local lim = (r.ws[i] + r.ws[i + 1]) / 4 + r.front - 0.3
-				if segDist(p, r.pts[i], r.pts[i + 1]) < lim then
-					return true
-				end
-			end
-		end
-		return false
-	end
 
 	------------------------------------------------------------ roads (exact strips)
 	local asphalt = { Material = Enum.Material.Asphalt, Color = Style.Asphalt }
@@ -219,42 +470,24 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 	for _, r in roads do
 		for i = 1, count - 1 do
 			local bridge = r.inGap[i] and spec.Crossing == "Bridge"
-			local la, ra = edge(r, i, -1), edge(r, i, 1)
-			local lb, rb = edge(r, i + 1, -1), edge(r, i + 1, 1)
-			if r.tight then
-				-- the road surface stops at the wall faces' inner line
-				la, ra = r.pts[i] - r.right[i] * r.ws[i] / 2, r.pts[i] + r.right[i] * r.ws[i] / 2
-				lb, rb = r.pts[i + 1] - r.right[i + 1] * r.ws[i + 1] / 2, r.pts[i + 1] + r.right[i + 1] * r.ws[i + 1] / 2
-			end
-			U.quad(roadsF, r.tight and "Lane" or "Road", la, ra, rb, lb, bridge and 3 or depthRoad, asphalt)
+			U.slab(roadsF, "Road", edge(r, i, -1), edge(r, i, 1), edge(r, i + 1, 1), edge(r, i + 1, -1), bridge and 3 or depthRoad, asphalt)
 		end
-		-- walls / parapets, as continuous runs
-		local runs = {}
-		local cur = nil
-		for i = 1, count - 1 do
-			local kind = (r.inGap[i] and spec.Crossing == "Bridge") and "bridge" or (r.tight and "lane" or nil)
-			if kind then
-				if not cur or cur.kind ~= kind then
-					cur = { kind = kind, from = i, to = i + 1 }
-					table.insert(runs, cur)
-				else
-					cur.to = i + 1
-				end
-			else
-				cur = nil
-			end
-		end
-		for _, run in runs do
-			for _, side in { -1, 1 } do
-				local pts = {}
-				for i = run.from, run.to do
-					local half = r.ws[i] / 2
-					table.insert(pts, r.pts[i] + r.right[i] * side * (half + 0.6))
-				end
-				if run.kind == "bridge" then
-					U.wallRun(roadsF, "BridgeParapet", pts, 1.2, 3.6, { Material = Enum.Material.Brick, Color = BRICK })
-				else
-					U.wallRun(roadsF, "LaneWall", pts, 1.2, 3.2, { Material = Enum.Material.Concrete, Color = Color3.fromRGB(150, 146, 138) })
+		-- parapets along the bridge span, as one continuous run per side
+		if spec.Crossing == "Bridge" then
+			local from
+			for i = 1, count do
+				local on = i < count and r.inGap[i]
+				if on and not from then
+					from = i
+				elseif not on and from then
+					for _, side in { -1, 1 } do
+						local pts = {}
+						for k = from, i do
+							table.insert(pts, r.pts[k] + r.right[k] * side * (r.ws[k] / 2 + 0.6))
+						end
+						U.wallRun(roadsF, "BridgeParapet", pts, 1.2, 3.6, { Material = Enum.Material.Brick, Color = BRICK })
+					end
+					from = nil
 				end
 			end
 		end
@@ -263,76 +496,49 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 			local c = r.b0 + dir * ((gap.from + gap.to) / 2)
 			U.part(roadsF, "BridgePier", Vector3.new(r.w * 0.6, 12, 8), CFrame.lookAt(c + Vector3.new(0, -9, 0), c + Vector3.new(0, -9, 0) + dir), { Material = Enum.Material.Brick, Color = BRICK })
 		end
-		-- centre line (two-way roads only)
-		if not r.tight then
-			for _, o in { -0.3, 0.3 } do
-				for i = 1, count - 1 do
-					local a = r.pts[i] + r.right[i] * o
-					local c = r.pts[i + 1] + r.right[i + 1] * o
-					U.segment(marks, "Line", a, c, 0.25, 0.005, 0.055, {
-						Material = Enum.Material.SmoothPlastic, Color = YELLOW, CanCollide = false, CanQuery = false, CastShadow = false,
-					}, 0)
-				end
+		-- centre line
+		for _, o in { -0.3, 0.3 } do
+			for i = 1, count - 1 do
+				local a = r.pts[i] + r.right[i] * o
+				local c = r.pts[i + 1] + r.right[i + 1] * o
+				U.segment(marks, "Line", a, c, 0.25, 0.005, 0.055, {
+					Material = Enum.Material.SmoothPlastic, Color = YELLOW, CanCollide = false, CanQuery = false, CastShadow = false,
+				}, 0)
 			end
 		end
 	end
 
-	------------------------------------------------------------ pavements (exact) between and outside the roads
-	local paving = { Material = Enum.Material.Concrete, Color = Style.Sidewalk }
-	local depthPave = 0.5 - L.LandBottom
-	local function paveStrip(la, ra, lb, rb)
-		-- on a tight bend the far edge of a wide strip can fold back on itself
-		-- (a "bow-tie"); its neighbours already cover that spot, so skip it
-		local function flat(v)
-			return Vector3.new(v.X, 0, v.Z)
-		end
-		if flat(lb - la):Dot(flat(rb - ra)) <= 0 or flat(ra - la):Dot(flat(rb - lb)) <= 0 then
-			return
-		end
-		U.quad(ground, "Pavement", la + Vector3.new(0, 0.5, 0), ra + Vector3.new(0, 0.5, 0), rb + Vector3.new(0, 0.5, 0), lb + Vector3.new(0, 0.5, 0), depthPave, paving)
-	end
-	local function outerEdge(r, i, side)
-		return edge(r, i, side) + r.right[i] * side * OUTER
-	end
-	for i = 1, count - 1 do
-		if roads[1].inGap[i] then
-			continue
-		end
-		for k = 1, #roads - 1 do
-			local rl, rr = roads[k], roads[k + 1]
-			paveStrip(edge(rl, i, 1), edge(rr, i, -1), edge(rl, i + 1, 1), edge(rr, i + 1, -1))
-		end
-		local r1, rn = roads[1], roads[#roads]
-		paveStrip(outerEdge(r1, i, -1), edge(r1, i, -1), outerEdge(r1, i + 1, -1), edge(r1, i + 1, -1))
-		paveStrip(edge(rn, i, 1), outerEdge(rn, i, 1), edge(rn, i + 1, 1), outerEdge(rn, i + 1, 1))
-	end
-	-- a low quay wall along the outer edges, above the water
-	for _, side in { -1, 1 } do
-		local r = side < 0 and roads[1] or roads[#roads]
-		local run = {}
-		local function flush()
-			if #run > 1 then
-				U.wallRun(ground, "EdgeWall", run, 1.2, 4.5, { Material = Enum.Material.Brick, Color = BRICK })
-			end
-			run = {}
-		end
-		for i = 1, count do
-			local gapHere = i < count and r.inGap[i]
-			local p = outerEdge(r, i, side) - r.right[i] * side * 0.6 + Vector3.new(0, 0.5, 0)
-			if inZone(p) then
-				flush()
-				continue
-			end
-			table.insert(run, p)
-			if gapHere then
-				flush()
-			end
-		end
-		flush()
-	end
-
-	------------------------------------------------------------ buildings along every road side
+	------------------------------------------------------------ the terrace: footpath, buildings, and the land they stand on
+	-- Outside the road the connector is a solid TERRACE, one box per frontage,
+	-- standing on its own footing down to L.LandBottom. It is the land as much
+	-- as the scenery, and that is the point three ways over:
+	--
+	--   * you cannot see the water past a terrace, let alone drive into it.
+	--     The band used to be open paving with buildings dotted along it
+	--     wherever a placement happened to succeed, so most of the connector
+	--     looked out over open sea.
+	--   * nothing is hidden. There used to be a 36-wide paving quad running the
+	--     whole length - four triangles a segment - with a building standing on
+	--     top of it, so every one of those triangles was buried. The terrace
+	--     reaches the ground itself, so the only paving left is the footpath.
+	--   * the footpath is a wall run (one BOX a segment) rather than a tiled
+	--     quad (four WEDGES a segment), because a strip of constant width is
+	--     exactly what U.wallRun already builds, joints closed and all.
+	--
+	-- The quay wall and the railings along the outside went with it: they were
+	-- guarding an edge that no longer exists.
+	--
+	-- Within one sampled segment the frontage line is STRAIGHT, so the blocks
+	-- along it are collinear and abut exactly - no overlap, so no coplanar
+	-- facades to flicker. Only at a segment joint do two blocks turn against
+	-- each other, and there each is run on past the joint by depth * tan(turn/2)
+	-- so the outside of the bend closes up.
 	local zoneStyle = Style.Zones[toZone.spec.Style]
+	local paving = { Material = Enum.Material.Concrete, Color = Style.Sidewalk }
+	local BLOCK = 26 -- target frontage for one building
+	local DEPTH = OUTER - SW -- facade line to the outer face of the terrace
+	local footY = L.LandBottom
+
 	local lastH = 0
 	local function height()
 		-- not whole studs: overlapping neighbours on a bend never share a roof plane
@@ -344,114 +550,119 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 		return h
 	end
 	local lamp = kit.Furniture:FindFirstChild("lamp")
-	for k, r in roads do
+
+	for _, r in roads do
 		for _, side in { -1, 1 } do
-			local nb = roads[k + side]
-			-- depth available at sample i
-			local function room(i)
-				if nb then
-					local g = (edge(nb, i, -side) - edge(r, i, side)).Magnitude
-					return math.min(DMAX, g / 2 - r.front - 0.5)
-				end
-				return OUTER - r.front - 1.5
+			local function kerb(i)
+				return edge(r, i, side)
 			end
-			local function front(i)
-				return edge(r, i, side) + r.right[i] * side * r.front
+			local function frontAt(i)
+				return kerb(i) + r.right[i] * side * SW
 			end
-			local i = 1
-			while i < count do
-				local m = U.chance(0.5) and 2 or 1
-				local j = math.min(count, i + m)
-				local skip = false
-				for q = i, j - 1 do
-					if r.inGap[q] then
-						skip = true
-					end
+			-- how far a block runs past a joint to close the outside of the bend
+			local function jointExtra(i)
+				if i <= 1 or i >= count then
+					return 0
 				end
-				if not skip then
-					local fa, fb = front(i), front(j)
-					local chord = Vector3.new(fb.X - fa.X, 0, fb.Z - fa.Z)
+				local d0, d1 = frontAt(i) - frontAt(i - 1), frontAt(i + 1) - frontAt(i)
+				if d0.Magnitude < 0.05 or d1.Magnitude < 0.05 then
+					return 0
+				end
+				local theta = math.acos(math.clamp(d0.Unit:Dot(d1.Unit), -1, 1))
+				if theta < 0.004 then
+					return 0
+				end
+				return math.min(DEPTH, DEPTH * math.tan(theta / 2))
+			end
+
+			-- the footpath, as continuous runs broken only by the crossing
+			local walk = {}
+			local function flushWalk()
+				if #walk > 1 then
+					U.wallRun(ground, "Pavement", walk, SW, 0.5 - footY, paving)
+				end
+				walk = {}
+			end
+			for i = 1, count do
+				if (i < count and r.inGap[i]) or inZone(kerb(i)) then
+					flushWalk()
+				else
+					table.insert(walk, kerb(i) + r.right[i] * side * (SW / 2) + Vector3.new(0, footY, 0))
+				end
+			end
+			flushWalk()
+
+			-- the terrace
+			for i = 1, count - 1 do
+				if r.inGap[i] then
+					continue
+				end
+				local f0, f1 = frontAt(i), frontAt(i + 1)
+				local run = Vector3.new(f1.X - f0.X, 0, f1.Z - f0.Z)
+				local segLen = run.Magnitude
+				if segLen < 1 then
+					continue
+				end
+				local u = run.Unit
+				local n = rightOf(u) * side -- outward, away from the road
+				local nBlocks = math.max(1, math.round(segLen / BLOCK))
+				local e0, e1 = jointExtra(i), jointExtra(i + 1)
+				for k = 0, nBlocks - 1 do
+					local a = f0 + u * (segLen * k / nBlocks) - (k == 0 and u * e0 or Vector3.zero)
+					local c = f0 + u * (segLen * (k + 1) / nBlocks) + (k == nBlocks - 1 and u * e1 or Vector3.zero)
+					local chord = c - a
 					local len = chord.Magnitude
-					if len > 4 then
-						local n = rightOf(chord.Unit) * side
-						-- keep the facade behind every sample's building line
-						local shift = 0
-						local depth = DMAX
-						for q = i, j do
-							shift = math.max(shift, (front(q) - fa):Dot(n))
-							depth = math.min(depth, room(q))
-						end
-						depth -= shift
-						local tries = 0
-						while depth >= 6 and tries < 3 do
-							local c0 = fa + n * shift
-							local corners = { c0, c0 + chord, c0 + n * depth, c0 + chord + n * depth, c0 + chord / 2 + n * depth / 2 }
-							local bad = false
-							for _, p in corners do
-								if inZone(p) or onRoad(p) then
-									bad = true
-									break
-								end
-							end
-							if not bad then
-								local h = height()
-								local centre = c0 + chord / 2 + n * depth / 2
-								local cf = CFrame.lookAt(centre, centre + chord) + Vector3.new(0, h / 2, 0)
-								local metal = zoneStyle.metalChance and U.chance(zoneStyle.metalChance)
-								local p = U.part(blds, "Building", Vector3.new(depth, h, len), cf, {
-									Material = metal and Enum.Material.CorrodedMetal or Enum.Material.Concrete,
-									Color = U.pick(zoneStyle.colors),
-								})
-								local t = U.pick(zoneStyle.textures)
-								for _, face in { Enum.NormalId.Left, Enum.NormalId.Right, Enum.NormalId.Front, Enum.NormalId.Back } do
-									local tx = Instance.new("Texture")
-									tx.Texture = t.id
-									tx.StudsPerTileU = t.u
-									tx.StudsPerTileV = t.v
-									tx.Color3 = t.color
-									tx.Face = face
-									tx.Parent = p
-								end
-								break
-							end
-							depth /= 2
-							tries += 1
+					if len < 1 then
+						continue
+					end
+					local mid = a + chord / 2 + n * (DEPTH / 2)
+					-- The zone test is taken 1.5 studs INSIDE each corner. The
+					-- terrace's first block starts exactly on the zone edge,
+					-- and inZone counts a point on the edge as inside, so an
+					-- un-inset corner rejected the one block that closes the
+					-- join - leaving a hole straight out to the water.
+					local blocked = false
+					for _, q in { a, c, a + n * DEPTH, c + n * DEPTH } do
+						if inZone(q + (mid - q).Unit * 1.5) then
+							blocked = true
+							break
 						end
 					end
+					if blocked then
+						continue -- the zone has its own ground and frontage here
+					end
+					local top = height()
+					local centre = Vector3.new(mid.X, (footY + top) / 2, mid.Z)
+					local cf = CFrame.lookAt(centre, centre + chord)
+					local metal = zoneStyle.metalChance and U.chance(zoneStyle.metalChance)
+					local bp = U.part(blds, "Building", Vector3.new(DEPTH, top - footY, len), cf, {
+						Material = metal and Enum.Material.CorrodedMetal or Enum.Material.Concrete,
+						Color = U.pick(zoneStyle.colors),
+					})
+					-- only the two long faces are ever seen - the facade, and the
+					-- back from across the water. The narrow ends are buried in the
+					-- neighbouring block, so they used to carry a texture for nothing.
+					local t = U.pick(zoneStyle.textures)
+					for _, face in { Enum.NormalId.Left, Enum.NormalId.Right } do
+						local tx = Instance.new("Texture")
+						tx.Texture = t.id
+						tx.StudsPerTileU = t.u
+						tx.StudsPerTileV = t.v
+						tx.Color3 = t.color
+						tx.Face = face
+						tx.Parent = bp
+					end
 				end
-				-- a street lamp now and then on the kerb
-				if lamp and not r.tight and not r.inGap[i] and i % 6 == 2 then
-					local lp = edge(r, i, side) + r.right[i] * side * 1.2
+			end
+
+			-- a street lamp now and then on the kerb
+			for i = 2, count - 1, 3 do
+				if lamp and not r.inGap[i] then
+					local lp = kerb(i) + r.right[i] * side * 1.2
 					if not inZone(lp) then
 						U.place(lamp, deco, lp.X, 0.5, lp.Z, -r.right[i] * side)
 					end
 				end
-				i = j
-			end
-		end
-	end
-
-	-- railings along the quay edges of the water gap
-	if spec.Crossing == "Bridge" then
-		for _, s in { gap.from, gap.to } do
-			local cuts = {}
-			for _, r in roads do
-				table.insert(cuts, { a = r.off - r.w / 2 - 2, b = r.off + r.w / 2 + 2 })
-			end
-			local x = roads[1].off - roads[1].w / 2 - OUTER
-			local xEnd = roads[#roads].off + roads[#roads].w / 2 + OUTER
-			table.sort(cuts, function(a, c)
-				return a.a < c.a
-			end)
-			local metal = { Material = Enum.Material.Metal, Color = METAL }
-			for _, c in cuts do
-				if c.a > x + 1 then
-					U.segment(ground, "Railing", b.origin + dir * s + right * x, b.origin + dir * s + right * c.a, 0.6, 0.5, 4.4, metal, 0)
-				end
-				x = c.b
-			end
-			if xEnd > x + 1 then
-				U.segment(ground, "Railing", b.origin + dir * s + right * x, b.origin + dir * s + right * xEnd, 0.6, 0.5, 4.4, metal, 0)
 			end
 		end
 	end
@@ -468,7 +679,7 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 		local brick = { Material = Enum.Material.Brick, Color = BRICK }
 		local openings = {}
 		for _, r in roads do
-			table.insert(openings, { a = r.off - r.w / 2 - r.edge, b = r.off + r.w / 2 + r.edge, clear = r.tight and r.clear or 20, tight = r.tight })
+			table.insert(openings, { a = r.off - r.w / 2 - r.edge, b = r.off + r.w / 2 + r.edge, clear = 20 })
 		end
 		table.sort(openings, function(a, c)
 			return a.a < c.a
@@ -489,19 +700,6 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 			pl.Range = 30
 			pl.Brightness = 1.2
 			pl.Parent = lt
-			if o.tight then
-				-- height bars before each portal
-				for _, sb in { gap.from - 5, gap.to + 5 } do
-					bbox("HeightBar", o.a - 2, o.b + 2, sb - 0.4, sb + 0.4, o.clear, o.clear + 0.8, { Material = Enum.Material.SmoothPlastic, Color = YELLOW })
-					for _, px in { o.a - 1.5, o.b + 1.5 } do
-						bbox("HeightBarPost", px - 0.5, px + 0.5, sb - 0.5, sb + 0.5, 0, o.clear + 0.6, { Material = Enum.Material.Metal, Color = YELLOW })
-					end
-					local sign = bbox("HeightSign", o.a - 2, o.b + 2, sb - 0.15, sb + 0.15, o.clear + 1, o.clear + 3, { Material = Enum.Material.SmoothPlastic, Color = YELLOW, CanCollide = false })
-					for _, fc in { Enum.NormalId.Front, Enum.NormalId.Back } do
-						U.label(sign, fc, "MAX HEIGHT " .. o.clear, { PixelsPerStud = 20, TextColor3 = Color3.new(0, 0, 0) })
-					end
-				end
-			end
 			x = o.b
 		end
 		bbox("Embankment", x, W, gap.from, gap.to, L.LandBottom, H, brick)
@@ -566,7 +764,7 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 		return link[i] + market.right[i] * side * (LW / 2 - (inset or 0))
 	end
 	for i = 1, count - 1 do
-		U.quad(linkF, "Deck", linkEdge(i, -1), linkEdge(i, 1), linkEdge(i + 1, 1), linkEdge(i + 1, -1), EX.deckThick, concrete)
+		U.slab(linkF, "Deck", linkEdge(i, -1), linkEdge(i, 1), linkEdge(i + 1, 1), linkEdge(i + 1, -1), EX.deckThick, concrete)
 	end
 	-- high walls, NYC-style: you drive in a concrete canyon over the city
 	for _, side in { -1, 1 } do
@@ -588,7 +786,12 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 			end
 		end
 	end
-	for i = 2, count - 1, 4 do
+	local nextLight = 0
+	for i = 2, count - 1 do
+		if cum[i] < nextLight then
+			continue
+		end
+		nextLight = cum[i] + 64
 		for _, side in { -1, 1 } do
 			local p = linkEdge(i, side, 1.2) + Vector3.new(0, 9, 0)
 			U.part(linkF, "DeckLight", Vector3.new(0.4, 0.4, 5), CFrame.lookAt(p, p + (link[i + 1] - link[i])), {
@@ -598,7 +801,12 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 	end
 	-- supports: portal frames straddling Market, columns on the pavements
 	-- (in the water on the canal, on the embankment over the railway)
-	for i = 3, count - 2, 3 do
+	local nextPier = 0
+	for i = 2, count - 1 do
+		if cum[i] < nextPier then
+			continue
+		end
+		nextPier = cum[i] + 48
 		local bottom = tops[i] - EX.deckThick
 		local rgt = market.right[i]
 		local reach = market.ws[i] / 2 + SW / 2
@@ -683,6 +891,8 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 	end
 	-- and on the express link, at the same line
 	permitGate(spec.Key .. "ExpressGate", link[gapFromI], LW - 2, false, true)
+
+	buildHazards(f, kit, spec, market, count, gapFromI, stationIndex(gap.to))
 
 	return f
 end

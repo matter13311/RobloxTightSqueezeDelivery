@@ -728,6 +728,23 @@ function Zone.Build(spec, kit, ctx)
 		local deckS = rampS - rampLen
 		table.insert(links, { z1 = deckS - L.LinkMerge, z2 = entryEdge, m1 = deckS - L.LinkMerge, m2 = deckS, closedAtZ1 = true })
 	end
+	-- Each link leaves the deck as a gradual S-curve, not a sideways step: over
+	-- m1..m2 a taper peels off the deck's west edge - zero wide at zStart,
+	-- tangent to the deck - and eases out to the link's full width and straight
+	-- line at zFull. `s1..s2` is the straight stretch beyond it; `g1..g2` is
+	-- the stretch of deck wall left open (where the taper is wide enough to
+	-- drive onto).
+	for _, lk in links do
+		if lk.closedAtZ1 then
+			lk.zStart, lk.zFull = lk.m1, lk.m2
+			lk.s1, lk.s2 = lk.m2, lk.z2
+		else
+			lk.zStart, lk.zFull = lk.m2, lk.m1
+			lk.s1, lk.s2 = lk.z1, lk.m1
+		end
+		local gStart = lk.zStart + (lk.zFull - lk.zStart) * 0.2
+		lk.m1, lk.m2 = math.min(gStart, lk.zFull), math.max(gStart, lk.zFull)
+	end
 	for _, lk in links do
 		table.insert(overheadClear, U.rect(linkX1 - 3, lk.z1, linkX2, lk.z2))
 	end
@@ -1047,32 +1064,105 @@ function Zone.Build(spec, kit, ctx)
 	end
 
 	------------------------------------------------------------ zone ends: water edges with gaps for the connector roads
-	local function edgeRail(z, gaps, promenadeZ1, promenadeZ2)
+	local function edgeRail(gaps, promenadeZ1, promenadeZ2)
 		local promenade = U.rect(L.WestSt.x1 - SW, promenadeZ1, L.EastSt.x2 + SW, promenadeZ2)
 		for _, piece in U.subtractAll({ promenade }, gaps, 1) do
 			U.box(f.Edges, "Promenade", piece, 0, SIDEWALK_TOP, { Material = Enum.Material.Concrete, Color = Style.Sidewalk })
 		end
-		local rail = U.rect(-L.HalfWidth, z - 0.3, L.HalfWidth, z + 0.3)
-		for _, piece in U.subtractAll({ rail }, gaps, 1) do
-			U.box(f.Edges, "Railing", piece, 0, 3.9, { Material = Enum.Material.Metal, Color = METAL })
+	end
+	-- Only Market leaves the zone (v4.3 - the connector carries one local road
+	-- plus the express link overhead). West St and East St run right up to the
+	-- water and stop, so the railing and promenade cross them unbroken and a
+	-- barrier tells you so before you get there; traffic for the next zone
+	-- turns onto Market at the last cross road, ~20 studs back.
+	local function gapsFor(z1, z2)
+		return { U.rect(L.Market.x1, z1, L.Market.x2, z2) }
+	end
+	-- Beyond a zone's end the world is sea, and the only thing that ever stood
+	-- between a player and it was a railing at the water's edge: you drove up
+	-- West St, stopped, and looked straight out over open water. A row of
+	-- buildings standing just OUTSIDE the land closes that view - and is what
+	-- stops you now, which is why the railing is gone. Footed at L.LandBottom
+	-- like the connector terrace, so it rises out of the sea rather than
+	-- perching on an edge.
+	--
+	-- The middle is left open: the connector's own road, footpath and terrace
+	-- already fill L.Market.w / 2 + L.ConnectorBand either side of the centre.
+	local function endWall(z, outward)
+		local keep = L.Market.w / 2 + L.ConnectorBand
+		local depth = 36
+		local style = Style.Zones[spec.Style]
+		local lastEnd = 0
+		for _, sx in { -1, 1 } do
+			local x = keep
+			while x < L.HalfWidth - 1 do
+				local w = math.min(U.range(22, 34), L.HalfWidth - x)
+				if w < 2 then
+					break
+				end
+				local h
+				repeat
+					h = U.range(style.minH, style.maxH + 10)
+				until math.abs(h - lastEnd) >= 2
+				lastEnd = h
+				local bp = U.part(f.Edges, "EndBuilding", Vector3.new(w, h - L.LandBottom, depth),
+					CFrame.new(sx * (x + w / 2), (L.LandBottom + h) / 2, z + outward * depth / 2), {
+						Material = Enum.Material.Concrete, Color = U.pick(style.colors),
+					})
+				-- only the two faces across the end are ever seen: the one
+				-- facing the zone, and the one facing the open water behind
+				local t = U.pick(style.textures)
+				for _, face in { Enum.NormalId.Front, Enum.NormalId.Back } do
+					local tx = Instance.new("Texture")
+					tx.Texture = t.id
+					tx.StudsPerTileU = t.u
+					tx.StudsPerTileV = t.v
+					tx.Color3 = t.color
+					tx.Face = face
+					tx.Parent = bp
+				end
+				x += w
+			end
 		end
 	end
-	local function gapsFor(laneX, laneW, z1, z2)
-		local g = {
-			U.rect(L.WestSt.x1, z1, L.WestSt.x2, z2), U.rect(L.Market.x1, z1, L.Market.x2, z2), U.rect(L.EastSt.x1, z1, L.EastSt.x2, z2),
-		}
-		if laneX then
-			table.insert(g, U.rect(laneX - laneW / 2, z1, laneX + laneW / 2, z2))
+	local function streetStop(z, outward)
+		for _, st in { L.WestSt, L.EastSt } do
+			local zb = z - outward * 7
+			-- four boards across the FULL width of the street: a short row
+			-- leaves a kerb-width slot at each end that a car can be nosed
+			-- through, which is the whole thing this is here to stop
+			local bw = st.w / 4
+			for k = 0, 3 do
+				local bx = st.x + (k - 1.5) * bw
+				U.part(f.Edges, "StreetEndBarrier", Vector3.new(bw + 0.1, 1.1, 0.8), CFrame.new(bx, 3.1, zb), {
+					Material = Enum.Material.SmoothPlastic, Color = WHITE,
+				})
+				for _, sx in { -1, 1 } do
+					U.part(f.Edges, "StreetEndStripe", Vector3.new(bw / 4, 1.15, 0.9), CFrame.new(bx + sx * bw / 4, 3.1, zb), {
+						Material = Enum.Material.SmoothPlastic, Color = Color3.fromRGB(190, 45, 40), CanCollide = false,
+					})
+				end
+				U.part(f.Edges, "StreetEndPost", Vector3.new(0.8, 3.6, 0.8), CFrame.new(bx, 1.8, zb), { Material = Enum.Material.Metal, Color = METAL })
+			end
+			local sz = zb - outward * 5
+			local sign = U.part(f.Edges, "StreetEndSign", Vector3.new(9, 3, 0.3), CFrame.lookAt(Vector3.new(st.x, 6.6, sz), Vector3.new(st.x, 6.6, sz - outward)), {
+				Material = Enum.Material.SmoothPlastic, Color = WHITE, CanCollide = false,
+			})
+			U.label(sign, Enum.NormalId.Front, "NO THROUGH ROAD", { PixelsPerStud = 20, TextColor3 = Color3.new(0, 0, 0) })
+			for _, dx in { -3.6, 3.6 } do
+				U.part(f.Edges, "StreetEndSignLeg", Vector3.new(0.3, 5.1, 0.3), CFrame.new(st.x + dx, 2.55, sz), { Material = Enum.Material.Metal, Color = METAL })
+			end
 		end
-		return g
 	end
 	if not spec.QuayFrom then
-		local e = ctx.exitLane
-		edgeRail(exitEdge + 0.5, gapsFor(e and e.x, e and e.w, exitEdge - 1, exitEdge + 7), exitEdge, exitEdge + 6)
+		edgeRail(gapsFor(exitEdge - 1, exitEdge + 7), exitEdge, exitEdge + 6)
+		endWall(exitEdge, -1)
+		streetStop(exitEdge, -1)
 	end
 	if spec.Id ~= 1 then
-		local e = ctx.entryLane
-		edgeRail(entryEdge - 0.5, gapsFor(e and e.x, e and e.w, entryEdge - 7, entryEdge + 1), entryEdge - 6, entryEdge)
+		edgeRail(gapsFor(entryEdge - 7, entryEdge + 1), entryEdge - 6, entryEdge)
+		endWall(entryEdge, 1)
+		streetStop(entryEdge, 1)
 	end
 
 	------------------------------------------------------------ streets: markings, dirt
@@ -1266,25 +1356,38 @@ function Zone.Build(spec, kit, ctx)
 	local WH = L.LinkWallHeight
 	local bottom = EX.deckTop - EX.deckThick
 	for _, lk in links do
-		U.box(f.Express, "LinkDeck", U.rect(linkX1, lk.z1, linkX2, lk.z2), bottom, EX.deckTop, concrete)
-		U.box(f.Express, "LinkDeck", U.rect(linkX2, lk.m1, -strip, lk.m2), bottom, EX.deckTop, concrete)
-		U.box(f.Express, "LinkWall", U.rect(linkX1, lk.z1, linkX1 + 1, lk.z2), EX.deckTop, EX.deckTop + WH, concrete)
-		-- east wall only where the link runs beside the ramp (open at the merge)
-		local ez1, ez2 = lk.z1, lk.m1
-		if lk.closedAtZ1 then
-			ez1, ez2 = lk.m2, lk.z2
+		-- the straight stretch, then the taper that peels it off the deck
+		U.box(f.Express, "LinkDeck", U.rect(linkX1, lk.s1, linkX2, lk.s2), bottom, EX.deckTop, concrete)
+		local TAPER_STEPS = L.LinkTaperSteps
+		local taper = {}
+		local function easeAt(u)
+			return u * u * (3 - 2 * u)
 		end
-		U.box(f.Express, "LinkWall", U.rect(linkX2 - 1, ez1, linkX2, ez2), EX.deckTop, EX.deckTop + WH, concrete)
-		-- the closed end, across the link
-		local endZ = lk.closedAtZ1 and lk.z1 or lk.z2 - 1
-		U.box(f.Express, "LinkWall", U.rect(linkX1 + 1, endZ, linkX2, endZ + 1), EX.deckTop, EX.deckTop + WH, concrete)
+		for i = 0, TAPER_STEPS do
+			local u = i / TAPER_STEPS
+			taper[i] = { x = -strip + (linkX1 + strip) * easeAt(u), z = lk.zStart + (lk.zFull - lk.zStart) * u }
+		end
+		for i = 0, TAPER_STEPS - 1 do
+			local a, b = taper[i], taper[i + 1]
+			U.slab(f.Express, "LinkDeck", Vector3.new(a.x, EX.deckTop, a.z), Vector3.new(-strip, EX.deckTop, a.z),
+				Vector3.new(-strip, EX.deckTop, b.z), Vector3.new(b.x, EX.deckTop, b.z), EX.deckThick, concrete)
+		end
+		-- west wall follows the taper's outer edge; the straight part is one box
+		local wallPts = {}
+		for i = 0, TAPER_STEPS do
+			table.insert(wallPts, Vector3.new(taper[i].x + 0.5, EX.deckTop, taper[i].z))
+		end
+		U.wallRun(f.Express, "LinkWall", wallPts, 1, WH, concrete)
+		U.box(f.Express, "LinkWall", U.rect(linkX1, lk.s1, linkX1 + 1, lk.s2), EX.deckTop, EX.deckTop + WH, concrete)
+		-- east wall only beside the ramp; the taper's east edge IS the open deck
+		U.box(f.Express, "LinkWall", U.rect(linkX2 - 1, lk.s1, linkX2, lk.s2), EX.deckTop, EX.deckTop + WH, concrete)
 		for _, dx in { -0.3, 0.3 } do
-			U.box(f.Express, "LinkLine", U.rect(L.LinkX + dx - 0.125, lk.z1, L.LinkX + dx + 0.125, lk.z2), EX.deckTop + 0.005, EX.deckTop + 0.055, {
+			U.box(f.Express, "LinkLine", U.rect(L.LinkX + dx - 0.125, lk.s1, L.LinkX + dx + 0.125, lk.s2), EX.deckTop + 0.005, EX.deckTop + 0.055, {
 				Material = Enum.Material.SmoothPlastic, Color = YELLOW, CanCollide = false, CanQuery = false, CastShadow = false,
 			})
 		end
-		local lz = lk.z1 + 10
-		while lz < lk.z2 - 10 do
+		local lz = lk.s1 + 10
+		while lz < lk.s2 - 10 do
 			local ok = true
 			for _, h in holes do
 				if L.Market.x1 - 3 > h.x1 - 4 and L.Market.x1 - 3 < h.x2 + 4 and lz > h.z1 - 4 and lz < h.z2 + 4 then
@@ -1316,7 +1419,7 @@ function Zone.Build(spec, kit, ctx)
 				lz += 6
 			end
 		end
-		for zz = lk.z1 + 30, lk.z2 - 10, 60 do
+		for zz = lk.s1 + 30, lk.s2 - 10, 60 do
 			for _, x in { linkX1 + 1.2, linkX2 - 1.2 } do
 				U.part(f.Express, "DeckLight", Vector3.new(0.4, 0.4, 5), CFrame.new(x, EX.deckTop + 9, zz), {
 					Material = Enum.Material.Neon, Color = Color3.fromRGB(255, 230, 180), CanCollide = false, CanQuery = false,
@@ -1328,31 +1431,43 @@ function Zone.Build(spec, kit, ctx)
 	------------------------------------------------------------ roadworks (inner lanes, barriers along the lane)
 	for _, rw in spec.Roadworks or {} do
 		local x = L.MarketLanes[rw.lane]
-		local x1, x2 = x - 6, x + 6
+		local half = rw.half or L.RoadworksHalf
+		local x1, x2 = x - half, x + half
 		local fw = U.folder(f.Traffic, "RoadWorks_" .. math.floor(math.abs(rw.z1)))
 		local barrier = kit.Props:FindFirstChild("Barrier3")
+		-- Barrier3 is 1.6 thick, so a rail centred 0.8 inside the works edge
+		-- puts its OUTER face exactly on x1/x2 - which is the rect handed to
+		-- the traffic generator as a Static obstacle. Works and obstacle then
+		-- agree to the stud, and the escape lane is as wide as it looks.
+		local rail = half - 0.8
 		if barrier then
 			-- the long barriers run ALONG the lane edges...
 			local zz = rw.z1 + 4
 			while zz < rw.z2 - 3 do
-				for _, bx in { x1 + 1, x2 - 1 } do
+				for _, bx in { x - rail, x + rail } do
 					U.place(barrier, fw, bx, 0, zz, Vector3.new(0, 0, -1))
 				end
 				zz += 7.5
 			end
-			-- ...and across both ends
+			-- ...and one across each end. A PAIR at x +-3.6 (what this used to
+			-- do) now lands on top of the rails and reads as clutter.
 			for _, ez in { rw.z1 + 0.8, rw.z2 - 0.8 } do
-				for _, bx in { x - 3.6, x + 3.6 } do
-					U.place(barrier, fw, bx, 0, ez, Vector3.new(1, 0, 0))
-				end
+				U.place(barrier, fw, x, 0, ez, Vector3.new(1, 0, 0))
 			end
 		end
+		local cones = {}
 		for _, cz in { rw.z2 + 8, rw.z2 + 16, rw.z2 + 24, rw.z1 - 8 } do
-			U.part(fw, "Cone", Vector3.new(1.2, 2.4, 1.2), CFrame.new(x + (cz > rw.z2 and (cz - rw.z2) / 8 * 1.5 - 4 or 0), 1.2, cz), {
+			table.insert(cones, Vector2.new(x + (cz > rw.z2 and (cz - rw.z2) / 8 * 1.5 - 4 or 0), cz))
+		end
+		for _, c in rw.ExtraCones or {} do
+			table.insert(cones, Vector2.new(c[1], c[2]))
+		end
+		for _, c in cones do
+			U.part(fw, "Cone", Vector3.new(1.2, 2.4, 1.2), CFrame.new(c.X, 1.2, c.Y), {
 				Material = Enum.Material.SmoothPlastic, Color = Color3.fromRGB(240, 110, 20),
 			})
 		end
-		U.part(fw, "WorkPit", Vector3.new(x2 - x1 - 4, 0.4, rw.z2 - rw.z1 - 6), CFrame.new(x, 0.2, (rw.z1 + rw.z2) / 2), {
+		U.part(fw, "WorkPit", Vector3.new(rail * 2, 0.4, rw.z2 - rw.z1 - 6), CFrame.new(x, 0.2, (rw.z1 + rw.z2) / 2), {
 			Material = Enum.Material.Ground, Color = Color3.fromRGB(90, 70, 50),
 		})
 		textSign(fw, "RoadWorkSign", Vector3.new(4, 3, 0.2), CFrame.new(x, 2.2, rw.z2 + 32), "ROAD WORK", { Enum.NormalId.Back }, Color3.fromRGB(240, 150, 20), Color3.new(0, 0, 0))
@@ -1554,6 +1669,22 @@ function Zone.Build(spec, kit, ctx)
 		})
 		for x = -L.HalfWidth + 10, L.HalfWidth - 10, 30 do
 			U.part(f.Edges, "Bollard", Vector3.new(1.6, 2.4, 1.6), CFrame.new(x, 2.8, spec.Exit + 0.75), { Material = Enum.Material.Metal, Color = Color3.fromRGB(40, 40, 42) })
+		end
+	end
+
+	-- hand placements the generator would not make on its own (see Layout `Nudges`)
+	for _, n in spec.Nudges or {} do
+		local names = table.create(#n.Names)
+		for _, nm in n.Names do
+			names[nm] = true
+		end
+		for _, d in f[n.Folder]:GetDescendants() do
+			if d:IsA("BasePart") and names[d.Name] then
+				local p = d.Position
+				if math.abs(p.X - n.From.X) < 2.5 and math.abs(p.Z - n.From.Z) < 2.5 and math.abs(p.Y - n.From.Y) < 1 then
+					d.CFrame += n.Delta
+				end
+			end
 		end
 	end
 
