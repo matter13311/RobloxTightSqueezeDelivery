@@ -245,8 +245,10 @@ local function onImpact(mySession, deltaV, velocity)
 	-- back off it. Only the part of the velocity pointing AWAY from the surface
 	-- is removed, so a glancing hit still slides along the wall rather than
 	-- being stopped dead by this.
+	-- Skipped when the hit is against another player's car: that rebound is the
+	-- shove (see checkCarShoves), and killing it would undo the push.
 	local outwardSpeed = velocity:Dot(normal)
-	if outwardSpeed > 0 then
+	if outwardSpeed > 0 and next(mySession.CarContacts) == nil then
 		chassis.AssemblyLinearVelocity = velocity - normal * (outwardSpeed * (1 - VehicleCollision.RestitutionKeep))
 	end
 	chassis.AssemblyAngularVelocity = chassis.AssemblyAngularVelocity * VehicleCollision.AngularKeepOnImpact
@@ -272,6 +274,87 @@ local function onImpact(mySession, deltaV, velocity)
 
 	impactRemote:FireServer(carModel, hitPosition, impulse, hitPart)
 	playImpactSound(hitPosition, severity)
+end
+
+--=============================================================================
+-- Car-vs-car shoves
+--=============================================================================
+
+-- The car model `part` belongs to, if it is another player's DRIVEN car.
+-- Parked (anchored) cars and NPC traffic have nobody whose client could answer
+-- the shove, so they stay solid walls.
+local function getOtherDrivenCar(mySession, part)
+	local model = part:FindFirstAncestorWhichIsA("Model")
+	while model do
+		if model ~= mySession.CarModel and model.PrimaryPart and VehicleCollision.GetBodyFolder(model) then
+			local driver = VehicleSeats.GetDriverPlayer(model)
+			if driver and driver ~= player then
+				return model
+			end
+			return nil
+		end
+		model = model:FindFirstAncestorWhichIsA("Model")
+	end
+	return nil
+end
+
+-- Exchanges momentum with every car we are touching. Both drivers' clients run
+-- this on their own car with the same formula, so the two halves agree without
+-- talking to each other: we only ever write OUR chassis's velocity, which is
+-- the one thing this machine is allowed to write.
+local function checkCarShoves(mySession, now)
+	local chassis = mySession.Chassis
+	for otherCar, contact in mySession.CarContacts do
+		if now - contact.At > VehicleCollision.ShoveContactTimeout or not contact.Part.Parent then
+			mySession.CarContacts[otherCar] = nil
+			continue
+		end
+		local otherChassis = otherCar.PrimaryPart
+		if not otherChassis or now - (mySession.LastShove[otherCar] or 0) < VehicleCollision.ShoveCooldown then
+			continue
+		end
+
+		local toOther = contact.Part:GetClosestPointOnSurface(chassis.Position) - chassis.Position
+		toOther = Vector3.new(toOther.X, 0, toOther.Z)
+		if toOther.Magnitude < 0.05 then
+			continue
+		end
+		local n = toOther.Unit -- points from us toward them
+
+		local myVelocity = chassis.AssemblyLinearVelocity
+		local theirVelocity = VehicleCollision.ChassisVelocity(otherChassis)
+		-- The solver has already braked us against the other car by the time
+		-- Touched fires, so the speed we hit at is read from the last few
+		-- frames' history (the fastest approach along n), not from right now.
+		local v1 = myVelocity:Dot(n)
+		for _, sample in mySession.History do
+			v1 = math.max(v1, sample.Velocity:Dot(n))
+		end
+		local v2 = theirVelocity:Dot(n)
+		if v1 - v2 < VehicleCollision.ShoveMinClosingSpeed then
+			continue
+		end
+
+		local m1 = chassis.AssemblyMass
+		local m2 = otherChassis.AssemblyMass
+		local e = VehicleCollision.ShoveRestitution
+		local target = (m1 * v1 + m2 * v2 + m2 * e * (v2 - v1)) / (m1 + m2)
+		-- Absolute, not a delta: the normal component is SET to `target`, so it
+		-- lands on the right answer whatever the solver already did to us.
+		local current = myVelocity:Dot(n)
+		local change = math.clamp(target - current, -VehicleCollision.ShoveMaxDeltaV, VehicleCollision.ShoveMaxDeltaV)
+		chassis.AssemblyLinearVelocity = myVelocity + n * change
+
+		mySession.LastShove[otherCar] = now
+		mySession.CarContactUntil = now + 0.3
+		-- Being driven INTO the other car is a velocity gain the solver never
+		-- produced; counting it next frame would read as a phantom crash aimed
+		-- the wrong way. Being shoved AWAY is a real impact and should be judged.
+		if change > 0 then
+			mySession.LastVelocity = chassis.AssemblyLinearVelocity
+		end
+		VehicleEntryDebug.Note("SHOVE vs %s change=%.1f closing=%.1f", otherCar.Name, change, v1 - v2)
+	end
 end
 
 --=============================================================================
@@ -450,6 +533,14 @@ local function step(mySession, delta)
 	else
 		checkScrape(mySession, velocity, delta, now)
 	end
+
+	checkCarShoves(mySession, now)
+
+	-- Recent velocities, newest last, for checkCarShoves to read the pre-hit speed.
+	table.insert(mySession.History, { At = now, Velocity = velocity })
+	while mySession.History[1] and now - mySession.History[1].At > 0.2 do
+		table.remove(mySession.History, 1)
+	end
 end
 
 local function beginSession(carModel)
@@ -489,6 +580,10 @@ local function beginSession(carModel)
 		LastScrapeReport = 0,
 		LastSqueak = 0,
 		Contacts = {}, -- [BasePart] = os.clock() of the last Touched
+		CarContacts = {}, -- [Model] = { Part, At } for other players' driven cars we are touching
+		LastShove = {}, -- [Model] = os.clock() of the last shove against that car
+		History = {}, -- { At, Velocity } for the last ~0.2s
+		CarContactUntil = 0, -- os.clock() until which a car-vs-car hit is in progress
 		Connections = {},
 		ImpactParams = impactParams,
 		NormalParams = normalParams,
@@ -527,6 +622,10 @@ local function beginSession(carModel)
 							return
 						end
 						mySession.Contacts[other] = os.clock()
+						local otherCar = getOtherDrivenCar(mySession, other)
+						if otherCar then
+							mySession.CarContacts[otherCar] = { Part = other, At = os.clock() }
+						end
 					end)
 				)
 				table.insert(

@@ -133,6 +133,26 @@ VehicleCollision.RestitutionKeep = 0.05
 VehicleCollision.AngularKeepOnImpact = 0.4
 
 --=============================================================================
+-- Car-vs-car shoves
+--=============================================================================
+
+-- Each client owns only its own chassis, so another player's car is a
+-- replicated, unpushable object to it - ramming one felt like ramming an
+-- anchored wall. Instead, each driver's client works out the momentum exchange
+-- for ITS OWN car alone (same formula on both sides, so they agree) and sets
+-- its own car's velocity along the contact normal to the result.
+--
+-- TUNING: Restitution 0 = the cars lock together and travel at the shared
+-- velocity; 1 = billiard balls. Raise ShoveMassClamp for more dramatic
+-- lightweight-vs-heavy hits. MinClosingSpeed keeps gentle nudges and parking
+-- taps from being turned into shoves.
+VehicleCollision.ShoveRestitution = 0.35
+VehicleCollision.ShoveMinClosingSpeed = 4 -- studs/s toward each other along the contact normal
+VehicleCollision.ShoveCooldown = 0.25 -- seconds before the same car pair can be shoved again
+VehicleCollision.ShoveMaxDeltaV = 80 -- studs/s cap on any one shove; also the anti-cheat bound on a lying replicated velocity
+VehicleCollision.ShoveContactTimeout = 0.2 -- how long a car contact is believed for after its last Touched
+
+--=============================================================================
 -- Scrape detection
 --=============================================================================
 
