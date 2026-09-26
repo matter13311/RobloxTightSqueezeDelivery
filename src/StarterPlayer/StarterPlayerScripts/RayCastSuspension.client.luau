@@ -191,6 +191,7 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		or math.abs(sent.Steer - mySession.NetSteerValue) >= NET_STEER_EPSILON
 		or sent.ShiftCount ~= mySession.ShiftCount
 		or sent.TwoStep ~= mySession.TwoStep
+		or sent.AntiLag ~= mySession.AntiLag
 	if not changed then
 		return
 	end
@@ -204,6 +205,7 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 	sent.Steer = mySession.NetSteerValue
 	sent.ShiftCount = mySession.ShiftCount
 	sent.TwoStep = mySession.TwoStep
+	sent.AntiLag = mySession.AntiLag
 
 	vehicleNetworkState:FireServer(
 		carModel,
@@ -215,7 +217,8 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		sent.Rpm,
 		sent.Steer,
 		sent.ShiftCount,
-		sent.TwoStep
+		sent.TwoStep,
+		sent.AntiLag
 	)
 end
 
@@ -654,6 +657,7 @@ local function beginDrive(humanoid, seatPart)
 		-- hear one phantom anti-lag crack the moment somebody got in.
 		ShiftCount = carModel:GetAttribute("NetShiftCount") or 0,
 		TwoStep = false,
+		AntiLag = false,
 		ExitRequested = false,
 		-- Set the first frame this client actually simulates the car; see the
 		-- handover note in the drive loop below.
@@ -674,6 +678,7 @@ local function beginDrive(humanoid, seatPart)
 			Steer = -math.huge,
 			ShiftCount = -1,
 			TwoStep = false,
+			AntiLag = false,
 		},
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
@@ -796,7 +801,31 @@ local function beginDrive(humanoid, seatPart)
 		local signedSpeed = chassis.CFrame.LookVector:Dot(chassis.AssemblyLinearVelocity)
 		local speed = math.abs(signedSpeed)
 
-		local drive = Gearbox.Update(mySession.Gearbox, config, delta, signedSpeed, forwardKey, backKey)
+		-- TWO-STEP. Both pedals, sitting still, in D, on a car that has bought
+		-- the stage for it. Gearbox makes this stance harmless (brake beats gas)
+		-- so it needs nothing from us but noticing it.
+		local twoStep = forwardKey
+			and backKey
+			and mySession.Gearbox.Selector == "D"
+			and speed < config.Transmission.StoppedSpeed
+			and InductionEffects.HasTwoStep(carModel)
+
+		-- ANTI-LAG. Both pedals held at any speed (two-step owns the standstill
+		-- case when the car has it). Roblox cancels W and S into a zero
+		-- ThrottleFloat, which is why this reads the independent key booleans -
+		-- see gasKeyHeld. Reverse is excluded: there S is the gas.
+		-- The gearbox is then handed NO pedals, so the car coasts down instead
+		-- of braking (its rule "brake wins over gas" would otherwise stop it).
+		local antiLag = forwardKey
+			and backKey
+			and mySession.Gearbox.Selector ~= "R"
+			and not twoStep
+			and InductionEffects.HasAntiLag(carModel)
+		if antiLag then
+			forwardKey, backKey = false, false
+		end
+
+		local drive = Gearbox.Update(mySession.Gearbox, config, delta, signedSpeed, forwardKey, backKey, InductionEffects.LaunchActive(carModel))
 		if mySession.Gearbox.ShiftedThisFrame then
 			playSound(mySession.ShiftSound)
 			-- Bumped for the network relay, so every other client can crack an
@@ -842,11 +871,8 @@ local function beginDrive(humanoid, seatPart)
 		-- because the effects layer is already reading this car's stage off
 		-- its Attribute every frame and the driver must not get a different
 		-- answer from the bystanders watching them.
-		mySession.TwoStep = forwardKey
-			and backKey
-			and mySession.Gearbox.Selector == "D"
-			and speed < config.Transmission.StoppedSpeed
-			and InductionEffects.HasTwoStep(carModel)
+		mySession.TwoStep = twoStep
+		mySession.AntiLag = antiLag
 		-- Last frame's smoothed steer (Step below is what advances it). One
 		-- frame stale is nothing next to the network trip it's about to take,
 		-- and reading it here keeps the whole network payload assembled in
@@ -873,6 +899,7 @@ local function beginDrive(humanoid, seatPart)
 			Braking = mySession.Braking,
 			ShiftCount = mySession.ShiftCount,
 			TwoStep = mySession.TwoStep,
+			AntiLag = mySession.AntiLag,
 		})
 
 		VehiclePhysics.Step(carModel, attachments, config, state, delta, {
@@ -1123,6 +1150,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- two-step each sound like.
 			local shiftCount = nil
 			local twoStep = false
+			local antiLag = false
 			if session and session.CarModel == vehicle then
 				-- The GEAR's drive demand, not the raw seat axis. S is the
 				-- brake now, so feeding ThrottleFloat straight in here would
@@ -1135,6 +1163,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				rpm = session.DriveRpm or 0
 				shiftCount = session.ShiftCount
 				twoStep = session.TwoStep
+				antiLag = session.AntiLag
 			else
 				-- Someone else's car (or nobody's driving it) - including a
 				-- car another player is driving while THIS client is also
@@ -1153,6 +1182,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				rpm = vehicle:GetAttribute("NetRpm") or 0
 				shiftCount = vehicle:GetAttribute("NetShiftCount")
 				twoStep = vehicle:GetAttribute("NetTwoStep") or false
+				antiLag = vehicle:GetAttribute("NetAntiLag") or false
 			end
 			-- Not folded into the session branch above: this client only has
 			-- a live SmoothSteer for a car it is driving ITSELF, which is a
@@ -1190,6 +1220,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				Braking = isBraking,
 				ShiftCount = shiftCount,
 				TwoStep = twoStep,
+				AntiLag = antiLag,
 			})
 
 			ExhaustEffects.Update(vehicle, engineRpm)

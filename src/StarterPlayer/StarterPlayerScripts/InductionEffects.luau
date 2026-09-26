@@ -131,12 +131,43 @@ local TWO_STEP_FLUTTER = 0.06
 local TWO_STEP_FLUTTER_HZ = 11
 local TWO_STEP_BANG_MIN = 0.16 -- seconds between limiter bangs...
 local TWO_STEP_BANG_MAX = 0.34 -- ...picked randomly in this range, so it never sounds metronomic
-local TWO_STEP_SPOOL_RATE = 1.6 -- spool per second while holding the launch
+
+-- Anti-lag (W+S held, any speed). Revs are driven up to ANTI_LAG_RPM (0-1 of
+-- redline) and then bounce around it. Real anti-lag holds the engine roughly
+-- 55-70% up the rev range - high enough to keep the turbo spooled, low enough
+-- not to hit the limiter - so 0.6 rather than a literal half. The bounce is the
+-- ignition cut/refire cycle, so it is faster and rougher than the two-step's.
+local ANTI_LAG_RPM = 0.9
+local ANTI_LAG_FLUTTER = 0.09
+local ANTI_LAG_FLUTTER_HZ = 16 -- the bounce itself is the only thing W+S does; no pops or fire while held
+local ANTI_LAG_RISE_TIME = 0.35 -- seconds to swing from the real revs up to the bounce
+local ANTI_LAG_FALL_TIME = 0.25
+
+-- WHAT COUNTS AS A BANG-WORTHY MOMENT. Revs and turbo are separate: revs are
+-- the engine turning, spool is energy actually going into moving the car (see
+-- the spool block in Update). A pop's character depends on both:
+--   full spool + high revs  crackle AND a big bang (accelerating hard, then off)
+--   high revs, not spooled  crackle only (revving in place, W+S at a standstill)
+--   full spool, low revs    a lone big bang (needs a high gear at a standstill;
+--                           the automatic box all but prevents it)
+-- Anything else is silent. Only FULL spool earns a bang.
+local FULL_SPOOL = 0.95
+local HIGH_RPM = 0.45
 
 -- What letting go of the brake is worth, and for how long. On top of the
 -- stage's own Boost, decaying to nothing - a shove off the line, not a
 -- permanent extra gear.
 local LAUNCH_BOOST = 0.55
+
+-- ANTI-LAG LAUNCH. Holding W+S pre-loads the engine at its optimal revs: a
+-- charge builds while held (0 -> 1 over ANTI_LAG_CHARGE_TIME), and letting go
+-- into the gas cashes it in as a torque shove that fades over LAUNCH_TIME.
+-- It is the HOLD that pays, not revs or standing still, so ordinary driving
+-- (and a plain launch from a standstill) is untouched. A full charge is worth
+-- LAUNCH_BOOST * ANTI_LAG_LAUNCH_SCALE extra torque at the instant of release.
+local ANTI_LAG_CHARGE_TIME = 0.9
+local ANTI_LAG_MIN_CHARGE = 0.15 -- a tap of W+S is not a launch
+local ANTI_LAG_LAUNCH_SCALE = 15 -- full charge = +5x drive torque at release (was 1.8), fading over LAUNCH_TIME
 local LAUNCH_TIME = 1.8
 
 -- How long after the launch is let go the throttle has to come up for it to
@@ -481,10 +512,17 @@ local function getState(vehicle, now)
 			-- throttle being at zero means nothing - see the lift-off block.
 			ShiftUntil = 0,
 			TwoStepHeld = false,
+			AntiLagBlend = 0, -- 0-1, how far the revs have been pulled onto the anti-lag bounce
+			AntiLagHeld = false,
+			GasRpm = 0,
 			NextEventAt = 0,
 			NextTwoStepBangAt = 0,
 			LaunchArmedUntil = 0,
+			LaunchIsAntiLag = false,
 			LaunchLeft = 0,
+			LaunchPower = 1, -- scale on LAUNCH_BOOST for the launch now running
+			PendingLaunchPower = 1, -- what the armed launch will be worth
+			AntiLagCharge = 0,
 			FlameUntil = 0,
 			-- Rolled per torch (see applyFlameStyle); only read while a
 			-- leftover flame is actually burning.
@@ -668,6 +706,20 @@ local function drainQueue(state, rig, dt, now)
 	end
 end
 
+-- Which burst a release earns (see FULL_SPOOL / HIGH_RPM), or nil for silence.
+local function pickReleaseRecipe(spool, rpm)
+	local full = spool >= FULL_SPOOL
+	local high = rpm >= HIGH_RPM
+	if full and high then
+		return VehicleInduction.Bursts.LiftOff
+	elseif high then
+		return VehicleInduction.Bursts.PopOnly
+	elseif full then
+		return VehicleInduction.Bursts.BangOnly
+	end
+	return nil
+end
+
 --============================================================================
 -- Update
 --============================================================================
@@ -717,15 +769,15 @@ function InductionEffects.Update(vehicle, config, input)
 	local braking = input.Braking == true
 
 	--------------------------------------------------------------------
-	-- Two-step (stage 4). Checked before the spool, because holding the
-	-- launch is what fills it.
+	-- Two-step (stage 4). Pins the revs only: it adds NO spool, since nothing
+	-- is being driven while the car is held on the brake.
 	--------------------------------------------------------------------
 	local twoStep = input.TwoStep == true and VehicleInduction.Has(stage, "TwoStep")
+	local antiLag = input.AntiLag == true and VehicleInduction.Has(stage, "AntiLag") and not twoStep
 	if twoStep then
 		-- A limiter is an engine hitting a wall and bouncing off it, so the
 		-- revs flutter rather than sitting on a note.
 		rpm = TWO_STEP_RPM + math.sin(now * TWO_STEP_FLUTTER_HZ * math.pi * 2) * TWO_STEP_FLUTTER
-		state.Spool = math.min(1, state.Spool + TWO_STEP_SPOOL_RATE * dt)
 		if now >= state.NextTwoStepBangAt then
 			state.NextTwoStepBangAt = now + TWO_STEP_BANG_MIN + math.random() * (TWO_STEP_BANG_MAX - TWO_STEP_BANG_MIN)
 			-- Little bursts on a fast repeat, NOT a big bang each time: a
@@ -735,26 +787,68 @@ function InductionEffects.Update(vehicle, config, input)
 				queueBurst(state, VehicleInduction.Bursts.TwoStep, 0.35)
 			end
 		end
-	else
-		--------------------------------------------------------------------
-		-- Spool. Same smoothstepped fade the turbo whistle has always used,
-		-- with anti-lag stretching the fade-out.
-		--------------------------------------------------------------------
-		local target = math.clamp((rpm - startRpm) / math.max(fullRpm - startRpm, 1e-3), 0, 1)
-		target = target * target * (3 - 2 * target)
-
-		local fadeTime
-		if target > state.Spool then
-			fadeTime = turbo.FadeInTime
-		else
-			fadeTime = turbo.FadeOutTime
-			if VehicleInduction.Has(stage, "AntiLag") then
-				fadeTime *= ANTI_LAG_FADE_SCALE
-			end
-		end
-		local step = dt / math.max(fadeTime, 0.01)
-		state.Spool += math.clamp(target - state.Spool, -step, step)
 	end
+
+	--------------------------------------------------------------------
+	-- Spool. NOT a function of revs alone: the turbo spins up on energy being
+	-- put into moving the car, so it needs the throttle actually driving AND
+	-- the revs up to carry it. Revs with no drive (W+S anti-lag, a two-step
+	-- hold) or a car rolling downhill on a closed throttle put nothing in, so
+	-- the target is zero and any spool already there just runs down.
+	--------------------------------------------------------------------
+	local driving = not twoStep and not antiLag
+	local target = 0
+	if driving then
+		local revFactor = math.clamp((rpm - startRpm) / math.max(fullRpm - startRpm, 1e-3), 0, 1)
+		target = math.clamp(throttleMag, 0, 1) * revFactor
+		target = target * target * (3 - 2 * target)
+	end
+
+	local fadeTime
+	if target > state.Spool then
+		fadeTime = turbo.FadeInTime
+	else
+		fadeTime = turbo.FadeOutTime
+		if VehicleInduction.Has(stage, "AntiLag") then
+			fadeTime *= ANTI_LAG_FADE_SCALE
+		end
+	end
+	local step = dt / math.max(fadeTime, 0.01)
+	state.Spool += math.clamp(target - state.Spool, -step, step)
+
+	-- Pull the revs onto the bounce (and back off it on release) rather than
+	-- snapping, so the note sweeps up the way a real engine would.
+	local blendStep = dt / (if antiLag then ANTI_LAG_RISE_TIME else ANTI_LAG_FALL_TIME)
+	state.AntiLagBlend = math.clamp(state.AntiLagBlend + (if antiLag then blendStep else -blendStep), 0, 1)
+	if state.AntiLagBlend > 0 then
+		local bounce = ANTI_LAG_RPM + math.sin(now * ANTI_LAG_FLUTTER_HZ * math.pi * 2) * ANTI_LAG_FLUTTER
+			+ (math.random() - 0.5) * 0.03
+		rpm = rpm + (bounce - rpm) * state.AntiLagBlend
+	end
+
+	if antiLag then
+		state.AntiLagCharge = math.min(1, state.AntiLagCharge + dt / ANTI_LAG_CHARGE_TIME)
+	end
+	-- LETTING GO of W+S arms the launch with whatever charge was built...
+	if state.AntiLagHeld and not antiLag then
+		if state.AntiLagCharge >= ANTI_LAG_MIN_CHARGE then
+			state.PendingLaunchPower = state.AntiLagCharge * ANTI_LAG_LAUNCH_SCALE
+			state.LaunchArmedUntil = now + LAUNCH_ARM_WINDOW
+			state.LaunchIsAntiLag = true
+		end
+		state.AntiLagCharge = 0
+	end
+	if not antiLag and not state.AntiLagHeld then
+		state.AntiLagCharge = 0
+	end
+	-- ...and is also the moment a real anti-lag car dumps what it built up.
+	if state.AntiLagHeld and not antiLag and not braking then
+		local recipe = pickReleaseRecipe(state.Spool, rpm)
+		if recipe then
+			queueBurst(state, recipe, state.Spool)
+		end
+	end
+	state.AntiLagHeld = antiLag
 
 	-- The launch is ARMED when the hold ends and FIRES when the throttle
 	-- actually comes up, which are not the same frame. Letting go of the gas
@@ -763,6 +857,8 @@ function InductionEffects.Update(vehicle, config, input)
 	-- better of.
 	if state.TwoStepHeld and not twoStep then
 		state.LaunchArmedUntil = now + LAUNCH_ARM_WINDOW
+		state.PendingLaunchPower = 1
+		state.LaunchIsAntiLag = false
 		state.NextTwoStepBangAt = 0
 	end
 	state.TwoStepHeld = twoStep
@@ -772,7 +868,10 @@ function InductionEffects.Update(vehicle, config, input)
 		-- Spool is already full from the hold, so this lands on top of a car
 		-- that is also making its full boost torque.
 		state.LaunchLeft = LAUNCH_TIME
-		if VehicleInduction.Has(stage, "AntiLag") then
+		state.LaunchPower = state.PendingLaunchPower
+		-- An anti-lag launch already popped on release; only the two-step
+		-- launch gets its own bang here.
+		if not state.LaunchIsAntiLag and VehicleInduction.Has(stage, "AntiLag") then
 			-- The one place a bang is all but guaranteed - see the Launch
 			-- recipe's 90% Chance.
 			queueBurst(state, VehicleInduction.Bursts.Launch, 1)
@@ -810,7 +909,7 @@ function InductionEffects.Update(vehicle, config, input)
 			-- whether the player is driving hard or pottering to a delivery,
 			-- and only the hard ones should make any noise at all. Everything
 			-- else about how small this is lives in the Upshift recipe.
-			if VehicleInduction.Has(stage, "AntiLag") and state.Spool >= UPSHIFT_MIN_SPOOL and not twoStep then
+			if VehicleInduction.Has(stage, "AntiLag") and state.Spool >= UPSHIFT_MIN_SPOOL and not twoStep and not antiLag then
 				queueBurst(state, VehicleInduction.Bursts.Upshift, state.Spool)
 			end
 		end
@@ -838,6 +937,11 @@ function InductionEffects.Update(vehicle, config, input)
 	if not inShift then
 		lifted = state.PrevThrottle >= LIFT_FROM and throttleMag <= LIFT_TO
 		state.PrevThrottle = throttleMag
+		if throttleMag > LIFT_FROM then
+			-- The revs the driver was actually pulling, for the release recipe:
+			-- by the frame of the lift they have already started to fall.
+			state.GasRpm = rpm
+		end
 	end
 	-- PrevThrottle is deliberately FROZEN for the length of the window rather
 	-- than tracking the cut down to zero and back. That is what makes a genuine
@@ -852,15 +956,19 @@ function InductionEffects.Update(vehicle, config, input)
 	-- come off the gas - not when you stand on the brake, and not when you
 	-- coast at idle with nothing in the system. Both halves of that are
 	-- enforced here and it is the whole reason the sound stays special.
-	if lifted and not braking and not twoStep and state.Spool >= MIN_EVENT_SPOOL and now >= state.NextEventAt then
-		state.NextEventAt = now + EVENT_COOLDOWN
-		if VehicleInduction.Has(stage, "BlowOff") then
-			playOneShot(rig.BlowOff, 0.94 + state.Spool * 0.22)
-		end
-		if VehicleInduction.Has(stage, "AntiLag") then
-			-- Spool IS the intensity: how much boost was in the system is what
-			-- decides how long the stutter runs and whether it earns a bang.
-			queueBurst(state, VehicleInduction.Bursts.LiftOff, state.Spool)
+	if lifted and not braking and not twoStep and not antiLag and now >= state.NextEventAt then
+		local recipe = pickReleaseRecipe(state.Spool, state.GasRpm)
+		-- The chirp is boost venting, so it still wants a spooled turbo; the
+		-- pops follow the full/high-revs rules instead.
+		local chirp = state.Spool >= MIN_EVENT_SPOOL and VehicleInduction.Has(stage, "BlowOff")
+		if recipe or chirp then
+			state.NextEventAt = now + EVENT_COOLDOWN
+			if chirp then
+				playOneShot(rig.BlowOff, 0.94 + state.Spool * 0.22)
+			end
+			if recipe and VehicleInduction.Has(stage, "AntiLag") then
+				queueBurst(state, recipe, state.Spool)
+			end
 		end
 	end
 
@@ -948,7 +1056,7 @@ function InductionEffects.TorqueMultiplier(vehicle)
 	end
 	local boost = VehicleInduction.TorqueMultiplier(state.Stage, state.Spool)
 	if state.LaunchLeft > 0 then
-		boost += LAUNCH_BOOST * (state.LaunchLeft / LAUNCH_TIME)
+		boost += LAUNCH_BOOST * state.LaunchPower * (state.LaunchLeft / LAUNCH_TIME)
 	end
 	return boost
 end
@@ -959,6 +1067,20 @@ end
 function InductionEffects.HasTwoStep(vehicle)
 	local state = states[vehicle]
 	return state ~= nil and VehicleInduction.Has(state.Stage, "TwoStep")
+end
+
+-- Can this car's anti-lag fire? Same role as HasTwoStep: a stock or lower-stage
+-- car holding W+S just brakes.
+function InductionEffects.HasAntiLag(vehicle)
+	local state = states[vehicle]
+	return state ~= nil and VehicleInduction.Has(state.Stage, "AntiLag")
+end
+
+-- Is a launch shove running right now? The driving client hands this to the
+-- gearbox so shifts do not cut drive in the middle of it.
+function InductionEffects.LaunchActive(vehicle)
+	local state = states[vehicle]
+	return state ~= nil and state.LaunchLeft > 0
 end
 
 -- Called when a car goes away, and when the client stops tracking it.

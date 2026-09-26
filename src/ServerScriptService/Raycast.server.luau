@@ -414,6 +414,7 @@ local function AddCar(carModel)
 			-- last phantom gearshift on a car nobody is in. Left where it is
 			-- so the next driver's first shift is the next value it takes.
 			carModel:SetAttribute("NetTwoStep", false)
+			carModel:SetAttribute("NetAntiLag", false)
 		end
 	end)
 

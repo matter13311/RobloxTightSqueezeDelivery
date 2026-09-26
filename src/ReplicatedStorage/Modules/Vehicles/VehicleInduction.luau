@@ -84,7 +84,7 @@ VehicleInduction.Sounds = {
 	-- longer than the cut is still sounding when the engine picks back up, and
 	-- gets chopped off mid-crack - which is audible and was the original
 	-- complaint about upshift pops. Lengths are measured, not guessed.
-	Crackle = {
+	Pop = {
 		Volume = 0.55,
 		MaxDistance = 380,
 		SoundIds = {
@@ -158,7 +158,7 @@ VehicleInduction.Sounds = {
 --
 -- Count     Min plus a random 0..Spread*intensity, so a harder event stutters
 --           for longer.
--- Pools     Weighted pick per crack. Upshift draws ONLY from Crackle, which is
+-- Pools     Weighted pick per crack. Upshift draws ONLY from Pop, which is
 --           what keeps it inside the shift window.
 -- Bang      nil = never. Otherwise it may OPEN the burst, above MinIntensity
 --           and only Chance of the time.
@@ -175,8 +175,10 @@ VehicleInduction.Sounds = {
 VehicleInduction.Bursts = {
 	LiftOff = {
 		Count = { Min = 3, Spread = 7 },
-		Pools = { { Pool = "Crackle", Weight = 72 }, { Pool = "Crack", Weight = 28 } },
-		Bang = { MinIntensity = 0.6, Chance = 0.45 },
+		Pools = { { Pool = "Pop", Weight = 72 }, { Pool = "Crack", Weight = 28 } },
+		-- Only reached at FULL spool and high revs (see pickReleaseRecipe in
+		-- InductionEffects), so the bang is the expected outcome here.
+		Bang = { MinIntensity = 0, Chance = 0.9 },
 		Volume = 1,
 		Pitch = { Min = 0.82, Max = 1.38 },
 		Flames = {
@@ -185,6 +187,31 @@ VehicleInduction.Bursts = {
 			{ Style = "Flash", Weight = 18 },
 			{ Style = "Torch", Weight = 6 },
 		},
+	},
+
+	-- High revs, turbo NOT fully spooled: revving in place. Pops and a little
+	-- fire, never a bang.
+	PopOnly = {
+		Count = { Min = 3, Spread = 6 },
+		Pools = { { Pool = "Pop", Weight = 80 }, { Pool = "Crack", Weight = 20 } },
+		Bang = nil,
+		Volume = 0.85,
+		Pitch = { Min = 0.9, Max = 1.35 },
+		Flames = {
+			{ Style = "None", Weight = 50 },
+			{ Style = "Spark", Weight = 38 },
+			{ Style = "Flash", Weight = 12 },
+		},
+	},
+
+	-- Full spool, low revs: a single big bang and nothing else.
+	BangOnly = {
+		Count = { Min = 1, Spread = 0 },
+		Pools = { { Pool = "Crack", Weight = 100 } },
+		Bang = { MinIntensity = 0, Chance = 1 },
+		Volume = 1,
+		Pitch = { Min = 0.85, Max = 1.1 },
+		Flames = { { Style = "Flash", Weight = 50 }, { Style = "Torch", Weight = 50 } },
 	},
 
 	-- ONE small crackle, quiet, and nothing visible. Every value here is
@@ -197,10 +224,10 @@ VehicleInduction.Bursts = {
 	-- rather than shifting.
 	Upshift = {
 		Count = { Min = 1, Spread = 0 },
-		-- Crackle only. The longest sample in that pool is 0.32s, which fits
+		-- Pop only. The longest sample in that pool is 0.32s, which fits
 		-- inside the 0.35s ignition cut - so the blip is over before the engine
 		-- picks back up instead of being interrupted by it.
-		Pools = { { Pool = "Crackle", Weight = 100 } },
+		Pools = { { Pool = "Pop", Weight = 100 } },
 		Bang = nil, -- never: bangs belong to lifting off
 		Volume = 0.3,
 		-- Tighter and higher than LiftOff. A shift blip is a crack, not a
@@ -211,7 +238,7 @@ VehicleInduction.Bursts = {
 
 	TwoStep = {
 		Count = { Min = 2, Spread = 2 },
-		Pools = { { Pool = "Crackle", Weight = 85 }, { Pool = "Crack", Weight = 15 } },
+		Pools = { { Pool = "Pop", Weight = 85 }, { Pool = "Crack", Weight = 15 } },
 		Bang = nil, -- it repeats ~4x a second; a big sample here is just mud
 		Volume = 0.8,
 		Pitch = { Min = 0.95, Max = 1.3 },
@@ -224,7 +251,7 @@ VehicleInduction.Bursts = {
 
 	Launch = {
 		Count = { Min = 5, Spread = 6 },
-		Pools = { { Pool = "Crackle", Weight = 60 }, { Pool = "Crack", Weight = 40 } },
+		Pools = { { Pool = "Pop", Weight = 60 }, { Pool = "Crack", Weight = 40 } },
 		Bang = { MinIntensity = 0, Chance = 0.9 },
 		Volume = 1,
 		Pitch = { Min = 0.85, Max = 1.3 },

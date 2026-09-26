@@ -81,9 +81,14 @@ local function activeGear(state, transmission)
 	return transmission.Gears[state.Gear]
 end
 
-local function startShift(state, transmission, targetGear)
+-- Fraction of ShiftTime a shift takes while a launch is running (see the
+-- `seamlessShifts` argument of Update): short enough that the drive cut is
+-- barely felt, but not zero so the gear change still registers.
+local SEAMLESS_SHIFT_SCALE = 0.12
+
+local function startShift(state, transmission, targetGear, seamless)
 	state.PendingGear = targetGear
-	state.ShiftTimeRemaining = transmission.ShiftTime
+	state.ShiftTimeRemaining = transmission.ShiftTime * (if seamless then SEAMLESS_SHIFT_SCALE else 1)
 	state.ShiftedThisFrame = true
 end
 
@@ -94,10 +99,12 @@ end
 --                exactly the question the direction flip has to answer.
 --   forwardKey   W is down
 --   backKey      S is down
+--   seamlessShifts  optional. True during an anti-lag launch: shifts nearly
+--                skip their drive cut, so the shove is not chopped at every gear.
 --
 -- Returns the numbers Step wants, so the caller can splice them straight
 -- into its input table.
-function Gearbox.Update(state, config, delta, signedSpeed, forwardKey, backKey)
+function Gearbox.Update(state, config, delta, signedSpeed, forwardKey, backKey, seamlessShifts)
 	local transmission = config.Transmission
 	local gears = transmission.Gears
 	state.ShiftedThisFrame = false
@@ -195,14 +202,14 @@ function Gearbox.Update(state, config, delta, signedSpeed, forwardKey, backKey)
 	-- interrupted halfway by another one.
 	if state.Selector == "D" and state.ShiftTimeRemaining == 0 then
 		if state.Gear < #gears and speed >= gearTopSpeed(state.Gear) * transmission.ShiftUpAt then
-			startShift(state, transmission, state.Gear + 1)
+			startShift(state, transmission, state.Gear + 1, seamlessShifts)
 		elseif state.Gear > 1 and speed < gearTopSpeed(state.Gear - 1) * transmission.ShiftDownAt then
 			-- Downshift is measured against the gear BELOW's top speed, not
 			-- this gear's, which is what gives the two thresholds room between
 			-- them. If they were measured against the same speed the box would
 			-- sit on the boundary shifting up and down every other frame at a
 			-- steady throttle.
-			startShift(state, transmission, state.Gear - 1)
+			startShift(state, transmission, state.Gear - 1, seamlessShifts)
 		end
 	end
 

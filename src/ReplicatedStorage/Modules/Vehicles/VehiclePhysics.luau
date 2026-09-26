@@ -581,10 +581,10 @@ local DEFAULT_TRANSMISSION = {
 	RpmSmoothing = 6, -- per-second rate the audible revs chase their target. Higher snaps faster
 	IdlePitch = 0.7, -- engine sound PlaybackSpeed at 0 revs...
 	-- ...and at redline. PlaybackSpeed 1.0 is the sound file's own recorded
-	-- pitch, so anything much above ~1.5 is resampling the engine loop far
+	-- pitch, so above ~2.0 is resampling the engine loop far
 	-- past what it was recorded at and starts to sound thin and synthetic.
 	-- This is the knob for "the engine screams before it shifts" - lower it.
-	MaxPitch = 1.45, -- ...and at redline. The sound now tracks REVS, not road speed, so it climbs through a gear and drops on each shift instead of rising once from a standstill to top speed
+	MaxPitch = 1.9, -- ...and at redline (was 1.45, raised so the engine screams near redline). The sound now tracks REVS, not road speed, so it climbs through a gear and drops on each shift instead of rising once from a standstill to top speed
 	-- Torque converter, and the reason a heavy vehicle can pull away up a
 	-- curb without also accelerating like a sports car once it's rolling.
 	-- Torque is multiplied by StallTorqueMultiplier at a dead standstill and
