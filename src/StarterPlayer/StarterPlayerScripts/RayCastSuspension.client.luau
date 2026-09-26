@@ -84,7 +84,7 @@ local steerRightHeld = false
 -- That mattered the moment the gearbox grew a rule about holding both. Gearbox
 -- is written for independent keys - "brake wins over gas, so holding both is
 -- always the safe outcome" - but fed from one axis it never SAW both, so W+S
--- produced no gas AND no brake (a coast), and the two-step launch, which is
+-- produced no gas AND no brake (a coast), and anti-lag, which is
 -- defined as holding both, could not fire at all.
 local gasKeyHeld = false
 local brakeKeyHeld = false
@@ -190,7 +190,6 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		or math.abs(sent.Rpm - mySession.DriveRpm) >= NET_RPM_EPSILON
 		or math.abs(sent.Steer - mySession.NetSteerValue) >= NET_STEER_EPSILON
 		or sent.ShiftCount ~= mySession.ShiftCount
-		or sent.TwoStep ~= mySession.TwoStep
 		or sent.AntiLag ~= mySession.AntiLag
 	if not changed then
 		return
@@ -204,7 +203,6 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 	sent.Rpm = mySession.DriveRpm
 	sent.Steer = mySession.NetSteerValue
 	sent.ShiftCount = mySession.ShiftCount
-	sent.TwoStep = mySession.TwoStep
 	sent.AntiLag = mySession.AntiLag
 
 	vehicleNetworkState:FireServer(
@@ -217,7 +215,6 @@ local function sendNetworkStateIfChanged(mySession, carModel)
 		sent.Rpm,
 		sent.Steer,
 		sent.ShiftCount,
-		sent.TwoStep,
 		sent.AntiLag
 	)
 end
@@ -347,7 +344,7 @@ end
 -- is the gas depends on which way the car is pointed, and that is the
 -- gearbox's decision, not this function's (see Gearbox.Update).
 --
--- Deciding both from one number is what broke the two-step (see gasKeyHeld
+-- Deciding both from one number is what broke anti-lag (see gasKeyHeld
 -- above), and it also meant holding W+S coasted instead of braking - the
 -- gearbox's "brake wins" rule could never fire because it never saw both.
 --
@@ -360,7 +357,7 @@ end
 --   KEYBOARD W and S read straight off the keys, same as steerInput reads A/D.
 --   ANALOG   a gamepad trigger or thumbstick is genuinely one axis and CANNOT
 --            express both at once, so splitting it by sign is exactly right -
---            and those players simply have no two-step, which is a limitation
+--            and those players simply have no anti-lag, which is a limitation
 --            of the hardware rather than something to fake.
 local function pedalInputs(seatPart)
 	if touchInputActive or mobileGasHeld or mobileBrakeHeld then
@@ -656,7 +653,6 @@ local function beginDrive(humanoid, seatPart)
 		-- zero for each new driver would be a CHANGE, and every bystander would
 		-- hear one phantom anti-lag crack the moment somebody got in.
 		ShiftCount = carModel:GetAttribute("NetShiftCount") or 0,
-		TwoStep = false,
 		AntiLag = false,
 		ExitRequested = false,
 		-- Set the first frame this client actually simulates the car; see the
@@ -677,8 +673,7 @@ local function beginDrive(humanoid, seatPart)
 			Rpm = -math.huge,
 			Steer = -math.huge,
 			ShiftCount = -1,
-			TwoStep = false,
-			AntiLag = false,
+				AntiLag = false,
 		},
 
 		ShiftSound = createSound(chassis, "GearShiftSound", config.GearShiftSoundId, config.ShiftSoundVolume),
@@ -801,17 +796,7 @@ local function beginDrive(humanoid, seatPart)
 		local signedSpeed = chassis.CFrame.LookVector:Dot(chassis.AssemblyLinearVelocity)
 		local speed = math.abs(signedSpeed)
 
-		-- TWO-STEP. Both pedals, sitting still, in D, on a car that has bought
-		-- the stage for it. Gearbox makes this stance harmless (brake beats gas)
-		-- so it needs nothing from us but noticing it.
-		local twoStep = forwardKey
-			and backKey
-			and mySession.Gearbox.Selector == "D"
-			and speed < config.Transmission.StoppedSpeed
-			and InductionEffects.HasTwoStep(carModel)
-
-		-- ANTI-LAG. Both pedals held at any speed (two-step owns the standstill
-		-- case when the car has it). Roblox cancels W and S into a zero
+		-- ANTI-LAG. Both pedals held at any speed. Roblox cancels W and S into a zero
 		-- ThrottleFloat, which is why this reads the independent key booleans -
 		-- see gasKeyHeld. Reverse is excluded: there S is the gas.
 		-- The gearbox is then handed NO pedals, so the car coasts down instead
@@ -819,7 +804,6 @@ local function beginDrive(humanoid, seatPart)
 		local antiLag = forwardKey
 			and backKey
 			and mySession.Gearbox.Selector ~= "R"
-			and not twoStep
 			and InductionEffects.HasAntiLag(carModel)
 		if antiLag then
 			forwardKey, backKey = false, false
@@ -859,19 +843,6 @@ local function beginDrive(humanoid, seatPart)
 		mySession.Braking = drive.Brake > 0
 		mySession.Reversing = mySession.Gearbox.Selector == "R"
 
-		-- TWO-STEP. Both pedals, sitting still, in D, on a car that has bought
-		-- the stage for it. The gearbox already makes this stance harmless -
-		-- brake beats gas, so gas is zero and the car stays put - and it
-		-- deliberately cannot flip into reverse either, because the direction
-		-- timer only counts while the gas key is NOT held. So the whole
-		-- feature is "notice a combination the controls already allow", with
-		-- nothing in the driving model to change.
-		--
-		-- HasTwoStep is asked of InductionEffects rather than of the save,
-		-- because the effects layer is already reading this car's stage off
-		-- its Attribute every frame and the driver must not get a different
-		-- answer from the bystanders watching them.
-		mySession.TwoStep = twoStep
 		mySession.AntiLag = antiLag
 		-- Last frame's smoothed steer (Step below is what advances it). One
 		-- frame stale is nothing next to the network trip it's about to take,
@@ -885,12 +856,12 @@ local function beginDrive(humanoid, seatPart)
 		-- InductionEffects runs off os.clock deltas, so the second call gets a
 		-- delta of ~0 and advances nothing. It has to happen here as well
 		-- because Step is about to set the engine sound's pitch from whatever
-		-- Rpm it is handed, and a car held on a two-step limiter has to be
-		-- handed the limiter's revs or Step and the render loop would spend
-		-- the whole launch overwriting each other's pitch.
+		-- Rpm it is handed, and a car held on the anti-lag bounce has to be
+		-- handed the bounce's revs or Step and the render loop would spend
+		-- the whole hold overwriting each other's pitch.
 		--
 		-- DriveRpm (and so NetRpm) deliberately keeps the RAW gearbox value:
-		-- bystanders get NetTwoStep of their own and apply the limiter
+		-- bystanders get NetAntiLag of their own and apply the bounce
 		-- themselves, and sending them a value that already had it folded in
 		-- would apply it twice.
 		local engineRpm = InductionEffects.Update(carModel, config, {
@@ -898,7 +869,6 @@ local function beginDrive(humanoid, seatPart)
 			Throttle = drive.Throttle,
 			Braking = mySession.Braking,
 			ShiftCount = mySession.ShiftCount,
-			TwoStep = mySession.TwoStep,
 			AntiLag = mySession.AntiLag,
 		})
 
@@ -926,6 +896,7 @@ local function beginDrive(humanoid, seatPart)
 			TorqueMultiplier = (drive.TorqueMultiplier or 1)
 				* mySession.TrailerDrive:TorqueScale(config)
 				* InductionEffects.TorqueMultiplier(carModel),
+			LaunchSquat = InductionEffects.LaunchSquat(carModel),
 			HillAssistMassScale = mySession.TrailerDrive:MassRatio(),
 			GearMaxSpeed = drive.GearMaxSpeed,
 			Rpm = engineRpm,
@@ -1077,6 +1048,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- immediately for a car with no Induction Upgrade, which is every
 			-- car until someone buys one.
 			InductionEffects.UpdateParked(vehicle)
+			InductionEffects.SilenceParked(vehicle)
 
 			-- The wheels have exactly the same problem, and it is far more
 			-- visible: the block below is what writes each wheel's weld C0
@@ -1147,9 +1119,8 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			local rpm = 0
 			-- Both of these exist only to drive the Induction Upgrade's
 			-- effects; see InductionEffects for what a gearshift and a held
-			-- two-step each sound like.
+			-- anti-lag each sound like.
 			local shiftCount = nil
-			local twoStep = false
 			local antiLag = false
 			if session and session.CarModel == vehicle then
 				-- The GEAR's drive demand, not the raw seat axis. S is the
@@ -1162,7 +1133,6 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				isReversing = session.Reversing
 				rpm = session.DriveRpm or 0
 				shiftCount = session.ShiftCount
-				twoStep = session.TwoStep
 				antiLag = session.AntiLag
 			else
 				-- Someone else's car (or nobody's driving it) - including a
@@ -1181,7 +1151,6 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				isReversing = vehicle:GetAttribute("NetReversing") or false
 				rpm = vehicle:GetAttribute("NetRpm") or 0
 				shiftCount = vehicle:GetAttribute("NetShiftCount")
-				twoStep = vehicle:GetAttribute("NetTwoStep") or false
 				antiLag = vehicle:GetAttribute("NetAntiLag") or false
 			end
 			-- Not folded into the session branch above: this client only has
@@ -1211,7 +1180,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			-- Runs for EVERY car in view, not just the driven one - that is
 			-- what makes another player's pops and bangs audible here. It
 			-- hands back the revs the engine should sound like, which is `rpm`
-			-- for every car except one being held on a two-step limiter; the
+			-- for every car except one being held on the anti-lag bounce; the
 			-- exhaust smoke and the tacho follow it too, so all four agree on
 			-- what the engine is doing.
 			local engineRpm = InductionEffects.Update(vehicle, config, {
@@ -1219,7 +1188,6 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 				Throttle = throttle,
 				Braking = isBraking,
 				ShiftCount = shiftCount,
-				TwoStep = twoStep,
 				AntiLag = antiLag,
 			})
 

@@ -1,6 +1,6 @@
 -- Everything the Induction Upgrade actually DOES: the spool whistle, the
 -- blow-off chirp, the anti-lag pops and bangs, the exhaust flames, the
--- two-step launch, and the boost the turbo hands the drive force.
+-- anti-lag launch, and the boost the turbo hands the drive force.
 --
 -- See VehicleInduction.luau for the ladder itself (stages, prices, which stage
 -- turns what on). This file owns none of that; it reads the stage off the car
@@ -11,7 +11,7 @@
 -- what makes a bystander hear another player's anti-lag: each client runs this
 -- same state machine on that car, off the state that is already replicated
 -- (the stage Attribute, NetRpm, NetThrottle, NetBraking, NetShiftCount,
--- NetTwoStep). Nothing is fired over a remote and nothing is created on the
+-- NetAntiLag). Nothing is fired over a remote and nothing is created on the
 -- server, so the sounds cost no bandwidth and every player is hearing their
 -- own copy in the right place in 3D.
 --
@@ -50,6 +50,7 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VehicleInduction = require(ReplicatedStorage.Modules.Vehicles.VehicleInduction)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
+local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local InductionEffects = {}
 
@@ -123,20 +124,11 @@ local VOICE_COUNT = 8
 -- of waiting for the turbo to catch up.
 local ANTI_LAG_FADE_SCALE = 2.4
 
--- Two-step. Revs are pinned here (0-1) while the launch is being held, which
--- is what the limiter sounds like, with a small flutter on top so it is
--- audibly bouncing off something rather than holding a flat note.
-local TWO_STEP_RPM = 0.82
-local TWO_STEP_FLUTTER = 0.06
-local TWO_STEP_FLUTTER_HZ = 11
-local TWO_STEP_BANG_MIN = 0.16 -- seconds between limiter bangs...
-local TWO_STEP_BANG_MAX = 0.34 -- ...picked randomly in this range, so it never sounds metronomic
-
 -- Anti-lag (W+S held, any speed). Revs are driven up to ANTI_LAG_RPM (0-1 of
 -- redline) and then bounce around it. Real anti-lag holds the engine roughly
 -- 55-70% up the rev range - high enough to keep the turbo spooled, low enough
 -- not to hit the limiter - so 0.6 rather than a literal half. The bounce is the
--- ignition cut/refire cycle, so it is faster and rougher than the two-step's.
+-- ignition cut/refire cycle, so it is faster and rougher than a plain rev.
 local ANTI_LAG_RPM = 0.9
 local ANTI_LAG_FLUTTER = 0.09
 local ANTI_LAG_FLUTTER_HZ = 16 -- the bounce itself is the only thing W+S does; no pops or fire while held
@@ -463,6 +455,10 @@ local function buildRig(vehicle, stage)
 		-- Volume, and put back by destroyRig for a sound we borrowed.
 		WhistleBaseVolume = whistle.Volume,
 	}
+	-- Small turbo is the same sample, quieter and higher (see Stages).
+	local volumeScale, pitchScale = VehicleInduction.WhistleScale(stage)
+	rig.WhistleLevel = whistle.Volume * volumeScale
+	rig.WhistlePitch = pitchScale
 	whistle.Volume = 0
 
 	-- Everything below is the exhaust half, and every bit of it is optional:
@@ -511,14 +507,11 @@ local function getState(vehicle, now)
 			-- While os.clock() is under this, the gearbox is mid-shift and the
 			-- throttle being at zero means nothing - see the lift-off block.
 			ShiftUntil = 0,
-			TwoStepHeld = false,
 			AntiLagBlend = 0, -- 0-1, how far the revs have been pulled onto the anti-lag bounce
 			AntiLagHeld = false,
 			GasRpm = 0,
 			NextEventAt = 0,
-			NextTwoStepBangAt = 0,
 			LaunchArmedUntil = 0,
-			LaunchIsAntiLag = false,
 			LaunchLeft = 0,
 			LaunchPower = 1, -- scale on LAUNCH_BOOST for the launch now running
 			PendingLaunchPower = 1, -- what the armed launch will be worth
@@ -724,17 +717,42 @@ end
 -- Update
 --============================================================================
 
+-- The large turbo swaps the car's engine loop for the one named by its config's
+-- LargeTurboEngineSoundId (a car with none keeps its own). The Studio-authored
+-- id is remembered so dropping back to a smaller stage puts it back. Runs every
+-- frame but only writes on a change, since assigning SoundId restarts a Sound.
+local function applyEngineSound(vehicle, state, config)
+	local sound = vehicle:FindFirstChild("Sound", true)
+	if not sound or not sound:IsA("Sound") then
+		return
+	end
+	if not state.StockEngineSoundId then
+		state.StockEngineSoundId = sound.SoundId
+	end
+	-- Remembered because UpdateParked hands in a bare config with no id, and a
+	-- parked car must not flip back to its stock sound.
+	local swapped = config.LargeTurboEngineSoundId or state.LargeTurboEngineSoundId
+	state.LargeTurboEngineSoundId = swapped
+	local wanted = if type(swapped) == "string" and swapped ~= "" and VehicleInduction.Has(state.Stage, "LargeTurbo")
+		then swapped
+		else state.StockEngineSoundId
+	if sound.SoundId ~= wanted then
+		sound.SoundId = wanted
+		-- Remembered so SilenceParked can find it: a client-side SoundId change
+		-- restarts the Sound locally, and the server's Stop on exit then no
+		-- longer reliably ends it.
+		state.EngineSound = sound
+	end
+end
+
 -- Call once per frame per visible vehicle. `input` is:
 --   Rpm         0-1 engine revs (the driver's own gearbox value, or NetRpm)
 --   Throttle    signed drive demand (DriveThrottle, or NetThrottle)
 --   Braking     brake pedal down
 --   ShiftCount  a counter that increments on every gearshift, or nil
---   TwoStep     brake and gas held together at a standstill
+--   AntiLag     W+S held together
 --
--- Returns the revs the ENGINE SOUND should use, which is `input.Rpm` for every
--- car except one sitting on a two-step limiter. Callers feed the return value
--- to VehiclePhysics.UpdateEngineSound rather than their own rpm, which is what
--- makes a held launch actually sound like one.
+-- Returns the revs the engine sound should use.
 function InductionEffects.Update(vehicle, config, input)
 	local rpm = math.clamp(input.Rpm or 0, 0, 1)
 	if not RunService:IsClient() then
@@ -745,6 +763,8 @@ function InductionEffects.Update(vehicle, config, input)
 	local state = getState(vehicle, now)
 	local dt = math.min(now - state.Last, MAX_DT)
 	state.Last = now
+
+	applyEngineSound(vehicle, state, config)
 
 	local stage = state.Stage
 	local rig = state.Rig
@@ -768,35 +788,15 @@ function InductionEffects.Update(vehicle, config, input)
 	local throttleMag = math.abs(input.Throttle or 0)
 	local braking = input.Braking == true
 
-	--------------------------------------------------------------------
-	-- Two-step (stage 4). Pins the revs only: it adds NO spool, since nothing
-	-- is being driven while the car is held on the brake.
-	--------------------------------------------------------------------
-	local twoStep = input.TwoStep == true and VehicleInduction.Has(stage, "TwoStep")
-	local antiLag = input.AntiLag == true and VehicleInduction.Has(stage, "AntiLag") and not twoStep
-	if twoStep then
-		-- A limiter is an engine hitting a wall and bouncing off it, so the
-		-- revs flutter rather than sitting on a note.
-		rpm = TWO_STEP_RPM + math.sin(now * TWO_STEP_FLUTTER_HZ * math.pi * 2) * TWO_STEP_FLUTTER
-		if now >= state.NextTwoStepBangAt then
-			state.NextTwoStepBangAt = now + TWO_STEP_BANG_MIN + math.random() * (TWO_STEP_BANG_MAX - TWO_STEP_BANG_MIN)
-			-- Little bursts on a fast repeat, NOT a big bang each time: a
-			-- limiter is a rapid stutter, and firing a two-second sample five
-			-- times a second just turns into mud.
-			if VehicleInduction.Has(stage, "AntiLag") then
-				queueBurst(state, VehicleInduction.Bursts.TwoStep, 0.35)
-			end
-		end
-	end
+	local antiLag = input.AntiLag == true and VehicleInduction.Has(stage, "AntiLag")
 
 	--------------------------------------------------------------------
 	-- Spool. NOT a function of revs alone: the turbo spins up on energy being
 	-- put into moving the car, so it needs the throttle actually driving AND
-	-- the revs up to carry it. Revs with no drive (W+S anti-lag, a two-step
-	-- hold) or a car rolling downhill on a closed throttle put nothing in, so
+	-- the revs up to carry it. Revs with no drive (W+S anti-lag) or a car rolling downhill on a closed throttle put nothing in, so
 	-- the target is zero and any spool already there just runs down.
 	--------------------------------------------------------------------
-	local driving = not twoStep and not antiLag
+	local driving = not antiLag
 	local target = 0
 	if driving then
 		local revFactor = math.clamp((rpm - startRpm) / math.max(fullRpm - startRpm, 1e-3), 0, 1)
@@ -834,7 +834,6 @@ function InductionEffects.Update(vehicle, config, input)
 		if state.AntiLagCharge >= ANTI_LAG_MIN_CHARGE then
 			state.PendingLaunchPower = state.AntiLagCharge * ANTI_LAG_LAUNCH_SCALE
 			state.LaunchArmedUntil = now + LAUNCH_ARM_WINDOW
-			state.LaunchIsAntiLag = true
 		end
 		state.AntiLagCharge = 0
 	end
@@ -855,27 +854,12 @@ function InductionEffects.Update(vehicle, config, input)
 	-- instead of the brake simply lets the window lapse - that is what stops a
 	-- player collecting the boost by backing out of a launch they thought
 	-- better of.
-	if state.TwoStepHeld and not twoStep then
-		state.LaunchArmedUntil = now + LAUNCH_ARM_WINDOW
-		state.PendingLaunchPower = 1
-		state.LaunchIsAntiLag = false
-		state.NextTwoStepBangAt = 0
-	end
-	state.TwoStepHeld = twoStep
-
 	if state.LaunchArmedUntil > 0 and now <= state.LaunchArmedUntil and throttleMag > LIFT_TO then
 		state.LaunchArmedUntil = 0
 		-- Spool is already full from the hold, so this lands on top of a car
 		-- that is also making its full boost torque.
 		state.LaunchLeft = LAUNCH_TIME
 		state.LaunchPower = state.PendingLaunchPower
-		-- An anti-lag launch already popped on release; only the two-step
-		-- launch gets its own bang here.
-		if not state.LaunchIsAntiLag and VehicleInduction.Has(stage, "AntiLag") then
-			-- The one place a bang is all but guaranteed - see the Launch
-			-- recipe's 90% Chance.
-			queueBurst(state, VehicleInduction.Bursts.Launch, 1)
-		end
 	elseif now > state.LaunchArmedUntil then
 		state.LaunchArmedUntil = 0
 	end
@@ -909,7 +893,7 @@ function InductionEffects.Update(vehicle, config, input)
 			-- whether the player is driving hard or pottering to a delivery,
 			-- and only the hard ones should make any noise at all. Everything
 			-- else about how small this is lives in the Upshift recipe.
-			if VehicleInduction.Has(stage, "AntiLag") and state.Spool >= UPSHIFT_MIN_SPOOL and not twoStep and not antiLag then
+			if VehicleInduction.Has(stage, "AntiLag") and state.Spool >= UPSHIFT_MIN_SPOOL and not antiLag then
 				queueBurst(state, VehicleInduction.Bursts.Upshift, state.Spool)
 			end
 		end
@@ -956,7 +940,7 @@ function InductionEffects.Update(vehicle, config, input)
 	-- come off the gas - not when you stand on the brake, and not when you
 	-- coast at idle with nothing in the system. Both halves of that are
 	-- enforced here and it is the whole reason the sound stays special.
-	if lifted and not braking and not twoStep and not antiLag and now >= state.NextEventAt then
+	if lifted and not braking and not antiLag and now >= state.NextEventAt then
 		local recipe = pickReleaseRecipe(state.Spool, state.GasRpm)
 		-- The chirp is boost venting, so it still wants a spooled turbo; the
 		-- pops follow the full/high-revs rules instead.
@@ -986,8 +970,8 @@ function InductionEffects.Update(vehicle, config, input)
 			state.Pitch = targetPitch
 		end
 		state.Pitch += (targetPitch - state.Pitch) * (1 - math.exp(-turbo.PitchSmoothing * dt))
-		whistle.PlaybackSpeed = state.Pitch
-		whistle.Volume = rig.WhistleBaseVolume * state.Spool
+		whistle.PlaybackSpeed = state.Pitch * (rig.WhistlePitch or 1)
+		whistle.Volume = (rig.WhistleLevel or rig.WhistleBaseVolume) * state.Spool
 		-- Only playing while audible, so a car with its turbo faded out (every
 		-- parked one) isn't mixing a silent looping sound.
 		if state.Spool > 0.001 then
@@ -1020,6 +1004,23 @@ function InductionEffects.Update(vehicle, config, input)
 	state.Drawing = burning or lit
 
 	return rpm
+end
+
+-- The server stops a car's engine Sound when its driver leaves, but a Sound whose
+-- SoundId this client swapped (see applyEngineSound) kept playing here for a few
+-- seconds afterwards. Called every frame for a parked car; does nothing unless
+-- this module swapped the sound, and never while someone is in the driver seat,
+-- since the server starts the engine before the car is unanchored.
+function InductionEffects.SilenceParked(vehicle)
+	local state = states[vehicle]
+	local sound = state and state.EngineSound
+	if not sound or not sound.IsPlaying then
+		return
+	end
+	local seat = VehicleSeats.GetDriverSeat(vehicle)
+	if seat and seat.Occupant == nil then
+		sound:Stop()
+	end
 end
 
 -- Lets a PARKED car's whistle finish fading out and its flames burn out. The
@@ -1061,19 +1062,24 @@ function InductionEffects.TorqueMultiplier(vehicle)
 	return boost
 end
 
--- Is this car's two-step currently able to fire? Used by the driving client to
--- decide whether holding both pedals means anything, so a stock car's brake
--- still just brakes.
-function InductionEffects.HasTwoStep(vehicle)
-	local state = states[vehicle]
-	return state ~= nil and VehicleInduction.Has(state.Stage, "TwoStep")
-end
-
--- Can this car's anti-lag fire? Same role as HasTwoStep: a stock or lower-stage
--- car holding W+S just brakes.
+-- Can this car's anti-lag fire? Used by the driving client to decide whether
+-- holding both pedals means anything: a stock or lower-stage car holding W+S
+-- just brakes.
 function InductionEffects.HasAntiLag(vehicle)
 	local state = states[vehicle]
 	return state ~= nil and VehicleInduction.Has(state.Stage, "AntiLag")
+end
+
+-- 0-1 nose-up hold for the driving client to pass to VehiclePhysics.Step as
+-- LaunchSquat. Full for most of the launch and only easing off at the end, unlike
+-- the boost itself (which decays linearly), so the car stays squatted while it
+-- is still pulling hard.
+function InductionEffects.LaunchSquat(vehicle)
+	local state = states[vehicle]
+	if not state or state.LaunchLeft <= 0 then
+		return 0
+	end
+	return math.clamp(state.LaunchLeft / (LAUNCH_TIME * 0.3), 0, 1)
 end
 
 -- Is a launch shove running right now? The driving client hands this to the

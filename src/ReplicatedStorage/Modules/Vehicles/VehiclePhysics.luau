@@ -842,6 +842,7 @@ local OPTIONAL_STRING_KEYS = {
 	"RearWheelModelName",
 	"CosmeticWheelModelName",
 	"CargoBedAttachmentName",
+	"LargeTurboEngineSoundId", -- see InductionEffects.applyEngineSound
 }
 
 -- Where each mirror POINTS, in degrees, consumed by VehicleMirrorViews on the
@@ -1142,6 +1143,10 @@ function VehiclePhysics.NewState()
 	return { SmoothSteer = 0 }
 end
 
+-- Lever arm, in studs, for the launch squat torque: torque = weight * arm *
+-- config.LaunchSquat * launch strength. A feel knob, not a measurement.
+local LAUNCH_SQUAT_ARM = 1.5
+
 -- Runs one physics step for one car. Only ever called for the car a player
 -- is actively driving (the chassis is unanchored for exactly that long).
 --
@@ -1156,6 +1161,10 @@ end
 --   TorqueMultiplier  current gear's ratio (defaults to 1 = single-speed).
 --   GearMaxSpeed      current gear's top speed (defaults to config.MaxSpeed).
 --   HillAssistMassScale  multiplier on the hill assist's mass (defaults to 1).
+--   LaunchSquat          0-1, how hard to hold the nose up during a launch. A
+--                        pitch torque applied on top of the drive force, because
+--                        the squat that force makes fades as the gear pulls
+--                        toward its top speed (defaults to 0).
 --                     A tractor passes (truck + trailer) / truck, since the
 --                     assist is sized from this car's own weight but also has
 --                     to haul the trailer's up the slope.
@@ -1858,6 +1867,18 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 		FrameScale = debugFrameScale,
 		StableScale = debugStableScale,
 	})
+
+	-- LAUNCH SQUAT. The squat the drive force makes is proportional to the
+	-- force, and the force fades as speed climbs (the 1 - speed/gearMaxSpeed
+	-- term) while the launch boost decays - so the nose came back down long
+	-- before the car stopped accelerating hard. This holds it up for the length
+	-- of the launch. Only with a wheel on the ground: in the air it would just
+	-- spin the car. Positive about the right vector is nose-up (forward is -Z).
+	local launchSquat = input.LaunchSquat or 0
+	if launchSquat > 0 and debugGrounded > 0 then
+		local squatTorque = carPrim.AssemblyMass * workspace.Gravity * LAUNCH_SQUAT_ARM * (config.LaunchSquat or 0.5)
+		carPrim:ApplyAngularImpulse(carPrim.CFrame.RightVector * squatTorque * launchSquat * delta)
+	end
 
 	local pending = pendingSuspensionDeltaV[carModel]
 	local mass = carPrim.AssemblyMass

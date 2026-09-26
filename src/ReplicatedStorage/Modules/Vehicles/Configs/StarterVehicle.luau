@@ -248,6 +248,10 @@ return {
 	-- so a new car that says nothing here still honks.
 	HonkSoundId = "rbxassetid://127513531122725",
 
+	-- Engine loop played instead of the model's own Sound once the Large Turbo
+	-- (Induction stage 4) is equipped. Omit it and the car keeps its stock sound.
+	LargeTurboEngineSoundId = "rbxassetid://120304463372483",
+
 	Mirrors = {
 		LeftMirror = { Yaw = -20, Pitch = 30, Standoff = -0.75 },
 		RightMirror = { Yaw = 20, Pitch = 30, Standoff = -0.75 },

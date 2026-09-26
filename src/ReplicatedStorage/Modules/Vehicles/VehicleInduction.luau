@@ -8,8 +8,8 @@
 -- PlotManager re-checks every purchase - but all three have to agree on what
 -- "stage 3" means or the player hears one thing and pays for another.
 --
--- WHY IT IS NOT CALLED "TURBO". Stage 1 is a turbo. Stage 2 adds a blow-off
--- valve, stage 3 anti-lag, stage 4 a two-step launch - none of which are the
+-- WHY IT IS NOT CALLED "TURBO". Stage 1 is a small turbo. Stage 2 adds a blow-off
+-- valve, stage 3 anti-lag, stage 4 a large turbo - none of which are the
 -- turbo itself, and a ladder whose name only describes its first rung reads as
 -- a bug by the time you reach the top of it. "Induction" is the word that
 -- covers the whole realm, and the stage names underneath it are the ones a
@@ -24,7 +24,7 @@
 --
 -- EVERYONE HEARS IT. Every sound and particle in this feature is built by each
 -- CLIENT on the car itself, from state that is already replicated (the stage
--- Attribute, NetRpm, NetThrottle, NetBraking, NetShiftCount, NetTwoStep), so a
+-- Attribute, NetRpm, NetThrottle, NetBraking, NetShiftCount, NetAntiLag), so a
 -- bystander runs the same state machine off the same numbers and hears the
 -- same bang at the same moment. That is the whole point: a pop nobody else
 -- hears is not worth buying.
@@ -95,7 +95,7 @@ VehicleInduction.Sounds = {
 	},
 
 	-- THE CRACK POOL: everything with some body to it, sprinkled through a
-	-- burst so it is not all one texture. Only LiftOff, TwoStep and Launch
+	-- burst so it is not all one texture. Only the lift-off bursts
 	-- reach for these - never Upshift - so length is free here, and the long
 	-- ones at the bottom are what give an overrun its low grumble.
 	Crack = {
@@ -151,10 +151,7 @@ VehicleInduction.Sounds = {
 --            per pull and anything bigger stops being punctuation and starts
 --            being the thing you hear instead of the engine. Popping, banging
 --            and fire belong to lifting off; this is only a blip.
---   TwoStep  A limiter bouncing the engine off a rev ceiling, over and over.
 --            Rapid and small, because it repeats several times a second.
---   Launch   The moment the brake comes off with everything spooled. The one
---            event that is allowed to be as big as it likes.
 --
 -- Count     Min plus a random 0..Spread*intensity, so a harder event stutters
 --           for longer.
@@ -235,32 +232,6 @@ VehicleInduction.Bursts = {
 		Pitch = { Min = 1.05, Max = 1.35 },
 		Flames = nil, -- never: no fire, no sparks, nothing at the pipe
 	},
-
-	TwoStep = {
-		Count = { Min = 2, Spread = 2 },
-		Pools = { { Pool = "Pop", Weight = 85 }, { Pool = "Crack", Weight = 15 } },
-		Bang = nil, -- it repeats ~4x a second; a big sample here is just mud
-		Volume = 0.8,
-		Pitch = { Min = 0.95, Max = 1.3 },
-		Flames = {
-			{ Style = "None", Weight = 35 },
-			{ Style = "Spark", Weight = 35 },
-			{ Style = "Flash", Weight = 30 },
-		},
-	},
-
-	Launch = {
-		Count = { Min = 5, Spread = 6 },
-		Pools = { { Pool = "Pop", Weight = 60 }, { Pool = "Crack", Weight = 40 } },
-		Bang = { MinIntensity = 0, Chance = 0.9 },
-		Volume = 1,
-		Pitch = { Min = 0.85, Max = 1.3 },
-		Flames = {
-			{ Style = "Spark", Weight = 20 },
-			{ Style = "Flash", Weight = 40 },
-			{ Style = "Torch", Weight = 40 },
-		},
-	},
 }
 
 -- !! TESTING PRICES ARE ACTIVE !! Every Price below is $1 so the whole ladder
@@ -283,11 +254,15 @@ VehicleInduction.Bursts = {
 VehicleInduction.Stages = {
 	{
 		Level = 1,
-		Id = "Turbo",
-		DisplayName = "Turbo",
+		Id = "SmallTurbo",
+		DisplayName = "Small Turbo",
 		Price = 1, --default 4,000
-		Blurb = "A turbo that spools up as you rev. Hear it whistle, feel it pull harder.",
-		Boost = 0.18,
+		Blurb = "A small turbo that spools quickly. A soft, light whistle and a gentle shove.",
+		Boost = 0.12,
+		-- Same whistle sample as the large turbo, just quieter and higher: a small
+		-- turbo spins faster and sounds thinner. Scales on Sounds.Whistle.
+		WhistleVolume = 0.45,
+		WhistlePitch = 1.3,
 	},
 	{
 		Level = 2,
@@ -298,24 +273,30 @@ VehicleInduction.Stages = {
 		-- off the gas while it's spooled" is a thing a player has to DO, and a
 		-- feature you can't work out how to trigger reads as broken.
 		Blurb = "Lift off the gas while the turbo is spooled and it lets the boost out with a chirp.",
-		Boost = 0.26,
+		Boost = 0.16,
+		WhistleVolume = 0.45,
+		WhistlePitch = 1.3,
 	},
 	{
 		Level = 3,
 		Id = "AntiLag",
 		DisplayName = "Anti-Lag",
 		Price = 1, --default 20,000
-		Blurb = "Pops and bangs out of the exhaust, with flames. The turbo stays spooled between gears.",
-		Boost = 0.34,
+		Blurb = "Pops and bangs out of the exhaust, with flames. Hold the brake and gas together to build boost and launch.",
+		Boost = 0.2,
+		WhistleVolume = 0.45,
+		WhistlePitch = 1.3,
 	},
 	{
 		Level = 4,
-		Id = "TwoStep",
-		DisplayName = "Two-Step Launch",
+		Id = "LargeTurbo",
+		DisplayName = "Large Turbo",
 		Price = 1, --default 45,000
-		-- Names the exact key combination, for the same reason as stage 2.
-		Blurb = "Hold the brake and the gas together at a standstill to build boost, then let go of the brake and launch.",
+		Blurb = "Swap the small turbo for a big one. Slower to build, but a deep, loud whistle and a much harder pull.",
 		Boost = 0.40,
+		-- Full-strength whistle, unscaled.
+		WhistleVolume = 1,
+		WhistlePitch = 1,
 	},
 }
 
@@ -331,7 +312,7 @@ VehicleInduction.Features = {
 	Whistle = 1, -- the looping spool whistle, and the boost that comes with it
 	BlowOff = 2, -- chirp on lifting off the gas while spooled
 	AntiLag = 3, -- pops/bangs and exhaust flame on lift-off and between gears
-	TwoStep = 4, -- brake-and-gas launch control
+	LargeTurbo = 4, -- swaps the small turbo's whistle and boost for the big one
 }
 
 function VehicleInduction.MaxStage()
@@ -369,6 +350,15 @@ function VehicleInduction.TorqueMultiplier(level, spool)
 		return 1
 	end
 	return 1 + stage.Boost * math.clamp(spool or 0, 0, 1)
+end
+
+-- Whistle volume and pitch scale for a car at `level` (small vs large turbo).
+function VehicleInduction.WhistleScale(level)
+	local stage = VehicleInduction.Get(level)
+	if not stage then
+		return 1, 1
+	end
+	return stage.WhistleVolume or 1, stage.WhistlePitch or 1
 end
 
 -- What the garage shows as the car's current state.

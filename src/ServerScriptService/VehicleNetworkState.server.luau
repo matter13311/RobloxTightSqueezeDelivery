@@ -72,7 +72,7 @@ local function toShiftCount(value)
 	return math.floor(math.clamp(value, 0, 1e9))
 end
 
-remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm, steer, shiftCount, isTwoStep, isAntiLag)
+remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, isBurnout, isHandbrake, throttle, rpm, steer, shiftCount, isAntiLag)
 	if typeof(vehicle) ~= "Instance" or not vehicle:IsA("Model") or vehicle.Parent ~= workspace.Vehicles then
 		return
 	end
@@ -105,10 +105,6 @@ remote.OnServerEvent:Connect(function(player, vehicle, isBraking, isReversing, i
 	vehicle:SetAttribute("NetRpm", toRpm(rpm))
 	vehicle:SetAttribute("NetSteer", toSteer(steer))
 	vehicle:SetAttribute("NetShiftCount", toShiftCount(shiftCount))
-	-- Brake and gas held together at a standstill: a two-step launch being
-	-- held. Sustained rather than momentary, so unlike the shift above a plain
-	-- boolean is exactly right.
-	vehicle:SetAttribute("NetTwoStep", toBoolean(isTwoStep))
 	-- W+S held together: anti-lag. Sustained, so a plain boolean.
 	vehicle:SetAttribute("NetAntiLag", toBoolean(isAntiLag))
 end)

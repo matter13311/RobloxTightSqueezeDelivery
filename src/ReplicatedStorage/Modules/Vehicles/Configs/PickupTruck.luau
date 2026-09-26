@@ -212,7 +212,7 @@ return {
 	-- short chassis, so both are cut further here - TailLightBrightness
 	-- overrides just the rear/turn-signal PointLights, leaving the headlights
 	-- at the normal LightBrightness.
-TailLightBrightness = 0.5,
+	TailLightBrightness = 0.5,
 	LightRange = 0.5,
 
 	-- Horn (H). Server-played and audible to every player in the game, from
@@ -220,6 +220,10 @@ TailLightBrightness = 0.5,
 	-- this car its own horn; VehiclePhysics.Defaults has the shared fallback,
 	-- so a new car that says nothing here still honks.
 	HonkSoundId = "rbxassetid://127513531122725",
+
+	-- Engine loop played instead of the model's own Sound once the Large Turbo
+	-- (Induction stage 4) is equipped. Omit it and the car keeps its stock sound.
+	LargeTurboEngineSoundId = "rbxassetid://124488442062152",
 
 	Mirrors = {
 		LeftMirror = { Yaw = -15, Pitch = 15 },
