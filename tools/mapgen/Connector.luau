@@ -452,13 +452,16 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 	end
 
 	-- zone land (so connector buildings never spill into a zone)
-	local function inZone(p)
+	-- `slack` shrinks the zone: a point on the edge itself (the connector's own
+	-- first and last samples) is inside at 0 but outside at 1.5
+	local function inZone(p, slack)
+		slack = slack or 0
 		local a = ffr:PointToObjectSpace(p)
-		if math.abs(a.X) < L.HalfWidth + 4 and a.Z > fromZone.result.exitEdge - 1 then
+		if math.abs(a.X) < L.HalfWidth + 4 - slack and a.Z > fromZone.result.exitEdge - 1 + slack then
 			return true
 		end
 		local c = tfr:PointToObjectSpace(p)
-		if math.abs(c.X) < L.HalfWidth + 4 and c.Z < toZone.result.entryEdge + 1 then
+		if math.abs(c.X) < L.HalfWidth + 4 - slack and c.Z < toZone.result.entryEdge + 1 - slack then
 			return true
 		end
 		return false
@@ -562,7 +565,22 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 			-- how far a block runs past a joint to close the outside of the bend
 			local function jointExtra(i)
 				if i <= 1 or i >= count then
-					return 0
+					-- At a zone edge the road is not square to the edge, so a block's
+					-- outer corner stops short of it: a wedge of open water between
+					-- the terrace and the zone. Run the block on until that corner
+					-- reaches the edge line.
+					local first = i <= 1
+					local run = first and frontAt(2) - frontAt(1) or frontAt(count) - frontAt(count - 1)
+					if run.Magnitude < 0.05 then
+						return 0
+					end
+					local u = Vector3.new(run.X, 0, run.Z).Unit
+					local en = first and d0 or -d1 -- edge normal, towards the connector
+					local along = math.abs(u:Dot(en))
+					if along < 0.5 then
+						return 0
+					end
+					return math.clamp(rightOf(u):Dot(en) * side * DEPTH / along, 0, 8)
 				end
 				local d0, d1 = frontAt(i) - frontAt(i - 1), frontAt(i + 1) - frontAt(i)
 				if d0.Magnitude < 0.05 or d1.Magnitude < 0.05 then
@@ -584,7 +602,8 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 				walk = {}
 			end
 			for i = 1, count do
-				if (i < count and r.inGap[i]) or inZone(kerb(i)) then
+				-- slack: the end samples sit ON the zone edge and must keep their footpath
+				if (i < count and r.inGap[i]) or inZone(kerb(i), 1.5) then
 					flushWalk()
 				else
 					table.insert(walk, kerb(i) + r.right[i] * side * (SW / 2) + Vector3.new(0, footY, 0))
@@ -606,29 +625,47 @@ function Connector.Build(parent, kit, spec, fromZone, toZone, ctx)
 				local u = run.Unit
 				local n = rightOf(u) * side -- outward, away from the road
 				local nBlocks = math.max(1, math.round(segLen / BLOCK))
-				local e0, e1 = jointExtra(i), jointExtra(i + 1)
 				for k = 0, nBlocks - 1 do
-					local a = f0 + u * (segLen * k / nBlocks) - (k == 0 and u * e0 or Vector3.zero)
-					local c = f0 + u * (segLen * (k + 1) / nBlocks) + (k == nBlocks - 1 and u * e1 or Vector3.zero)
-					local chord = c - a
-					local len = chord.Magnitude
-					if len < 1 then
-						continue
-					end
-					local mid = a + chord / 2 + n * (DEPTH / 2)
-					-- The zone test is taken 1.5 studs INSIDE each corner. The
-					-- terrace's first block starts exactly on the zone edge,
-					-- and inZone counts a point on the edge as inside, so an
-					-- un-inset corner rejected the one block that closes the
-					-- join - leaving a hole straight out to the water.
-					local blocked = false
-					for _, q in { a, c, a + n * DEPTH, c + n * DEPTH } do
-						if inZone(q + (mid - q).Unit * 1.5) then
-							blocked = true
+					-- A block run on past a joint to close a bend can poke into the
+					-- zone beside a connector's end sample, and it used to be dropped
+					-- whole - leaving a hole to the water beside the road. Try it
+					-- with the extension first, then square-ended.
+					local a, c, chord, len, mid, blocked
+					for _, extend in { true, false } do
+						local e0 = extend and k == 0 and jointExtra(i) or 0
+						local e1 = extend and k == nBlocks - 1 and jointExtra(i + 1) or 0
+						a = f0 + u * (segLen * k / nBlocks) - (k == 0 and u * e0 or Vector3.zero)
+						c = f0 + u * (segLen * (k + 1) / nBlocks) + (k == nBlocks - 1 and u * e1 or Vector3.zero)
+						chord = c - a
+						len = chord.Magnitude
+						mid = a + chord / 2 + n * (DEPTH / 2)
+						-- The zone test is taken 1.5 studs INSIDE each corner. The
+						-- terrace's first block starts exactly on the zone edge,
+						-- and inZone counts a point on the edge as inside, so an
+						-- un-inset corner rejected the one block that closes the
+						-- join - leaving a hole straight out to the water.
+						blocked = false
+						-- The frontage corners must be clear of the zone. The outer
+						-- corners may poke a few studs into it: the road heads off at
+						-- an angle, so DEPTH studs out the block's back corner dips
+						-- past the zone edge, and rejecting the block for that left a
+						-- 36-stud hole beside the road.
+						for qi, q in { a, c } do
+							if inZone(q + (mid - q).Unit * 1.5, 0.5 + (qi == 1 and e0 or e1)) then
+								blocked = true
+								break
+							end
+						end
+						for _, q in { a + n * DEPTH, c + n * DEPTH } do
+							if not blocked and inZone(q + (mid - q).Unit * 1.5, 6) then
+								blocked = true
+							end
+						end
+						if not blocked then
 							break
 						end
 					end
-					if blocked then
+					if len < 1 or blocked then
 						continue -- the zone has its own ground and frontage here
 					end
 					local top = height()

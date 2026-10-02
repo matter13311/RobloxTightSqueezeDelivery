@@ -1605,8 +1605,17 @@ function Zone.Build(spec, kit, ctx)
 			local zb = (rd.rect.z1 + roads[i + 1].rect.z2) / 2
 			for _, sx in { -1, 1 } do
 				local x = sx * (L.Market.x2 + 3.5)
-				if clear(x, zb, 12) then
-					U.place(busstop, f.Furniture, x, SIDEWALK_TOP, zb + sx * 30, Vector3.new(-sx, 0, 0))
+				local zs = zb + sx * 30
+				-- test where the shelter really stands (not the block midpoint),
+				-- and keep it off every alley mouth on Market
+				local free = clear(x, zs, 12)
+				for _, m in out.mouths do
+					if m.road == "Market" and math.abs(m.z - zs) < m.w / 2 + 14 then
+						free = false
+					end
+				end
+				if free then
+					U.place(busstop, f.Furniture, x, SIDEWALK_TOP, zs, Vector3.new(-sx, 0, 0))
 				end
 			end
 		end
