@@ -60,6 +60,28 @@ local DEFINITIONS = {
 		end,
 	},
 	{
+		Category = "Driving",
+		Key = "ArmsVisible",
+		Label = "Show arms",
+		Description = "Show your avatar's arms on the steering wheel in first person. Turn off for a completely clear view over the dashboard.",
+		Type = "Toggle",
+		Default = true,
+	},
+	{
+		Category = "Driving",
+		Key = "ArmSize",
+		Label = "Arm size",
+		Description = "How thick your arms and hands are on the wheel, as a share of your avatar's real ones. Lower if they get in the way of the view.",
+		Type = "Slider",
+		Min = 40,
+		Max = 100,
+		Step = 5,
+		Default = 60,
+		Format = function(value)
+			return string.format("%d%%", value)
+		end,
+	},
+	{
 		Category = "Mirrors",
 		Key = "MirrorsEnabled",
 		Label = "Enable mirrors",
@@ -117,14 +139,22 @@ local DEFINITIONS = {
 			return string.format("%d / sec", value)
 		end,
 	},
+	{
+		Category = "Reset",
+		Key = "ResetSettings",
+		Label = "Reset to defaults",
+		Description = "Puts every setting on this page back to what it was when you first played.",
+		Type = "Action",
+		ButtonText = "Reset",
+	},
 }
 
 -- Category order in the menu. Anything not listed is appended alphabetically,
 -- so a new category still shows up without being registered here.
 -- Most-used first: Tutorial is the row a lost player is looking for, music is
 -- the one everybody touches, and the mirror rows are performance tuning most
--- players never open.
-local CATEGORY_ORDER = { "Tutorial", "Audio", "Mirrors" }
+-- players never open. Reset goes last, out of the way of a stray click.
+local CATEGORY_ORDER = { "Tutorial", "Audio", "Driving", "Mirrors", "Reset" }
 
 local values = {}
 local byKey = {}
@@ -260,16 +290,35 @@ function GameSettings.OnAction(key, handler)
 	end
 end
 
--- Called by the menu when an action's button is pressed. Returns whether
--- anything was actually listening, so the menu can decline to close itself
--- over a button that did nothing.
+-- Called by the menu when an action's button is pressed. Returns whether the
+-- menu should get out of the way: false if nothing was listening (so it does
+-- not close itself over a button that did nothing), and false if the handler
+-- itself returns false - which is how an action whose whole effect is INSIDE
+-- the menu, like the reset below, keeps it open to show what it did.
 function GameSettings.FireAction(key)
 	local handler = actionHandlers[key]
 	if not handler then
 		return false
 	end
-	handler()
-	return true
+	return handler() ~= false
+end
+
+-- Every value back to its Default. Goes through Set, so each one that actually
+-- changes notifies its listeners - the menu redraws, the consumers react, and
+-- SettingsPersistence saves the result like any other change.
+function GameSettings.ResetToDefaults()
+	for _, definition in DEFINITIONS do
+		if definition.Type ~= "Action" then
+			GameSettings.Set(definition.Key, definition.Default)
+		end
+	end
+end
+
+-- The one action this module owns itself, since it is about the settings
+-- rather than about anything in the game.
+actionHandlers.ResetSettings = function()
+	GameSettings.ResetToDefaults()
+	return false
 end
 
 -- Returns a function that disconnects. Called as listener(key, value) for

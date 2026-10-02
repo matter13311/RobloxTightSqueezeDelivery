@@ -167,6 +167,12 @@ local function seatEyeOffset(seat)
 	return CFrame.new(0, height, 0)
 end
 
+-- Exposed for ViewmodelArms, which hangs the driving arms' shoulders off the
+-- eye so the two always agree about where the driver's body is.
+function VehicleEyePoint.GetSeatEyeOffset(seat)
+	return seatEyeOffset(seat)
+end
+
 -- The point the player is actually looking FROM, whatever they are doing: the
 -- pinned eye while seated, the head while on foot. Callers that used to read
 -- the head directly should read this instead - the head stopped being the
