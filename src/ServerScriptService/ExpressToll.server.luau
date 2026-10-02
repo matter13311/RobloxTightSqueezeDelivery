@@ -16,6 +16,7 @@ local RunService = game:GetService("RunService")
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local ExpressAccess = require(ReplicatedStorage.Modules.Express.ExpressAccess)
 local PassOwnership = require(script.Parent.Modules.PassOwnership)
+local TestingMode = require(ReplicatedStorage.Modules.TestingMode)
 
 local monetization = ProgressionConfig.Monetization
 
@@ -27,6 +28,12 @@ testTicketEvent.Name = "RequestExpressTestTicket"
 testTicketEvent.Parent = ReplicatedStorage
 
 local function refreshPass(player)
+	-- TEMP: see TestingMode. Ahead of the PassConfigured check on purpose - the
+	-- express pass has no id yet, and "every pass unlocked" includes it.
+	if TestingMode.Enabled then
+		player:SetAttribute(ExpressAccess.PASS_ATTRIBUTE, true)
+		return
+	end
 	if not ExpressAccess.PassConfigured() then
 		return
 	end

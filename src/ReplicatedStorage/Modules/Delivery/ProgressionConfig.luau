@@ -17,6 +17,8 @@
 --   * Which cargo types the board will offer at all (CargoTypesFor).
 --   * Which zone permits can be bought (Permits).
 
+local TestingMode = require(script.Parent.Parent.TestingMode)
+
 local ProgressionConfig = {}
 
 --=============================================================================
@@ -272,6 +274,14 @@ ProgressionConfig.Permits = {
 		Requires = "CanalBridge",
 	},
 }
+
+-- TEMP: see TestingMode. Overrides the figures above rather than editing them.
+if TestingMode.Enabled then
+	for _, id in ProgressionConfig.Permits.Order do
+		ProgressionConfig.Permits[id].Price = TestingMode.PRICE
+		ProgressionConfig.Permits[id].RequiredDeliveries = 0
+	end
+end
 
 -- Highest zone a set of owned permits reaches ({ [permitId] = true }).
 -- Walks the chain in order and stops at the first gap, so a permit owned out of

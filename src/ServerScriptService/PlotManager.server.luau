@@ -34,6 +34,7 @@ local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.Progression
 local PlayerDataStore = require(script.Parent.Modules.PlayerDataStore)
 local ContractPool = require(script.Parent.Modules.ContractPool)
 local PassOwnership = require(script.Parent.Modules.PassOwnership)
+local TestingMode = require(ReplicatedStorage.Modules.TestingMode)
 local PermitAccess = require(ReplicatedStorage.Modules.Permits.PermitAccess)
 
 local VehicleFolder = workspace.Vehicles
@@ -869,6 +870,19 @@ local function ownsCustomPaint(player, vehicleId)
 	return PassOwnership.Owns(player, passId)
 end
 
+-- Has this player bought this money colour? The one place that answers it, so
+-- the paint handler and the panel's data fetch cannot disagree.
+--
+-- TEMP: see TestingMode - every colour counts as owned while it is on. Read
+-- here rather than written into data.PaintColors, so nothing unpaid-for
+-- reaches the save.
+local function ownsPaintColor(data, colorId)
+	if TestingMode.Enabled then
+		return VehiclePaint.ColorsById[colorId] ~= nil
+	end
+	return data.PaintColors ~= nil and data.PaintColors[colorId] == true
+end
+
 -- A respawned character is not standing at the garage any more, whatever the
 -- client last said.
 local function watchGarageFlag(player)
@@ -1067,7 +1081,7 @@ setVehiclePaintFunction.OnServerInvoke = function(player, vehicleId, value)
 			if not ownsCustomPaint(player, vehicleId) then
 				return false
 			end
-		elseif not (data.PaintColors and data.PaintColors[paint]) then
+		elseif not ownsPaintColor(data, paint) then
 			return false
 		end
 	end
@@ -1371,8 +1385,10 @@ getPlotDataFunction.OnServerInvoke = function(player)
 		inductionSetting[id] = getInductionSetting(data, id)
 	end
 	local paintColors = {}
-	for colorId in data.PaintColors or {} do
-		table.insert(paintColors, colorId)
+	for _, color in VehiclePaint.Colors do
+		if ownsPaintColor(data, color.Id) then
+			table.insert(paintColors, color.Id)
+		end
 	end
 	local paintMaterials = {}
 	for materialId in data.PaintMaterials or {} do

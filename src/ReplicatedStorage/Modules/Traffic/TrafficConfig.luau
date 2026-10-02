@@ -27,7 +27,10 @@
 
 local TrafficConfig = {}
 
-TrafficConfig.MaxCars = 140
+-- Below the routes' combined Cap (136) on purpose: the wider StopGap makes
+-- every queue longer per car, so fewer cars keeps the jams the same length.
+-- Was 140.
+TrafficConfig.MaxCars = 110
 
 -- Studs per second. Player cars top out around 50.
 TrafficConfig.CruiseSpeed = 30
@@ -36,7 +39,21 @@ TrafficConfig.Acceleration = 12
 TrafficConfig.Braking = 28
 
 -- Bumper-to-bumper gap a car stops at behind whatever is in front of it.
-TrafficConfig.StopGap = 4
+-- Wide on purpose: a queue is meant to be something a player can thread
+-- through, and the box truck is 11.3 studs across. (Lane routes add
+-- TrafficSim's LANE_STOP_GAP on top.) Was 4, which made every jam a wall.
+TrafficConfig.StopGap = 14
+
+-- The grace period before a queued car closes up behind the one in front. A
+-- car that has been stopped for PullUpAfterStopped seconds does not move again
+-- until there are PullUpMinRoom studs to move into, and then waits a further
+-- PullUpDelay (random in range) - so an opening stays open long enough to
+-- drive into. Each car in a queue waits in turn, so longer delays also make a
+-- jam slower to clear: raise them with care.
+TrafficConfig.PullUpAfterStopped = 1
+TrafficConfig.PullUpMinRoom = 6
+TrafficConfig.PullUpDelayMin = 1
+TrafficConfig.PullUpDelayMax = 2.2
 -- How far ahead a car looks for traffic, players and pedestrians.
 TrafficConfig.LookAhead = 45
 -- Lateral slack added to the two half-widths when deciding whether something

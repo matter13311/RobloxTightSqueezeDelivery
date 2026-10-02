@@ -11,6 +11,8 @@
 -- (going from N-1 to N) costs BaseCost * CostGrowth^(N-1), rounded, so each
 -- purchase costs more than the last - the "grindy" part.
 
+local TestingMode = require(script.Parent.Parent.TestingMode)
+
 local VehicleUpgrades = {}
 
 -- How many levels exist above the free level-0 default, rounded because
@@ -31,6 +33,10 @@ end
 -- Cost to buy level `level` (i.e. to go from level-1 to level). Level 0 is
 -- free and never purchased, so this is only meaningful for level >= 1.
 function VehicleUpgrades.CostForLevel(spec, level)
+	-- TEMP: see TestingMode.
+	if TestingMode.Enabled then
+		return TestingMode.PRICE
+	end
 	return math.round(spec.BaseCost * (spec.CostGrowth ^ (level - 1)))
 end
 

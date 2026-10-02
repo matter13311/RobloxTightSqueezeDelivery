@@ -27,6 +27,8 @@
 -- invisible to exactly the players it is meant to pull along. nil or 0 means no
 -- requirement.
 
+local TestingMode = require(script.Parent.Parent.TestingMode)
+
 local VehicleCatalog = {}
 
 VehicleCatalog.Vehicles = {
@@ -92,6 +94,17 @@ VehicleCatalog.Vehicles = {
 		DefaultOwned = false, -- purchasable from the shop tab instead
 	},
 }
+
+-- TEMP: see TestingMode. Overrides whatever is written above rather than
+-- editing it, so switching the flag off puts every figure back.
+if TestingMode.Enabled then
+	for _, vehicleDef in VehicleCatalog.Vehicles do
+		if not vehicleDef.DefaultOwned then
+			vehicleDef.Price = TestingMode.PRICE
+			vehicleDef.RequiredDeliveries = 0
+		end
+	end
+end
 
 -- Stable display order (table iteration order is unspecified in Lua).
 -- StarterVehicle first: VehicleCatalog.Order[1] is what PlayerDataStore

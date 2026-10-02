@@ -46,7 +46,7 @@ local LANE_STUDS_PER_OFFSET = 4.5
 local LANE_MIN_LENGTH = 16
 -- Extra stopping distance on lane routes, so a car queued behind something
 -- has room to steer out of the queue.
-local LANE_STOP_GAP = 8
+local LANE_STOP_GAP = 4
 
 -- 0..1 -> 0..1 with zero slope at both ends: steer out, then straighten.
 local function smoothstep(t)
@@ -547,7 +547,26 @@ function TrafficSim:Step(dt, now, world)
 		local target = config.CruiseSpeed
 		local room = math.min(car.Limit, remaining)
 		room, car.HeldByKeepClear = applyKeepClear(car, room)
-		if now < car.HoldUntil then
+		-- The grace period before a queued car closes up. Once it has properly
+		-- stopped it stays put until the space ahead is worth moving into, and
+		-- then for a moment longer - so an opening in a queue stays open long
+		-- enough for a player to nose into it (after which the car sees the
+		-- player and waits anyway). Skipped while it is pushing through a
+		-- junction stand-off: that licence only lasts a few seconds.
+		local waitingToPullUp = false
+		if car.StoppedFor >= config.PullUpAfterStopped and now >= (car.IgnoreUntil or 0) then
+			if room < config.PullUpMinRoom then
+				car.PullUpAt = nil
+				waitingToPullUp = true
+			else
+				car.PullUpAt = car.PullUpAt or now + self:_rand(config.PullUpDelayMin, config.PullUpDelayMax)
+				waitingToPullUp = now < car.PullUpAt
+			end
+		else
+			car.PullUpAt = nil
+		end
+
+		if now < car.HoldUntil or waitingToPullUp then
 			target = 0
 			room = 0
 		else

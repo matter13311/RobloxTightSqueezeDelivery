@@ -23,6 +23,9 @@
 
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TestingMode = require(ReplicatedStorage.Modules.TestingMode)
 
 local PassOwnership = {}
 
@@ -40,6 +43,11 @@ end)
 function PassOwnership.Owns(player, passId)
 	if type(passId) ~= "number" then
 		return false
+	end
+	-- TEMP: see TestingMode. Answered before the cache so nothing is stored,
+	-- and switching the flag off needs no cache to be cleared.
+	if TestingMode.Enabled then
+		return true
 	end
 	local forPlayer = cache[player.UserId]
 	if forPlayer and forPlayer[passId] ~= nil then
