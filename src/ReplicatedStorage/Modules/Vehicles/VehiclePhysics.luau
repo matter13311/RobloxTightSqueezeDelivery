@@ -1694,7 +1694,12 @@ function VehiclePhysics.Step(carModel, attachments, config, state, delta, input)
 				longitudinalForce = wheelDirCFrame.LookVector
 					* frictionStopImpulse(config.BrakeFriction * cargoHandling.Brake * brakeAmount)
 			elseif input.Throttle and input.Throttle ~= 0 and isDriveWheel then
-				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
+				-- Torque is an impulse PER FRAME as tuned at the reference 60fps, so it
+				-- has to be scaled by frameScale (delta * 60) like the suspension is.
+				-- Unscaled, a 240fps client applied four times the drive impulse per
+				-- second of a 60fps one - Studio (60fps) felt right and a published
+				-- game on a fast machine was much zippier.
+				longitudinalForce = wheelDirCFrame.LookVector * input.Throttle * gearTorque * delta * SUSPENSION_REFERENCE_FPS * (1 - math.min(1, math.abs(localVelocity.Z) / gearMaxSpeed))
 
 				-- Hill assist (see DEFAULTS.HillAssist). `grade` is sin(slope)
 				-- of the ROAD under this wheel along the car's heading, so
