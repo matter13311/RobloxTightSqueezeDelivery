@@ -47,7 +47,7 @@ local ARM_LENGTH_SCALE = 0.85
 
 -- Per axis of each arm part: Y runs along the arm, X and Z are its thickness.
 local function getArmScale()
-	local thickness = (GameSettings.Get(ARM_SIZE_SETTING) or 60) / 100
+	local thickness = (GameSettings.Get(ARM_SIZE_SETTING) or 40) / 100
 	return Vector3.new(thickness, ARM_LENGTH_SCALE, thickness)
 end
 

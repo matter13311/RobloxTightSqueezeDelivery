@@ -76,7 +76,7 @@ local DEFINITIONS = {
 		Min = 40,
 		Max = 100,
 		Step = 5,
-		Default = 60,
+		Default = 40,
 		Format = function(value)
 			return string.format("%d%%", value)
 		end,
