@@ -86,6 +86,17 @@ local deliveryUpdateEvent = Instance.new("RemoteEvent")
 deliveryUpdateEvent.Name = "DeliveryUpdate"
 deliveryUpdateEvent.Parent = ReplicatedStorage
 
+-- Server -> one PASSENGER. The same shape as DeliveryUpdate, describing the job
+-- of the truck they are riding in rather than a job of their own.
+--
+-- A second remote rather than a flag on the first, because DeliveryUpdate has
+-- listeners that must never mistake a friend's job for the player's own: the
+-- tutorial advances its steps on it, and the contract board closes on it.
+-- Anything that wants to mirror the driver's HUD opts in by listening here.
+local rideAlongUpdateEvent = Instance.new("RemoteEvent")
+rideAlongUpdateEvent.Name = "RideAlongUpdate"
+rideAlongUpdateEvent.Parent = ReplicatedStorage
+
 --=============================================================================
 -- State
 --=============================================================================
@@ -100,6 +111,9 @@ deliveryUpdateEvent.Parent = ReplicatedStorage
 local activeContracts = {}
 -- [Player] = seconds the truck has been continuously stopped in a bay.
 local stoppedFor = {}
+-- [Player] = { Contract, Owner, WholeTrip } for a PASSENGER riding in a truck
+-- that is carrying somebody else's job. See the ride-along section below.
+local rideAlongs = {}
 
 -- The destination of the job this player is carrying, mirrored onto the Player
 -- as an Attribute so OTHER scripts can see it without this one having to know
@@ -128,7 +142,85 @@ Players.PlayerRemoving:Connect(function(player)
 	-- them and to their truck.
 	activeContracts[player] = nil
 	stoppedFor[player] = nil
+	rideAlongs[player] = nil
 end)
+
+--=============================================================================
+-- Ride-alongs
+--=============================================================================
+
+-- A passenger in a truck that is carrying a job sees that job - destination,
+-- cargo, waypoint - so they can navigate for the driver, and earns a small cut
+-- of the payout if they were aboard for the whole run.
+--
+-- "The whole run" is tracked by WholeTrip, and it can only ever be set at the
+-- moment the contract is accepted: a passenger seated in the bay when the
+-- crates go on starts with it true, and the record is dropped the first poll
+-- they are found out of their seat. Getting back in makes a fresh record with
+-- it false. So hopping in for the last corner pays nothing, and so does
+-- hopping between trucks to collect from each.
+
+local function startRideAlong(passenger, owner, contract, wholeTrip)
+	rideAlongs[passenger] = { Contract = contract, Owner = owner, WholeTrip = wholeTrip }
+	rideAlongUpdateEvent:FireClient(passenger, {
+		Active = contract,
+		Driver = owner.DisplayName,
+		EarnsCut = wholeTrip,
+	})
+end
+
+-- Ends every ride-along on `contract`, sending each passenger whatever
+-- `describe(passenger, ride)` returns (or a bare "no job" if it is omitted).
+-- The passengers are collected first so `describe` is free to do anything it
+-- likes without the table changing under the loop.
+local function endRideAlongs(contract, describe)
+	local ending = {}
+	for passenger, ride in rideAlongs do
+		if ride.Contract == contract then
+			table.insert(ending, passenger)
+		end
+	end
+	for _, passenger in ending do
+		local ride = rideAlongs[passenger]
+		rideAlongs[passenger] = nil
+		rideAlongUpdateEvent:FireClient(passenger, describe and describe(passenger, ride) or { Active = nil })
+	end
+end
+
+-- Brings rideAlongs back in line with who is actually sitting where. Run on
+-- the arrival poll rather than off seat events: it has to notice a truck being
+-- destroyed and a driver leaving the game as well as a passenger standing up,
+-- and "who is seated in a truck with a job, right now" answers all of them.
+local function syncRideAlongs()
+	local seated = {}
+	for owner, contract in activeContracts do
+		local carModel = contract.Vehicle
+		if carModel and carModel.Parent then
+			for _, passenger in VehicleSeats.GetPassengerPlayers(carModel) do
+				-- The owner riding shotgun in their own truck is not their own
+				-- co-driver.
+				if passenger ~= owner then
+					seated[passenger] = owner
+				end
+			end
+		end
+	end
+
+	for passenger, ride in rideAlongs do
+		local owner = seated[passenger]
+		if not owner or activeContracts[owner] ~= ride.Contract then
+			rideAlongs[passenger] = nil
+			rideAlongUpdateEvent:FireClient(passenger, { Active = nil })
+		end
+	end
+
+	for passenger, owner in seated do
+		if not rideAlongs[passenger] then
+			-- Joined a job already under way: they see it, but earn nothing.
+			startRideAlong(passenger, owner, activeContracts[owner], false)
+		end
+	end
+end
 
 -- PlotManager owns the contract pool, because the pool is part of the save and
 -- PlotManager owns saves. Same WaitForChild-on-a-BindableFunction arrangement
@@ -294,6 +386,14 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	setActiveContract(player, contract)
 
 	deliveryUpdateEvent:FireClient(player, { Active = contract })
+
+	-- Whoever is already in a passenger seat was here for the loading, which is
+	-- the only way to be in line for the co-driver cut.
+	for _, passenger in VehicleSeats.GetPassengerPlayers(carModel) do
+		if passenger ~= player then
+			startRideAlong(passenger, player, contract, true)
+		end
+	end
 end)
 
 --=============================================================================
@@ -333,25 +433,36 @@ local function completeDelivery(player, carModel, contract, space, grade)
 	-- parking and being paid, exactly like the balance above.
 	local progress = recordDeliveryFunction:Invoke(player)
 
-	deliveryUpdateEvent:FireClient(player, {
-		Active = nil,
-		Completed = {
-			Destination = contract.Stops[1],
-			TypeId = load.TypeId,
-			Units = load.Units,
-			Condition = load.Condition,
-			ParkLabel = grade.Label,
-			Multiplier = multiplier,
-			Payout = payout,
-			-- nil if the player left between parking and being paid; the HUD
-			-- shows the payout either way, and the money simply did not land.
-			Balance = newBalance,
-			-- Lifetime deliveries, the level that follows from it, and whether
-			-- this delivery was the one that moved it. The HUD turns the last
-			-- into the level-up banner on the payout card.
-			Progress = progress,
-		},
-	})
+	local completed = {
+		Destination = contract.Stops[1],
+		TypeId = load.TypeId,
+		Units = load.Units,
+		Condition = load.Condition,
+		ParkLabel = grade.Label,
+		Multiplier = multiplier,
+		Payout = payout,
+		-- nil if the player left between parking and being paid; the HUD
+		-- shows the payout either way, and the money simply did not land.
+		Balance = newBalance,
+		-- Lifetime deliveries, the level that follows from it, and whether
+		-- this delivery was the one that moved it. The HUD turns the last
+		-- into the level-up banner on the payout card.
+		Progress = progress,
+	}
+	deliveryUpdateEvent:FireClient(player, { Active = nil, Completed = completed })
+
+	-- The co-driver cut: a share of the payout, on top of it, for a passenger
+	-- who rode the whole trip. Money only - RecordDelivery is deliberately not
+	-- called for them, so a ride-along never counts towards a passenger's own
+	-- job slots or cargo unlocks. See DeliveryConfig.CoDriver.
+	endRideAlongs(contract, function(passenger, ride)
+		local receipt = table.clone(completed)
+		receipt.CoDriver = true
+		receipt.Progress = nil
+		receipt.Payout = if ride.WholeTrip then math.floor(payout * DeliveryConfig.CoDriver.PayoutShare) else 0
+		receipt.Balance = if receipt.Payout > 0 then awardMoneyFunction:Invoke(passenger, receipt.Payout) else nil
+		return { Active = nil, Completed = receipt }
+	end)
 end
 
 -- Polled rather than event-driven. A Touched event on the space would fire
@@ -371,6 +482,10 @@ RunService.Heartbeat:Connect(function(delta)
 	end
 	local elapsed = accumulator
 	accumulator = 0
+
+	-- Before the arrival checks, so a passenger who stood up this tick is
+	-- already out of the running by the time anything is paid.
+	syncRideAlongs()
 
 	for player, contract in activeContracts do
 		local carModel = contract.Vehicle
@@ -412,10 +527,11 @@ RunService.Heartbeat:Connect(function(delta)
 			setActiveContract(player, nil)
 			stoppedFor[player] = nil
 			CargoManager.Unload(carModel)
-			deliveryUpdateEvent:FireClient(player, {
-				Active = nil,
-				Failed = { Destination = contract.Stops[1], TypeId = wrecked.TypeId, Units = wrecked.Units },
-			})
+			local failed = { Destination = contract.Stops[1], TypeId = wrecked.TypeId, Units = wrecked.Units }
+			deliveryUpdateEvent:FireClient(player, { Active = nil, Failed = failed })
+			endRideAlongs(contract, function()
+				return { Active = nil, Failed = failed }
+			end)
 			continue
 		end
 

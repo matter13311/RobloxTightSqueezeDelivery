@@ -123,6 +123,16 @@ ReplicatedStorage:WaitForChild("DeliveryUpdate").OnClientEvent:Connect(function(
 	end
 end)
 
+-- Riding in a truck that is carrying a job counts as having one: the HUD is
+-- showing that job's destination, and a second marker pointing back at the
+-- depot would be arguing with it.
+local rideAlongContract = nil
+ReplicatedStorage:WaitForChild("RideAlongUpdate").OnClientEvent:Connect(function(update)
+	if type(update) == "table" then
+		rideAlongContract = update.Active
+	end
+end)
+
 -- Measured from the truck when driving (that is what has to get there), and
 -- from the character otherwise.
 local function playerPosition()
@@ -153,6 +163,7 @@ task.spawn(function()
 		local target, spaces = resolveDepot()
 		local show = target ~= nil
 			and activeContract == nil
+			and rideAlongContract == nil
 			and player:GetAttribute(TUTORIAL_ACTIVE_ATTRIBUTE) ~= true
 			and not isAtDepot(target, spaces)
 

@@ -486,6 +486,10 @@ end
 -- that is otherwise only about the screen.
 local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
 local activeDestination = nil
+-- The same for a PASSENGER: where the truck they are riding in is headed, so
+-- they see the bay light up as the driver lines up with it and can call the
+-- park. Only ever used from a passenger seat - see repoll.
+local rideAlongDestination = nil
 
 deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 	if type(update) ~= "table" then
@@ -494,10 +498,27 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 	activeDestination = update.Active and update.Active.Stops[1] or nil
 	if activeDestination then
 		watchForDestination(activeDestination)
+	elseif rideAlongDestination then
+		watchForDestination(rideAlongDestination)
 	else
 		-- No contract means no pending destination to keep chasing - if one
 		-- was still mid-retry (e.g. the player cancelled before it streamed
 		-- in), this is what lets that loop notice and stop.
+		watchGeneration += 1
+	end
+end)
+
+ReplicatedStorage:WaitForChild("RideAlongUpdate").OnClientEvent:Connect(function(update)
+	if type(update) ~= "table" then
+		return
+	end
+	rideAlongDestination = update.Active and update.Active.Stops[1] or nil
+	if rideAlongDestination then
+		watchForDestination(rideAlongDestination)
+	elseif activeDestination then
+		-- Back to chasing their own job's destination, if they have one.
+		watchForDestination(activeDestination)
+	else
 		watchGeneration += 1
 	end
 end)
@@ -512,11 +533,17 @@ local EASE_PER_SECOND = 9
 local accumulator = POLL_INTERVAL
 
 local function repoll()
-	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
+	-- Any seat, not just the driver's: a passenger watches the same bay the
+	-- driver is aiming at, graded against the same truck.
+	local carModel, driving = VehicleSeats.FindCarRiddenBy(player, VehicleFolder)
 	local chassis = carModel and carModel.PrimaryPart
 
-	-- On foot, litGroup is nil and every guide goes dark - see the header.
-	local litGroup = if chassis then (activeDestination or DEPOT_GROUP) else nil
+	-- On foot, litGroup is nil and every guide goes dark - see the header. In
+	-- a passenger seat it follows THAT truck's job, never the player's own:
+	-- the guide grades the vehicle they are sitting in, and their own cargo
+	-- is not on it.
+	local destination = if driving then activeDestination else rideAlongDestination
+	local litGroup = if chassis then (destination or DEPOT_GROUP) else nil
 
 	for _, entry in entries do
 		if entry.Group ~= litGroup then

@@ -142,6 +142,24 @@ DeliveryConfig.Payout = {
 }
 
 --=============================================================================
+-- Co-drivers
+--=============================================================================
+
+-- What a passenger earns for riding along on somebody else's delivery.
+DeliveryConfig.CoDriver = {
+	-- Fraction of the DRIVER'S payout, paid on top - the driver's own money is
+	-- untouched, so nobody loses anything by giving a friend a lift.
+	--
+	-- Small on purpose. A passenger does nothing the server can measure, so
+	-- sitting AFK in a stranger's truck earns exactly this - and at a tenth of
+	-- what the same minutes would pay behind a wheel, it is not worth farming.
+	-- It also only pays a passenger who was aboard from the loading bay to the
+	-- drop-off (see DeliveryManager's ride-along section), and never counts as
+	-- a delivery of their own, so it moves no progression at all.
+	PayoutShare = 0.1,
+}
+
+--=============================================================================
 -- Loading the crates on
 --=============================================================================
 

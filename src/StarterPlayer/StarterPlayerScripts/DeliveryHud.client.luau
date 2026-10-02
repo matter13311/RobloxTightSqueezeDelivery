@@ -40,6 +40,9 @@ local player = Players.LocalPlayer
 local getContractsFunction = ReplicatedStorage:WaitForChild("GetDeliveryContracts")
 local acceptContractEvent = ReplicatedStorage:WaitForChild("AcceptDeliveryContract")
 local deliveryUpdateEvent = ReplicatedStorage:WaitForChild("DeliveryUpdate")
+-- The same thing for a PASSENGER: the job of the truck they are riding in. See
+-- DeliveryManager.server.luau for why it is a remote of its own.
+local rideAlongUpdateEvent = ReplicatedStorage:WaitForChild("RideAlongUpdate")
 -- Fired by Monetization.server.luau once a refresh purchase has actually
 -- rebuilt the board on the server - see its comment for why this exists rather
 -- than redrawing on PromptProductPurchaseFinished.
@@ -166,6 +169,9 @@ jobTitle.TextTruncate = Enum.TextTruncate.AtEnd
 local jobCargo = label(jobFrame, "", 13, DIM_TEXT)
 jobCargo.Position = UDim2.fromOffset(12, 32)
 jobCargo.Size = UDim2.new(1, -24, 0, 16)
+-- A passenger's copy of this line also names the driver, and display names run
+-- long.
+jobCargo.TextTruncate = Enum.TextTruncate.AtEnd
 
 local jobCondition = label(jobFrame, "", 13, ACCENT)
 jobCondition.Position = UDim2.fromOffset(12, 52)
@@ -646,7 +652,15 @@ earnedBalance.TextXAlignment = Enum.TextXAlignment.Center
 -- Board contents
 --=============================================================================
 
+-- The job on screen: the player's own, or - when they have none and are a
+-- passenger in a truck that does - that truck's. Everything that draws a job
+-- (the panel, the waypoint) reads this one variable and does not care which.
 local activeContract = nil
+-- The two things it is chosen from. `rideAlong` is the whole RideAlongUpdate
+-- table rather than just its contract, for the driver's name and whether this
+-- passenger is in line for the co-driver cut.
+local ownContract = nil
+local rideAlong = nil
 -- Set when the player closes the board by hand, cleared when they leave the
 -- bay. Without it, closing the board in a bay you are parked in would just
 -- reopen it a quarter of a second later, forever.
@@ -1292,10 +1306,17 @@ local function refreshJobFrame()
 		then ACCENT
 		elseif condition > 0.4 then Color3.fromRGB(224, 178, 84)
 		else WARN_TEXT
-	jobValue.Text = string.format(
-		"Worth about $%d",
-		CargoLoad.Value(activeContract.Units, activeContract.TypeId, condition)
-	)
+	local value = CargoLoad.Value(activeContract.Units, activeContract.TypeId, condition)
+	jobValue.Text = string.format("Worth about $%d", value)
+
+	-- Somebody else's job, seen from the passenger seat: say whose it is, and
+	-- swap the load's value for the only number that is this player's.
+	if rideAlong and activeContract == rideAlong.Active then
+		jobCargo.Text = string.format("Riding with %s  -  %s", tostring(rideAlong.Driver), jobCargo.Text)
+		jobValue.Text = if rideAlong.EarnsCut
+			then string.format("Your co-driver cut: about $%d", math.floor(value * DeliveryConfig.CoDriver.PayoutShare))
+			else "No cut - you joined after loading"
+	end
 	jobFrame.Visible = true
 end
 
@@ -1395,6 +1416,15 @@ local function showReceipt(completed, failed)
 		earnedAmount.TextColor3 = INK_GOOD
 		earnedAmount.Text = string.format("+$%d", completed.Payout)
 		earnedBalance.Text = if completed.Balance then string.format("You now have $%d", completed.Balance) else ""
+		-- A passenger's copy: same delivery, but the money line is their cut of
+		-- it - or the reason there is none.
+		if completed.CoDriver then
+			earnedCaption.Text = "CO-DRIVER CUT"
+			if completed.Payout <= 0 then
+				earnedAmount.TextColor3 = INK_DIM
+				earnedBalance.Text = "Ride from the depot to earn a cut"
+			end
+		end
 	end
 	for index, row in clipRows do
 		row.Frame.Visible = false
@@ -1523,11 +1553,30 @@ deliveryUpdateEvent.OnClientEvent:Connect(function(update)
 		accepting = false
 		setBoardVisible(false)
 	end
-	setActiveContract(update.Active)
+	ownContract = update.Active
+	setActiveContract(ownContract or (rideAlong and rideAlong.Active))
 	if update.Completed then
 		showReceipt(update.Completed)
 	elseif update.Cancelled then
 		showCancelled(update.Cancelled)
+	elseif update.Failed then
+		showReceipt(update.Failed, true)
+	end
+end)
+
+-- The truck this player is a passenger in took, finished or lost a job - or
+-- they sat down in, or got out of, one that is carrying one. Their own job
+-- still wins the screen if they somehow have both.
+rideAlongUpdateEvent.OnClientEvent:Connect(function(update)
+	if type(update) ~= "table" then
+		return
+	end
+	rideAlong = if update.Active then update else nil
+	setActiveContract(ownContract or (rideAlong and rideAlong.Active))
+	-- No "contract lost" notice for a passenger: it was never their contract,
+	-- and the job panel going away says all there is to say.
+	if update.Completed then
+		showReceipt(update.Completed)
 	elseif update.Failed then
 		showReceipt(update.Failed, true)
 	end

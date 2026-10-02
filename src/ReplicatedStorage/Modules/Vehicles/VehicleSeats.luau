@@ -35,6 +35,34 @@ function VehicleSeats.FindCarDrivenBy(player, vehicleFolder)
 	return nil
 end
 
+-- Which car in `vehicleFolder` this player is sitting in, in ANY seat, and
+-- whether that seat is the driver's. For the things a passenger shares with
+-- the driver - the delivery HUD, the bay guides - where FindCarDrivenBy would
+-- answer nil for everybody but the one at the wheel.
+function VehicleSeats.FindCarRiddenBy(player, vehicleFolder)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local seat = humanoid and humanoid.SeatPart
+	local carModel = seat and seat.Parent
+	if not carModel or carModel.Parent ~= vehicleFolder then
+		return nil, false
+	end
+	return carModel, seat == VehicleSeats.GetDriverSeat(carModel)
+end
+
+-- The Players in this car's passenger seats, in seat order.
+function VehicleSeats.GetPassengerPlayers(carModel)
+	local passengers = {}
+	for _, seat in VehicleSeats.GetPassengerSeats(carModel) do
+		local occupant = seat.Occupant
+		local player = occupant and Players:GetPlayerFromCharacter(occupant.Parent)
+		if player then
+			table.insert(passengers, player)
+		end
+	end
+	return passengers
+end
+
 function VehicleSeats.GetPassengerSeats(carModel)
 	local seats = {}
 	for _, child in carModel:GetChildren() do
