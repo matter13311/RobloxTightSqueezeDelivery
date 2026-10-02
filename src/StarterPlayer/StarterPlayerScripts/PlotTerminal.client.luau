@@ -38,8 +38,8 @@
 -- not the pass is owned. Nothing is saved until it is bought and applied;
 -- leaving the tab or the garage puts the saved look back.
 --
--- INDUCTION. The turbo ladder (VehicleInduction.luau) sits at the bottom of
--- the Upgrades tab rather than in a tab of its own: it is bought with in-game
+-- INDUCTION. The turbo ladder (VehicleInduction.luau) sits under the free
+-- stat cards in the Upgrades tab rather than in a tab of its own: it is bought with in-game
 -- money like every other upgrade, and a third tab would push the two that
 -- matter into a third of the panel each. It is one card, not a grid, because
 -- it is one ladder with four named rungs rather than a slider.
@@ -1300,10 +1300,8 @@ end
 --============================================================================
 -- ONE card, not a grid: this is a single ladder with four named rungs, and
 -- each rung is a different thing rather than another notch of the same slider.
--- It sits at the BOTTOM of the Upgrades tab, after the stat cards a player
--- reaches for first, even though it is the only upgrade whose result you can
--- HEAR - because it always has something to sell (see renderUpgrades) and
--- would otherwise push those cards below the fold on every car.
+-- It sits straight after the free stat cards and above the pass banner (see
+-- renderUpgrades for why there and not first or last).
 --
 -- Nothing here is gated behind the Pro Tuning Pass. The pass sells the stats a
 -- player has to be told the meaning of; this sells a noise, and a noise nobody
@@ -1315,8 +1313,12 @@ end
 local makeInductionCard
 
 do
-	local INDUCTION_CARD_HEIGHT = 190
-	local PIP_HEIGHT = 10
+	local HEADER_HEIGHT = 38
+	local ROW_HEIGHT = 44
+	local ROW_GAP = 6
+	-- Room for three lines of the longest blurb at the panel's narrowest.
+	local BLURB_HEIGHT = 50
+	local ACTION_WIDTH = 110
 
 	makeInductionCard = function(data, vehicleId, layoutOrder)
 		local ownedStage = inductionStageFor(data, vehicleId)
@@ -1326,7 +1328,6 @@ do
 
 		local card = Instance.new("Frame")
 		card.Name = "InductionCard"
-		card.Size = UDim2.new(1, 0, 0, INDUCTION_CARD_HEIGHT)
 		card.BackgroundColor3 = CARD
 		card.BorderSizePixel = 0
 		card.LayoutOrder = layoutOrder
@@ -1346,28 +1347,6 @@ do
 			Text = string.upper(VehicleInduction.DisplayName),
 		})
 
-		-- The stage the car is RUNNING is the headline, because that is the
-		-- question the player is asking. "Stock" when nothing is switched on,
-		-- including for a player who has bought the lot and turned it all off.
-		label(card, {
-			-- Stops 84px short of the right edge, which is where the two 28px
-			-- arrows and their margins start. A stage name long enough to reach
-			-- it truncates rather than running under them.
-			Size = UDim2.new(1, -96, 0, 26),
-			Position = UDim2.fromOffset(14, 28),
-			Font = Enum.Font.GothamBlack,
-			TextSize = 22,
-			TextColor3 = if activeStage > 0 then ACCENT else BRIGHT_TEXT,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			Text = VehicleInduction.DisplayNameFor(activeStage),
-		})
-
-		-- Switching between stages already bought. Secondary by design and
-		-- placed exactly where the stat cards put theirs, because they do the
-		-- same job: buying already switched the new stage on, so these only
-		-- ever turn it back DOWN and up again. Anti-lag is loud on purpose,
-		-- and a careful delivery is a real reason to want the quiet truck back.
 		local function setStage(newStage)
 			local clamped = math.clamp(newStage, 0, ownedStage)
 			if clamped == activeStage then
@@ -1380,119 +1359,135 @@ do
 			refreshTerminalData()
 		end
 
-		local function makeStageArrow(text, xOffset, delta)
-			local enabled = (delta < 0 and activeStage > 0) or (delta > 0 and activeStage < ownedStage)
-			local arrow = button(card, {
-				Size = UDim2.fromOffset(28, 28),
-				Position = UDim2.new(1, xOffset, 0, 27),
-				AnchorPoint = Vector2.new(1, 0),
-				BackgroundColor3 = if enabled then PANEL else CARD,
-				AutoButtonColor = enabled,
-				Font = Enum.Font.GothamBold,
-				TextSize = 18,
-				TextColor3 = if enabled then BRIGHT_TEXT else OWNED_SEGMENT,
-				Text = text,
-			})
-			corner(arrow, 14)
-			if enabled then
-				arrow.MouseButton1Click:Connect(function()
-					setStage(activeStage + delta)
-				end)
+		-- ONE ROW PER STAGE, each with its own action, Stock included. The card
+		-- used to be a headline, two small -/+ arrows and one big button that
+		-- always sold the next unbought stage - so stepping back to a stage
+		-- already owned left a green button underneath naming something else
+		-- entirely. Now the thing a row does is written on that row: the
+		-- running one says so, an owned one switches to it, the next one shows
+		-- its price, and anything past that is padlocked.
+		local y = HEADER_HEIGHT
+		for level = 0, maxStage do
+			local stage = VehicleInduction.Get(level)
+			local running = level == activeStage
+			local owned = level <= ownedStage
+			local isNext = nextStage ~= nil and level == nextStage.Level
+			-- The blurb goes on the rung being SOLD and on the one being RUN:
+			-- one is the pitch, the other is the reminder of how to trigger it.
+			local showBlurb = stage ~= nil and (isNext or running)
+			local rowHeight = ROW_HEIGHT + (if showBlurb then BLURB_HEIGHT else 0)
+
+			local row = Instance.new("Frame")
+			row.Name = "Stage" .. level
+			row.Size = UDim2.new(1, -20, 0, rowHeight)
+			row.Position = UDim2.fromOffset(10, y)
+			row.BackgroundColor3 = PANEL
+			row.BorderSizePixel = 0
+			row.Parent = card
+			corner(row, 8)
+			if running then
+				stroke(row, ACCENT, 2)
 			end
-		end
+			y += rowHeight + ROW_GAP
 
-		-- Only once there is something to switch between. On a stock car they
-		-- would be two dead circles next to the word "Stock".
-		if ownedStage > 0 then
-			makeStageArrow("-", -48, -1)
-			makeStageArrow("+", -14, 1)
-		end
-
-		local pips = Instance.new("Frame")
-		pips.Size = UDim2.new(1, -28, 0, PIP_HEIGHT)
-		pips.Position = UDim2.fromOffset(14, 60)
-		pips.BackgroundTransparency = 1
-		pips.Parent = card
-		do
-			local layout = Instance.new("UIListLayout", pips)
-			layout.FillDirection = Enum.FillDirection.Horizontal
-			layout.Padding = UDim.new(0, SEGMENT_GAP)
-			layout.SortOrder = Enum.SortOrder.LayoutOrder
-		end
-		-- Three states, the same three the stat cards' segment bars use and in
-		-- the same colours: green = switched on, grey = bought but turned off,
-		-- dark = not bought. No numbers, because there is nothing to count.
-		for level = 1, maxStage do
-			local pip = Instance.new("Frame")
-			pip.Size = UDim2.new(1 / maxStage, -SEGMENT_GAP, 1, 0)
-			pip.BackgroundColor3 = if level <= activeStage
+			-- Stages stack - Anti-Lag still has the turbo and the blow-off valve
+			-- under it - so every rung up to the running one is lit, not only
+			-- the running one.
+			local dot = Instance.new("Frame")
+			dot.Size = UDim2.fromOffset(12, 12)
+			dot.Position = UDim2.fromOffset(12, (ROW_HEIGHT - 12) / 2)
+			dot.BackgroundColor3 = if level > 0 and level <= activeStage
 				then ACCENT
-				elseif level <= ownedStage then OWNED_SEGMENT
+				elseif owned then OWNED_SEGMENT
 				else LOCKED
-			pip.BorderSizePixel = 0
-			pip.LayoutOrder = level
-			pip.Parent = pips
-			corner(pip, 5)
+			dot.BorderSizePixel = 0
+			dot.Parent = row
+			corner(dot, 6)
+
+			label(row, {
+				Size = UDim2.new(1, -(34 + ACTION_WIDTH + 14), 0, ROW_HEIGHT),
+				Position = UDim2.fromOffset(34, 0),
+				Font = Enum.Font.GothamBold,
+				TextSize = 15,
+				TextColor3 = if running then ACCENT elseif owned or isNext then BRIGHT_TEXT else DIM_TEXT,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Text = VehicleInduction.DisplayNameFor(level),
+			})
+
+			if showBlurb then
+				label(row, {
+					Size = UDim2.new(1, -24, 0, BLURB_HEIGHT - 6),
+					Position = UDim2.fromOffset(12, ROW_HEIGHT - 4),
+					TextSize = 13,
+					TextColor3 = DIM_TEXT,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextYAlignment = Enum.TextYAlignment.Top,
+					TextWrapped = true,
+					Text = stage.Blurb,
+				})
+			end
+
+			local actionProps = {
+				Size = UDim2.fromOffset(ACTION_WIDTH, ROW_HEIGHT - 12),
+				Position = UDim2.new(1, -6, 0, 6),
+				AnchorPoint = Vector2.new(1, 0),
+				TextSize = 13,
+			}
+
+			if running then
+				actionProps.Font = Enum.Font.GothamBlack
+				actionProps.TextColor3 = ACCENT
+				actionProps.Text = TICK_GLYPH .. " RUNNING"
+				label(row, actionProps)
+			elseif owned then
+				actionProps.Name = "UseStageButton"
+				actionProps.BackgroundColor3 = OWNED_SEGMENT
+				actionProps.TextColor3 = BRIGHT_TEXT
+				actionProps.AutoButtonColor = true
+				actionProps.Text = "USE"
+				corner(button(row, actionProps), 8).MouseButton1Click:Connect(function()
+					setStage(level)
+				end)
+			elseif isNext then
+				local affordable = (data.Money or 0) >= stage.Price
+				actionProps.Name = "BuyInductionButton"
+				actionProps.BackgroundColor3 = if affordable then ACCENT else LOCKED
+				actionProps.TextColor3 = if affordable then PANEL else DIM_TEXT
+				actionProps.AutoButtonColor = affordable
+				actionProps.Text = if affordable
+					then "BUY " .. formatMoney(stage.Price)
+					else "NEED " .. formatMoney(stage.Price - (data.Money or 0))
+				local buyButton = corner(button(row, actionProps), 8)
+				if affordable then
+					buyButton.MouseButton1Click:Connect(function()
+						playClickSound()
+						if buyInductionStageFunction:InvokeServer(vehicleId) then
+							playClaimSound()
+						end
+						refreshTerminalData()
+					end)
+				end
+			else
+				-- The ladder is bought in order, and the price of a rung nobody
+				-- can buy yet is noise.
+				actionProps.TextSize = 16
+				actionProps.TextColor3 = DIM_TEXT
+				actionProps.Text = LOCK_GLYPH
+				label(row, actionProps)
+			end
 		end
 
-		-- What the NEXT UNBOUGHT stage does, not what the current one did: the
-		-- card's job below the headline is to sell the next rung. At the top of
-		-- the ladder there is nothing left to sell, so it describes whatever
-		-- the car is running instead.
-		local described = nextStage or VehicleInduction.Get(activeStage)
-		label(card, {
-			Size = UDim2.new(1, -28, 0, 52),
-			Position = UDim2.fromOffset(14, 78),
-			TextSize = 13,
-			TextColor3 = DIM_TEXT,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Top,
-			TextWrapped = true,
-			Text = if described then described.Blurb else "",
-		})
-
-		local buyButton = button(card, {
-			Name = "BuyInductionButton",
-			Size = UDim2.new(1, -28, 0, 42),
-			Position = UDim2.fromOffset(14, 136),
-			TextSize = 15,
-		})
-		corner(buyButton, 10)
-
-		if not nextStage then
-			buyButton.Text = "FULLY BUILT " .. TICK_GLYPH
-			buyButton.BackgroundColor3 = LOCKED
-			buyButton.TextColor3 = DIM_TEXT
-			return
-		end
-
-		local affordable = (data.Money or 0) >= nextStage.Price
-		-- The next stage is NAMED on the button, not called "upgrade": "BLOW-OFF
-		-- VALVE $9,000" is a thing a child can want, and "UPGRADE $9,000" is not.
-		buyButton.Text = if affordable
-			then string.upper(nextStage.DisplayName) .. "  " .. formatMoney(nextStage.Price)
-			else "NEED " .. formatMoney(nextStage.Price - (data.Money or 0))
-		buyButton.BackgroundColor3 = if affordable then ACCENT else LOCKED
-		buyButton.TextColor3 = if affordable then PANEL else DIM_TEXT
-		buyButton.AutoButtonColor = affordable
-
-		buyButton.MouseButton1Click:Connect(function()
-			if not affordable then
-				return
-			end
-			playClickSound()
-			if buyInductionStageFunction:InvokeServer(vehicleId) then
-				playClaimSound()
-			end
-			refreshTerminalData()
-		end)
+		card.Size = UDim2.new(1, 0, 0, y + 4)
 	end
 end
 
--- The induction ladder is the LAST thing in the tab, not the first: it does
--- not come from a Configs file, so it always has something to show, but the
--- free/paid stat cards are what most cars have and what a player reaches for
--- first, and burying them under one big card pushed them below the fold.
+-- The induction ladder sits BETWEEN the free stat cards and the pass banner:
+-- everything bought with in-game money reads as one run, and the Robux half
+-- comes after it. It used to be last, under the whole gated grid, where a
+-- player without the pass had to scroll past a wall of padlocks to find the
+-- one upgrade they could hear. It is still not first - the free stat cards are
+-- what a player reaches for, and this card is tall enough to bury them.
 local function renderUpgrades(data, vehicleId)
 	clearChildren(upgradesScroll)
 
@@ -1538,9 +1533,9 @@ local function renderUpgrades(data, vehicleId)
 		makeInductionCard(data, vehicleId, 2) -- a car with no gated stats has no pass to sell
 		return
 	end
-	makePassBanner(vehicleId, ownsPass, 2)
-	addCards(makeGridSection(3), paidStats)
-	makeInductionCard(data, vehicleId, 4)
+	makeInductionCard(data, vehicleId, 2)
+	makePassBanner(vehicleId, ownsPass, 3)
+	addCards(makeGridSection(4), paidStats)
 end
 
 --============================================================================
