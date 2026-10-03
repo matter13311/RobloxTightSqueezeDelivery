@@ -1,7 +1,7 @@
--- The "buy third person" confirm panel. Two entry points open it: pressing T
--- while driving without the perk (RayCastSuspension's
--- THIRD_PERSON_SHOP_ACTION), and the lobby shop button while on foot
--- (VehicleShopButton.client.luau). Neither owns it exclusively, so this
+-- The "buy third person" confirm panel. Two entry points open it: the
+-- "3rd Person" button and its T key, on foot or driving
+-- (VehicleShopButton.client.luau), and the touch driving controls' button
+-- (RayCastSuspension). Neither owns it exclusively, so this
 -- module has no session of its own - it is just Open/Close/Toggle, safe to
 -- call from either place at any time.
 --

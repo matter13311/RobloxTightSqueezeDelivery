@@ -516,6 +516,17 @@ local DEFAULTS = {
 	ReverseBeepVolume = 0.6,
 	ReverseBeepRollOffMaxDistance = 60,
 
+	-- Air brakes - the hiss of released air when a heavy truck's brake pedal
+	-- goes down. Empty by default and opt-in for the same reason as the
+	-- reverse beeper (see StraightTruck.luau / AmericanHitchTruck.luau).
+	-- Built and played client-side by VehicleAirBrake.luau, once per press;
+	-- AirBrakeMinInterval is the shortest gap in seconds between two hisses,
+	-- so feathering the pedal doesn't play it over and over.
+	AirBrakeSoundId = "",
+	AirBrakeVolume = 0.5,
+	AirBrakeRollOffMaxDistance = 80,
+	AirBrakeMinInterval = 1.2,
+
 	-- Cargo. How many crates the bed holds, how heavy each one is, and how
 	-- much worse the truck handles for carrying them. See
 	-- docs/CargoDesign.md, and CargoLoad.luau's header for why a handling

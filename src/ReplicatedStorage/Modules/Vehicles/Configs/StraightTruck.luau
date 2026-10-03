@@ -41,6 +41,10 @@ config.RearWheelRadius = 2.21025
 config.HonkSoundId = "rbxassetid://86051083118541"
 config.HonkSoundOffsetZ = -14
 
+-- Air brakes. This is the first truck big enough to have them, so it hisses
+-- on every brake press - see VehiclePhysics.Defaults.AirBrakeSoundId.
+config.AirBrakeSoundId = "rbxassetid://9113052763"
+
 -- Steering. More lock than BoxTruck's 40 at a standstill, and a little more
 -- at speed (BoxTruck: 12) so the extra angle is felt while driving and not
 -- only when parking.

@@ -462,8 +462,18 @@ local CLIPBOARD_LINE_INTERVAL = 1
 local CLIPBOARD_MONEY_DELAY = 0.6
 local CLIPBOARD_HOLD_SECONDS = 4
 -- Studs/second of the player's assembly (the vehicle, when seated) that counts
--- as "driving off" and dismisses the clipboard early.
+-- as "driving off". It does not dismiss the clipboard - it switches every beat
+-- still to come over to the RUSH pacing below, so the lines keep stamping and
+-- the money still lands, just quickly.
 local DRIVE_OFF_SPEED = 6
+-- Pacing once the player has driven off. Roughly three times faster, and no
+-- faster: a line every third of a second is still a line you can catch at a
+-- glance, and the hold is long enough to read the one number that matters.
+-- Worst case (driving off before the first line) the whole thing is over in
+-- about three and a half seconds instead of ten.
+local CLIPBOARD_RUSH_LINE_INTERVAL = 0.35
+local CLIPBOARD_RUSH_MONEY_DELAY = 0.25
+local CLIPBOARD_RUSH_HOLD_SECONDS = 1.6
 -- Rows built up front, one per fact.
 --
 -- There is deliberately no progression line ("3 deliveries until 4 max
@@ -1444,28 +1454,34 @@ local function showReceipt(completed, failed)
 	):Play()
 
 	task.spawn(function()
-		-- Waits up to `seconds`, returning true early once the player drives off
-		-- (or the receipt was superseded). A driver who is used to the flow
-		-- pulls away the moment the cargo is down, and the clipboard is in the
-		-- way of the road.
-		local function waitOrDriveOff(seconds)
-			local deadline = os.clock() + seconds
+		-- Sticky once set: a driver who is used to the flow pulls away the moment
+		-- the cargo is down, and from then on every remaining beat runs at its
+		-- rushed length. Nothing is skipped - they still get every line and the
+		-- money, as a quick glance rather than a slow read.
+		local droveOff = false
+
+		-- One beat of the animation: `seconds` normally, `rushSeconds` once the
+		-- player has driven off - including part-way through this very beat, in
+		-- which case it ends as soon as the rushed length has already passed.
+		-- Returns early if the receipt was superseded.
+		local function beat(seconds, rushSeconds)
+			local started = os.clock()
 			repeat
 				task.wait(0.05)
 				if receiptToken ~= token then
-					return true
+					return
 				end
-				local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-				if root and root:IsA("BasePart") and root.AssemblyLinearVelocity.Magnitude > DRIVE_OFF_SPEED then
-					return true
+				if not droveOff then
+					local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					if root and root:IsA("BasePart") and root.AssemblyLinearVelocity.Magnitude > DRIVE_OFF_SPEED then
+						droveOff = true
+					end
 				end
-			until os.clock() >= deadline
-			return false
+			until os.clock() - started >= (if droveOff then rushSeconds else seconds)
 		end
 
-		local droveOff = false
 		-- The delivery is only registered once parked, so the first beat is not
-		-- checked: a car still rolling to a stop must not dismiss its own receipt.
+		-- checked: a car still rolling to a stop must not rush its own receipt.
 		task.wait(CLIPBOARD_SLIDE_SECONDS + CLIPBOARD_FIRST_LINE_DELAY)
 
 		for index = 1, math.min(#lines, CLIPBOARD_MAX_LINES) do
@@ -1475,30 +1491,23 @@ local function showReceipt(completed, failed)
 			local row = clipRows[index]
 			stampIn(row.Frame, row.Scale)
 			playSound(STAMP_SOUND_ID)
-			if waitOrDriveOff(CLIPBOARD_LINE_INTERVAL) then
-				droveOff = true
-				break
-			end
+			beat(CLIPBOARD_LINE_INTERVAL, CLIPBOARD_RUSH_LINE_INTERVAL)
 		end
 
-		if not droveOff then
-			droveOff = waitOrDriveOff(CLIPBOARD_MONEY_DELAY)
-		end
+		beat(CLIPBOARD_MONEY_DELAY, CLIPBOARD_RUSH_MONEY_DELAY)
 		if receiptToken ~= token then
 			return
 		end
 		stampIn(earnedGroup, earnedScale)
 		playSound(if failed then STAMP_SOUND_ID else COIN_SOUND_ID)
 
-		if not droveOff then
-			droveOff = waitOrDriveOff(CLIPBOARD_HOLD_SECONDS)
-		end
+		beat(CLIPBOARD_HOLD_SECONDS, CLIPBOARD_RUSH_HOLD_SECONDS)
 		if receiptToken ~= token then
 			return
 		end
 		local slideOut = TweenService:Create(
 			clipboard,
-			TweenInfo.new(if droveOff then 0.15 else 0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			TweenInfo.new(if droveOff then 0.2 else 0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
 			{ Position = CLIPBOARD_HIDDEN }
 		)
 		slideOut:Play()

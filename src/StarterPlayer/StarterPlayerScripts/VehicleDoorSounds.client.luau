@@ -37,7 +37,14 @@ playDoorSound.OnClientEvent:Connect(function(at, action)
 		return
 	end
 
+	-- Named, because the engine sound is found with
+	-- carModel:FindFirstChild("Sound", true) and an unnamed Sound defaults to
+	-- exactly that name. This one sits on the chassis, so while it was alive it
+	-- won that search and took the engine's pitch updates - the engine droned
+	-- at idle after getting in until this was cleaned up. Same clash as
+	-- playOneShot in VehicleLights.
 	local sound = Instance.new("Sound")
+	sound.Name = "DoorSound"
 	sound.SoundId = if action == "Open" then DOOR_OPEN_SOUND_ID else DOOR_CLOSE_SOUND_ID
 	sound.Volume = DOOR_SOUND_VOLUME
 	sound.RollOffMaxDistance = 50

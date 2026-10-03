@@ -130,17 +130,35 @@ end
 -- go dark like a real one" behaviour the header promises and does not, on its
 -- own, deliver. Checked per-instance rather than once for the whole rig
 -- because Left and Right can detach independently.
+--
+-- Optional per-instance fields, used by the headlights only: LitColor (with
+-- OffColor) recolours the part while lit, LitTransparency (with
+-- OffTransparency) unhides it, and Light may be nil for a glow-only part that
+-- shows the lit lamp shape without emitting a second beam.
+local function setInstanceLit(instance, on)
+	instance.IsLit = on
+	if instance.Light then
+		instance.Light.Enabled = on
+	end
+	local part = instance.Part
+	part.Material = if on then Enum.Material.Neon else instance.OffMaterial
+	if instance.LitColor then
+		part.Color = if on then instance.LitColor else instance.OffColor
+	end
+	if instance.LitTransparency then
+		part.Transparency = if on then instance.LitTransparency else instance.OffTransparency
+	end
+end
+
 local function setInstancesLit(instances, on)
 	for _, instance in instances do
 		if instance.Part:GetAttribute(VehicleCollision.DEBRIS_ATTRIBUTE) then
-			if instance.Light.Enabled then
-				instance.Light.Enabled = false
-				instance.Part.Material = instance.OffMaterial
+			if instance.IsLit then
+				setInstanceLit(instance, false)
 			end
 			continue
 		end
-		instance.Light.Enabled = on
-		instance.Part.Material = if on then Enum.Material.Neon else instance.OffMaterial
+		setInstanceLit(instance, on)
 	end
 end
 
@@ -262,6 +280,16 @@ end
 
 local HEADLIGHT_SWITCH_SOUND = "129921942229278"
 local HEADLIGHT_PART_NAMES = { "HeadlightLeft", "HeadlightRight" }
+local HEADLIGHT_COLOR = Color3.fromRGB(255, 255, 240)
+
+-- Glow parts show the lit lamp from outside the car. The HeadlightLeft/Right
+-- emitters on some cars are invisible placeholders tucked inside the lamp
+-- housing - right for aiming the beam, but from outside nothing looked on.
+-- A HeadlightGlow is shaped to the real lens instead: it turns Neon and
+-- visible while lit and goes back to its authored look (usually fully
+-- transparent) when off. It carries no SpotLight, so adding one never
+-- doubles a car's beam.
+local HEADLIGHT_GLOW_NAME = "HeadlightGlow"
 
 local headlightRigs = {} -- [vehicle] = { [partName] = { { Part, Light, OffMaterial }, ... }, Connection }
 
@@ -271,7 +299,7 @@ local headlightRigs = {} -- [vehicle] = { [partName] = { { Part, Light, OffMater
 local function buildSpotlight(part, brightnessMultiplier)
 	local light = Instance.new("SpotLight")
 	light.Name = "Headlight"
-	light.Color = Color3.fromRGB(255, 255, 240)
+	light.Color = HEADLIGHT_COLOR
 	light.Brightness = 3 * (brightnessMultiplier or 1)
 	light.Range = 60
 	light.Angle = 80
@@ -285,6 +313,7 @@ local function applyHeadlights(rig, on)
 	for _, name in HEADLIGHT_PART_NAMES do
 		setInstancesLit(rig[name], on)
 	end
+	setInstancesLit(rig.Glow, on)
 end
 
 local function getHeadlightRig(vehicle)
@@ -316,12 +345,28 @@ local function getHeadlightRig(vehicle)
 					Part = part,
 					Light = buildSpotlight(part, brightness),
 					OffMaterial = part.Material,
+					-- A lens modelled in grey would otherwise glow a dim grey
+					-- once it turns Neon.
+					LitColor = HEADLIGHT_COLOR,
+					OffColor = part.Color,
 				}
 				instanceByPart[part] = instance
 			end
 			table.insert(instances, instance)
 		end
 		rig[name] = instances
+	end
+
+	rig.Glow = {}
+	for _, part in findAllNamed(frontLights, HEADLIGHT_GLOW_NAME) do
+		table.insert(rig.Glow, {
+			Part = part,
+			OffMaterial = part.Material,
+			LitColor = HEADLIGHT_COLOR,
+			OffColor = part.Color,
+			LitTransparency = 0,
+			OffTransparency = part.Transparency,
+		})
 	end
 
 	-- Sync immediately to whatever the switch is already set to - covers a
@@ -361,6 +406,9 @@ local TURN_SIGNAL_ON_TIME = 0.35
 local TURN_SIGNAL_OFF_TIME = 0.35
 
 local TURN_SIGNAL_COLOR = Color3.fromRGB(255, 170, 0)
+-- Deeper than the light itself: Neon brightens whatever colour it's given,
+-- and 255,170,0 on the part reads as plain yellow rather than amber.
+local TURN_SIGNAL_LENS_COLOR = Color3.fromRGB(255, 120, 0)
 local TURN_SIGNAL_SIDES = { "Left", "Right" }
 
 local turnSignalRigs = {} -- [vehicle] = { Left = {...}, Right = {...}, ActiveSide, BlinkGeneration, Connection }
@@ -455,7 +503,18 @@ local function getTurnSignalRig(vehicle)
 					Part = part,
 					Light = buildPointLight(part, TURN_SIGNAL_COLOR, "TurnSignalLight", brightness, range),
 					OffMaterial = part.Material,
+					-- Some cars model the signal as a clear/grey lens, which
+					-- flashed white once it turned Neon.
+					LitColor = TURN_SIGNAL_LENS_COLOR,
+					OffColor = part.Color,
 				}
+				-- A signal part sitting over amber already painted into a
+				-- lamp texture (or a faint side repeater) is authored hidden
+				-- or near-invisible; this attribute shows it solid while lit.
+				if part:GetAttribute("ShowWhenLit") then
+					instance.LitTransparency = 0
+					instance.OffTransparency = part.Transparency
+				end
 				instanceByPart[part] = instance
 			end
 			table.insert(instances, instance)
@@ -568,6 +627,10 @@ function VehicleLights.Clear(vehicle)
 	local headlightRig = headlightRigs[vehicle]
 	if headlightRig then
 		headlightRig.Connection:Disconnect()
+		-- Back to the authored look first: the same car can be tracked again
+		-- later, and its rig would record a lit Neon/visible part as the "off"
+		-- appearance.
+		applyHeadlights(headlightRig, false)
 		for _, name in HEADLIGHT_PART_NAMES do
 			for _, instance in headlightRig[name] do
 				instance.Light:Destroy()

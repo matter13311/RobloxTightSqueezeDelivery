@@ -70,6 +70,10 @@ config.RearWheelRadius = 2.01
 -- (z = 177) and the hood is at about z = 165, hence -12.
 config.HonkSoundOffsetZ = -12
 
+-- Air brakes: the hiss on each brake press is StraightTruck's
+-- AirBrakeSoundId, inherited through the clone above. Set it to "" here to
+-- silence it on this truck alone.
+
 -- No bed, no crates. CargoLoad.Capacity reads 0, so the truck is treated as
 -- carrying nothing, and the ladder is dropped so the garage does not offer to
 -- sell "Cargo Space" for a truck that has nowhere to put it. Upgrades is cloned

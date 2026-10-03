@@ -13,6 +13,7 @@ local ExhaustEffects = require(script.Parent.ExhaustEffects)
 local InductionEffects = require(script.Parent.InductionEffects)
 local VehicleLights = require(script.Parent.VehicleLights)
 local VehicleReverseBeep = require(script.Parent.VehicleReverseBeep)
+local VehicleAirBrake = require(script.Parent.VehicleAirBrake)
 local VehicleDashboardGauges = require(script.Parent.VehicleDashboardGauges)
 local VehicleControls = require(script.Parent.VehicleControls)
 local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
@@ -64,7 +65,6 @@ local TURN_SIGNAL_LEFT_ACTION = "VehicleTurnSignalLeft"
 local TURN_SIGNAL_RIGHT_ACTION = "VehicleTurnSignalRight"
 local THROTTLE_ACTION = "VehicleThrottle"
 local HORN_ACTION = "VehicleHorn"
-local THIRD_PERSON_SHOP_ACTION = "VehicleThirdPersonShop"
 
 -- Which way A/D are being held right now, read straight off the keys instead
 -- of off VehicleSeat.SteerFloat. The seat derives its axes from
@@ -516,12 +516,10 @@ local function bindDrivingControls()
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.H)
 
-	ContextActionService:BindAction(THIRD_PERSON_SHOP_ACTION, function(_, inputState)
-		if inputState == Enum.UserInputState.Begin then
-			toggleThirdPersonShop()
-		end
-		return Enum.ContextActionResult.Sink
-	end, false, Enum.KeyCode.T)
+	-- T (the third-person panel) is deliberately NOT bound here. It used to
+	-- be, which made it a key that only worked from behind the wheel while the
+	-- on-screen "[T]" button advertising it was visible on foot too.
+	-- VehicleShopButton.client.luau owns the key now, in and out of a vehicle.
 end
 
 local function unbindDrivingControls()
@@ -544,7 +542,6 @@ local function unbindDrivingControls()
 		TURN_SIGNAL_LEFT_ACTION,
 		TURN_SIGNAL_RIGHT_ACTION,
 		HORN_ACTION,
-		THIRD_PERSON_SHOP_ACTION,
 		THROTTLE_ACTION,
 	} do
 		ContextActionService:UnbindAction(action)
@@ -985,6 +982,7 @@ workspace.Vehicles.ChildRemoved:Connect(function(vehicle)
 	InductionEffects.Clear(vehicle)
 	VehicleLights.Clear(vehicle)
 	VehicleReverseBeep.Clear(vehicle)
+	VehicleAirBrake.Clear(vehicle)
 	VehicleDashboardGauges.Clear(vehicle)
 	wheelAttachmentsCache[vehicle] = nil
 	wheelRotationState[vehicle] = nil
@@ -1199,6 +1197,7 @@ RunService:BindToRenderStep("MoveWheels", 5, function()
 			VehiclePhysics.UpdateEngineSound(vehicle, config, engineRpm)
 			VehicleLights.Update(vehicle, isBraking, isReversing)
 			VehicleReverseBeep.Update(vehicle, config, isReversing)
+			VehicleAirBrake.Update(vehicle, config, isBraking)
 			updateSteeringWheel(vehicle, config, smoothSteer)
 			-- Speed comes straight off the chassis' own replicated velocity
 			-- rather than the session/Net split above - see the module

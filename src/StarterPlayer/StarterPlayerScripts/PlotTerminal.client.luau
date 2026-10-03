@@ -632,24 +632,89 @@ local function showRightTab(name)
 	for tabName, entry in rightTabs do
 		local isActive = tabName == name
 		entry.Page.Visible = isActive
+		local ink = if isActive then PANEL else DIM_TEXT
 		entry.Button.BackgroundColor3 = if isActive then ACCENT else CARD
-		entry.Button.TextColor3 = if isActive then PANEL else DIM_TEXT
+		entry.Label.TextColor3 = ink
+		for _, piece in entry.IconPieces do
+			piece.BackgroundColor3 = ink
+		end
 	end
 end
 
+-- Tab icons, drawn out of plain frames rather than image assets so there is
+-- nothing to upload and they take the tab's ink colour like the text does.
+-- Each entry is a list of { x, y, width, height, cornerRadius } on an 18x18
+-- grid.
+--   Upgrades  three bars stepping up - "this gets better".
+--   Body      a paint roller - the roller, its arm, and the handle.
+-- Kept inside one table (and the builder inside addRightTab) because this
+-- file is close to Luau's limit on top-level locals.
+local RIGHT_TAB_ICONS = {
+	Upgrades = {
+		{ 1, 11, 4, 6, 1 },
+		{ 7, 6, 4, 11, 1 },
+		{ 13, 1, 4, 16, 1 },
+	},
+	[BODY_TAB] = {
+		{ 0, 1, 15, 6, 2 },
+		{ 15, 3, 3, 2, 0 },
+		{ 16, 3, 2, 7, 0 },
+		{ 7, 8, 11, 2, 0 },
+		{ 6, 8, 3, 10, 1 },
+	},
+}
+
 local function addRightTab(name, page, order)
+	-- The button carries no text of its own: the icon and the label are
+	-- children in a centred row, so the pair stays centred together.
 	local tab = button(tabBar, {
 		Name = name .. "Tab",
 		Size = UDim2.new(0.5, -4, 1, 0),
 		BackgroundColor3 = CARD,
+		Text = "",
+		LayoutOrder = order,
+	})
+	corner(tab, 10)
+
+	local row = Instance.new("UIListLayout", tab)
+	row.FillDirection = Enum.FillDirection.Horizontal
+	row.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	row.VerticalAlignment = Enum.VerticalAlignment.Center
+	row.SortOrder = Enum.SortOrder.LayoutOrder
+	row.Padding = UDim.new(0, 8)
+
+	local icon = Instance.new("Frame")
+	icon.Name = "Icon"
+	icon.Size = UDim2.fromOffset(18, 18)
+	icon.BackgroundTransparency = 1
+	icon.LayoutOrder = 1
+	icon.Parent = tab
+
+	local iconPieces = {}
+	for _, rect in RIGHT_TAB_ICONS[name] or {} do
+		local piece = Instance.new("Frame")
+		piece.Position = UDim2.fromOffset(rect[1], rect[2])
+		piece.Size = UDim2.fromOffset(rect[3], rect[4])
+		piece.BackgroundColor3 = DIM_TEXT
+		piece.BorderSizePixel = 0
+		piece.Parent = icon
+		if rect[5] > 0 then
+			corner(piece, rect[5])
+		end
+		table.insert(iconPieces, piece)
+	end
+
+	local tabLabel = label(tab, {
+		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.fromScale(0, 1),
 		Font = Enum.Font.GothamBold,
 		TextSize = 16,
 		TextColor3 = DIM_TEXT,
 		Text = name,
-		LayoutOrder = order,
+		LayoutOrder = 2,
 	})
-	corner(tab, 10)
-	rightTabs[name] = { Button = tab, Page = page }
+
+	rightTabs[name] = { Button = tab, Page = page, Label = tabLabel, IconPieces = iconPieces }
 	tab.MouseButton1Click:Connect(function()
 		if activeRightTab ~= name then
 			playClickSound()
