@@ -2,7 +2,7 @@
 -- camera controller has locked the mouse to the centre of the screen -
 -- which is exactly when it's in first person, walking or driving (see the
 -- other scripts that fight this same lock: DeliveryHud, PlotTerminal,
--- SettingsMenu, VehicleThirdPersonShop). In that state the arrow icon just
+-- SettingsMenu). In that state the arrow icon just
 -- sits frozen at the centre of the screen looking like a stray leftover
 -- cursor rather than a first-person reticle.
 --

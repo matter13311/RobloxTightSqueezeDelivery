@@ -1,4 +1,4 @@
--- Developer products: refresh the contract board, and timed third person.
+-- Developer products: refresh the contract board, and the express toll ticket.
 --
 -- This is the ONLY ProcessReceipt callback in the game, and it has to stay that
 -- way - Roblox allows one per server, and a second assignment silently replaces
@@ -18,7 +18,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 
 local refreshContractsFunction = script.Parent:WaitForChild("RefreshContracts")
-local grantThirdPersonFunction = script.Parent:WaitForChild("GrantThirdPerson")
 
 -- Server -> the buying client, once the board has actually been rebuilt. The
 -- client also learns the purchase went through from
@@ -43,20 +42,10 @@ local handlers = {
 		contractsRefreshedEvent:FireClient(player)
 		return true
 	end,
-
-	-- Third-person-while-driving, read by VehicleViewMode.luau on the
-	-- client. The purchase is 20 minutes of PLAY time: the time left is saved
-	-- with the player and only ticks down while they are in a server, so
-	-- leaving and coming back does not cost them any of it. Like the contract
-	-- refresh above, PlotManager owns the save, so this goes through its
-	-- bindable; it also stacks on whatever time is left.
-	[ProgressionConfig.Monetization.ThirdPersonProductId] = function(player)
-		return grantThirdPersonFunction:Invoke(player, ProgressionConfig.Monetization.ThirdPersonDurationSeconds)
-	end,
 }
 
 -- Express toll ticket (see ExpressToll.server.luau / ExpressGates.client.luau).
--- Same stacking rule as third person. Added outside the table literal only
+-- Time stacks on whatever is left. Added outside the table literal only
 -- because its id is 0 until the product is created, and a [0] key must not be
 -- registered for a product that does not exist.
 local ExpressAccessUntilAttribute = "ExpressAccessUntil"

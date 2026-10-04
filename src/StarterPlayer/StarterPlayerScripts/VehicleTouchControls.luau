@@ -1,7 +1,7 @@
 -- On-screen buttons for the driving actions that otherwise only exist as
 -- keybinds (RayCastSuspension.client.luau's bindDrivingControls): exit, gas,
--- brake, handbrake, horn, headlights, turn signals, and the third-person
--- unlock prompt. None of those have a walk-up CustomPrompt to make tappable
+-- brake, handbrake, horn, headlights, turn signals.
+-- None of those have a walk-up CustomPrompt to make tappable
 -- the way CustomPrompt.luau does for entering the car in the first place -
 -- while actually driving there is nothing on screen a touch player can press,
 -- so this exists purely to give touch input the same actions the keyboard has.
@@ -210,8 +210,6 @@ end
 --   OnHeadlightsToggle()        L
 --   OnTurnSignal(side)          Q/E - "Left"/"Right"
 --   OnHornChanged(active)       H - held
---   OnThirdPersonShop()         T - only relevant without third-person access
---   ShowThirdPersonButton       (boolean) whether to build that button at all
 function VehicleTouchControls.new(player, handlers)
 	local self = setmetatable({}, VehicleTouchControls)
 	self.Handlers = handlers
@@ -286,7 +284,7 @@ function VehicleTouchControls.new(player, handlers)
 	)
 
 	-- A quieter row of secondary toggles above the pedal cluster - horn,
-	-- lights, blinkers, third person - same "everything else, second"
+	-- lights, blinkers - same "everything else, second"
 	-- ordering VehicleControlsHint.luau uses for the keyboard legend.
 	local secondaryRow = self:_newGroup(Vector2.new(1, 1), Vector2.new(24, 190), UDim2.fromOffset(280, 48))
 
@@ -319,11 +317,6 @@ function VehicleTouchControls.new(player, handlers)
 			handlers.OnHornChanged(false)
 		end
 	)
-	if handlers.ShowThirdPersonButton then
-		self:_newButton(secondaryRow, UDim2.fromOffset(48, 48), UDim2.new(), "3RD", DIM_TEXT, function()
-			handlers.OnThirdPersonShop()
-		end)
-	end
 
 	table.insert(
 		self._connections,

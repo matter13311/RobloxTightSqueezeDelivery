@@ -19,7 +19,6 @@ local VehicleControls = require(script.Parent.VehicleControls)
 local VehicleMirrorViews = require(script.Parent.VehicleMirrorViews)
 local VehicleZoom = require(script.Parent.VehicleZoom)
 local VehicleViewMode = require(script.Parent.VehicleViewMode)
-local VehicleThirdPersonShop = require(script.Parent.VehicleThirdPersonShop)
 local VehicleTouchControls = require(script.Parent.VehicleTouchControls)
 -- PROTOTYPE: articulated vehicles. Steps a coupled trailer alongside the truck
 -- in this same loop - see TrailerDrive.luau for why it has to be this loop.
@@ -423,14 +422,6 @@ local function setHorn(active)
 	end
 end
 
--- Only worth doing anything for a player who doesn't already have the
--- third-person perk - there is nothing here to open for one who does.
-local function toggleThirdPersonShop()
-	if not VehicleViewMode.HasThirdPersonAccess() then
-		VehicleThirdPersonShop.Toggle()
-	end
-end
-
 local function bindDrivingControls()
 	-- High priority + Sink is what stops Space from reaching the default
 	-- character controls at all, so it never sets Humanoid.Jump and never
@@ -515,11 +506,6 @@ local function bindDrivingControls()
 		end
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.H)
-
-	-- T (the third-person panel) is deliberately NOT bound here. It used to
-	-- be, which made it a key that only worked from behind the wheel while the
-	-- on-screen "[T]" button advertising it was visible on foot too.
-	-- VehicleShopButton.client.luau owns the key now, in and out of a vehicle.
 end
 
 local function unbindDrivingControls()
@@ -572,7 +558,6 @@ local function endDrive(expected)
 	unbindDrivingControls()
 	VehicleMirrorViews.Stop()
 	VehicleZoom.Stop()
-	VehicleThirdPersonShop.Close()
 	VehicleViewMode.ReleaseCameraMode()
 	session.Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
 	session.Dashboard:Destroy()
@@ -635,8 +620,6 @@ local function beginDrive(humanoid, seatPart)
 			OnHeadlightsToggle = toggleHeadlights,
 			OnTurnSignal = toggleTurnSignal,
 			OnHornChanged = setHorn,
-			OnThirdPersonShop = toggleThirdPersonShop,
-			ShowThirdPersonButton = not VehicleViewMode.HasThirdPersonAccess(),
 		}),
 		Handbrake = false,
 		DriveThrottle = 0,
@@ -905,12 +888,7 @@ local function beginDrive(humanoid, seatPart)
 		-- constraint, which is the classic way a coupled rig detonates.
 		mySession.TrailerDrive:Step(delta, drive.Throttle)
 
-		-- Re-checked every frame rather than once on entry: a third-person
-		-- perk can expire mid-drive and a player who has one can freely
-		-- swap views, so neither the lock, the HUD, nor the countdown can
-		-- be decided just once at the start of the session.
-		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake, VehicleViewMode.ThirdPersonSecondsRemaining())
-		VehicleViewMode.EnforceCameraMode()
+		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake)
 		local firstPerson = VehicleViewMode.IsFirstPerson()
 		mySession.Dashboard:SetVisible(not firstPerson)
 		mySession.ControlsHint:SetVisible(firstPerson)

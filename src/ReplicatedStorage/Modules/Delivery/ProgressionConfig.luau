@@ -315,22 +315,6 @@ ProgressionConfig.Monetization = {
 	-- one the player has to gamble a click on to price, which is worse.
 	RefreshContractsPrice = 49,
 
-	-- Developer product: grants temporary third-person camera while driving
-	-- (see VehicleViewMode.luau and Monetization.server.luau). A consumable
-	-- rather than a one-time gamepass on purpose - it's a comfort/cosmetic
-	-- perk with no gameplay advantage, so repeat purchases are the point.
-	ThirdPersonProductId = 3711634863,
-	-- How long one purchase grants, in seconds. Buying again while already
-	-- active adds this on top of whatever time is left rather than
-	-- overwriting it - see the grant handler in Monetization.server.luau.
-	ThirdPersonDurationSeconds = 20 * 60,
-	-- The Player attribute the perk is published on: a unix time the perk
-	-- runs out at, read by VehicleViewMode on the client. What is SAVED is
-	-- not this timestamp but the seconds left (PlayerDataStore's
-	-- ThirdPersonSecondsLeft), so the time only ticks down while the player
-	-- is actually in a server - see PlotManager's GrantThirdPerson.
-	ThirdPersonAttribute = "ThirdPersonExpiresAt",
-
 	-- The free path to the same refresh (see ContractPool.FreeRefresh): one
 	-- always-available refresh on a rolling cooldown, not "N free per calendar
 	-- day". A day-boundary reset needs a timezone decision this game has no

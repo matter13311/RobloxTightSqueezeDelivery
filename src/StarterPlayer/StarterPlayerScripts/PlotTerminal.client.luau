@@ -2720,7 +2720,6 @@ end)
 local HUDS_HIDDEN_WHILE_OPEN = {
 	"MoneyDisplay",
 	"SettingsLauncher",
-	"VehicleShopButton",
 	"DeliveryGui",
 	"FirstPersonCursorGui",
 }

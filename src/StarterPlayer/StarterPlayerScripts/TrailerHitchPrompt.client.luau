@@ -31,8 +31,8 @@ local hitchRequest = ReplicatedStorage:WaitForChild("TrailerHitchRequest")
 
 local HITCH_ACTION = "TrailerHitchToggle"
 -- C for "couple". Every other letter within reach of WASD is already spoken
--- for while seated: F exits, L is the headlights, Q/E are the turn signals, T
--- is the third-person shop, Space is the handbrake, A/D steer - and H is the
+-- for while seated: F exits, L is the headlights, Q/E are the turn signals,
+-- Space is the handbrake, A/D steer - and H is the
 -- HORN (VehicleHorn in RayCastSuspension.client.luau), which is what this was
 -- originally and wrongly bound to. Check that list before rebinding this.
 local HITCH_KEY = Enum.KeyCode.C

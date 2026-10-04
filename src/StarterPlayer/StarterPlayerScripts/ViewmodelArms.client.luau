@@ -135,26 +135,23 @@ local armsHidden = false
 
 -- These are a VIEWMODEL: a prop that only makes sense from inside the driver's
 -- head. From any third person view they are a second pair of hands floating at
--- the wheel next to the real avatar's, which is exactly what the player sees
--- when they zoom out - two bodies driving one truck.
+-- the wheel next to the real avatar's, so in third person there is no rig in
+-- the world at all - the avatar just sits on the seat as it normally would.
 --
--- Hidden rather than destroyed, because the player can zoom back in at any
--- moment and rebuilding the rig on every flick of the scroll wheel would be
--- far more work than a few transparency writes.
+-- Un-parented rather than made transparent: nothing about a model that is not
+-- in the DataModel can be drawn, whatever a texture, shirt or accessory does
+-- with transparency. The rig is kept (not destroyed) because the player can
+-- zoom back in at any moment, and rebuilding it on every flick of the scroll
+-- wheel would be far more work than a re-parent.
 --
--- LocalTransparencyModifier layers on top of each part's own Transparency
--- instead of replacing it, so restoring means writing 0 rather than
--- remembering what every part was built with.
+-- Client-only by construction: this is a LocalScript parenting into
+-- workspace, so the rig never replicates - other players only ever see the
+-- avatar itself.
 local function setArmsHidden(hidden)
 	if not currentArms then
 		return
 	end
-	local modifier = if hidden then 1 else 0
-	for _, part in currentArms:GetDescendants() do
-		if part:IsA("BasePart") or part:IsA("Decal") then
-			part.LocalTransparencyModifier = modifier
-		end
-	end
+	currentArms.Parent = if hidden then nil else workspace
 	armsHidden = hidden
 end
 
@@ -600,6 +597,9 @@ local function attachArms(carModel, character)
 	end
 
 	currentSteerConnection = RunService.RenderStepped:Connect(function()
+		if armsHidden then
+			return
+		end
 		-- LocalSmoothSteer (set by RayCastSuspension every frame, purely
 		-- local, no network round-trip) is the driver's own frame-perfect
 		-- steer value - the same one the actual wheel prop turns with.

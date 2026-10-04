@@ -23,7 +23,6 @@
 --     TutorialDone = boolean,         -- false only for a player who has never been through the guided first delivery
 --     Settings = { [key] = boolean|number }, -- client display settings (GameSettings), see SanitizeSettings
 --     Permits = { [permitId] = true }, -- zone permits bought (ProgressionConfig.Permits)
---     ThirdPersonSecondsLeft = number, -- bought third-person time still unspent; only ticks down while the player is in a server
 --     Customization = { [vehicleId] = { Paint = string?, Material = string? } }, -- per-car looks, both VehiclePaint values, nil = stock
 --     PaintColors = { [colorId] = true }, -- VehiclePaint.Colors bought with money; account-wide, every car can use them
 --     PaintMaterials = { [materialId] = true }, -- VehiclePaint.Materials, same deal: bought once, usable on every car
@@ -152,7 +151,6 @@ local function newDefaultData()
 		-- Empty means "all defaults" - GameSettings owns what those are.
 		Settings = {},
 		Permits = {},
-		ThirdPersonSecondsLeft = 0,
 		Customization = {},
 		PaintColors = {},
 		PaintMaterials = {},
@@ -186,8 +184,6 @@ local function reconcile(data)
 		end
 	end
 	data.Permits = permits
-	-- A save that predates the field simply has no third-person time banked.
-	data.ThirdPersonSecondsLeft = sanitizeCount(data.ThirdPersonSecondsLeft)
 
 	-- Same rule as Permits: only colour ids that still exist, only `true`.
 	local paintColors = {}
