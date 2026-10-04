@@ -541,10 +541,9 @@ local function buildMoneyDisplay()
 			moneyText.TextSize = 15
 		else
 			pill.AnchorPoint = Vector2.new(1, 1)
-			-- Raised from the corner (was -36) to leave room underneath for
-			-- the vehicle shop button - see VehicleShopButton.client.luau,
-			-- which sits directly below this in the same column.
-			pill.Position = UDim2.new(1, -82, 1, -64)
+			-- Vertically centred on the gear button (its 52px circle spans
+			-- 36-88px up from the bottom, so centre 62; pill is 40 tall).
+			pill.Position = UDim2.new(1, -82, 1, -42)
 			pill.Size = UDim2.new(0, 130, 0, 40)
 			moneyText.TextSize = 18
 		end

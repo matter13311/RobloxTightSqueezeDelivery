@@ -88,6 +88,9 @@ end
 -- shopRects so street furniture and the alley-mouth kit keep clear of it.
 local shopfronts = {}
 local shopRects = {}
+-- Footprints of the plain-shopfront awnings (they overhang the pavement at
+-- canopy height); only trees keep clear of these - lamps stand at the kerb.
+local awningRects = {}
 
 local function shopBlocked(p, pad)
 	for _, r in shopRects do
@@ -216,6 +219,8 @@ local function makeBuilding(parent, r, styleKey, height, fronts)
 				U.part(p, "Awning", asize, CFrame.new(faceCentre + n * 2 + Vector3.new(0, SIDEWALK_TOP + 10, 0)), {
 					Material = Enum.Material.Fabric, Color = U.pick(Style.Awnings), CanCollide = false,
 				})
+				local ac = faceCentre + n * 2
+				table.insert(awningRects, U.rect(ac.X - asize.X / 2, ac.Z - asize.Z / 2, ac.X + asize.X / 2, ac.Z + asize.Z / 2))
 			end
 		end
 		-- the strip just in front of this facade
@@ -385,9 +390,11 @@ local function alleyNameSign(folder, m, d)
 		Material = Enum.Material.Metal, Color = METAL,
 	})
 	-- long axis along `out`; faces +-d. Above bus roofs, so it can overhang
-	-- the kerb lane.
-	local length = 7.6
-	local c = post + m.out * (length / 2 - 0.5) - d * 0.4 + Vector3.new(0, 15.2, 0)
+	-- the kerb lane. It starts just past the post (not behind it), or the
+	-- post hides the first letters of a long name.
+	local length = 7.2
+	local gap = 0.45
+	local c = post + m.out * (length / 2 + gap) - d * 0.4 + Vector3.new(0, 15.2, 0)
 	local plate = U.part(folder, "AlleySign", Vector3.new(length, 1.9, 0.2), CFrame.lookAt(c, c + d), {
 		Material = Enum.Material.SmoothPlastic, Color = SIGN_BROWN, CanCollide = false,
 	})
@@ -395,8 +402,8 @@ local function alleyNameSign(folder, m, d)
 	for _, f in { Enum.NormalId.Front, Enum.NormalId.Back } do
 		U.label(plate, f, text, { PixelsPerStud = 40, TextColor3 = SIGN_TEXT })
 	end
-	local arm = post + m.out * (length / 2 - 0.5) - d * 0.2 + Vector3.new(0, 16.35, 0)
-	U.part(folder, "AlleySignArm", Vector3.new(length, 0.25, 0.25), CFrame.lookAt(arm, arm + d), {
+	local arm = post + m.out * ((length + gap) / 2) - d * 0.2 + Vector3.new(0, 16.35, 0)
+	U.part(folder, "AlleySignArm", Vector3.new(length + gap, 0.25, 0.25), CFrame.lookAt(arm, arm + d), {
 		Material = Enum.Material.Metal, Color = METAL, CanCollide = false,
 	})
 end
@@ -726,6 +733,7 @@ function Zone.Build(spec, kit, ctx)
 	table.clear(walls)
 	table.clear(overheadClear)
 	table.clear(shopRects)
+	table.clear(awningRects)
 	shopfronts = kit.Templates:FindFirstChild("Shopfronts") and kit.Templates.Shopfronts:GetChildren() or {}
 	-- the express link's in-zone stretches (see Layout.LinkX): from the zone
 	-- edge over Market's west lanes to where it merges with the deck
@@ -1519,6 +1527,14 @@ function Zone.Build(spec, kit, ctx)
 	for _, r in shopRects do
 		table.insert(clearOf, r)
 	end
+	local function clearOfAwnings(x, z, pad)
+		for _, h in awningRects do
+			if x > h.x1 - pad and x < h.x2 + pad and z > h.z1 - pad and z < h.z2 + pad then
+				return false
+			end
+		end
+		return true
+	end
 	local function clear(x, z, pad)
 		for _, h in clearOf do
 			if x > h.x1 - pad and x < h.x2 + pad and z > h.z1 - pad and z < h.z2 + pad then
@@ -1550,7 +1566,7 @@ function Zone.Build(spec, kit, ctx)
 				U.place(lamp, f.Furniture, x, SIDEWALK_TOP, zz, dir)
 			end
 			local tx, tz = at(a + 22, roadLine + (alongZ and -dir.X or -dir.Z) * 1.6)
-			if tree and (s.kind == "market" or styleKey == "OldTown") and a + 22 < a2 - 6 and clear(tx, tz, 5) then
+			if tree and (s.kind == "market" or styleKey == "OldTown") and a + 22 < a2 - 6 and clear(tx, tz, 5) and clearOfAwnings(tx, tz, 4.5) then
 				U.place(tree, f.Furniture, tx, SIDEWALK_TOP, tz, dir)
 			end
 			a += (s.kind == "market") and 48 or 64

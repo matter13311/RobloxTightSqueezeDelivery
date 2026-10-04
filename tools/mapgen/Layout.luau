@@ -232,6 +232,11 @@ L.Zones = {
 		-- express deck blocked it, so it was slid up the street.
 		Nudges = {
 			{ Folder = "Signs", Names = { "AlleyNeonBlade", "AlleyNeonEdge" }, From = Vector3.new(41, 12.1, -58.4), Delta = Vector3.new(0, 0, -21.5) },
+			-- The RAMEN blade beside the Noodle Row gate's east post sat inside
+			-- it; slid 1 stud along the frontage, brackets included.
+			{ Folder = "Signs", Names = { "AlleyNeonBlade", "AlleyNeonEdge" }, From = Vector3.new(167.6, 12.725, -654), Delta = Vector3.new(1, 0, 0) },
+			{ Folder = "Signs", Names = { "AlleyNeonBracket" }, From = Vector3.new(167.6, 9.4, -655.8), Delta = Vector3.new(1, 0, 0) },
+			{ Folder = "Signs", Names = { "AlleyNeonBracket" }, From = Vector3.new(167.6, 16.05, -655.8), Delta = Vector3.new(1, 0, 0) },
 		},
 		-- Street incidents in the inner lanes of West/East St (see Incidents.luau
 		-- for where they are allowed: never on a stretch a Block circuit drives).

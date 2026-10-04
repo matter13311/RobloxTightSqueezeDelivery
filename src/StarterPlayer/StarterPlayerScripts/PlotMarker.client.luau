@@ -19,8 +19,8 @@ local VehiclePlotsFolder = workspace:WaitForChild("Spawn"):WaitForChild("Vehicle
 
 local MARK_COLOR = Color3.fromRGB(80, 255, 140)
 local TAG_HEIGHT_STUDS = 7
-local SHOW_DISTANCE = 110 -- fully visible inside this many studs
-local FADE_BAND = 40 -- ...and fades out over the next this-many
+local SHOW_DISTANCE = 450 -- fully visible inside this many studs
+local FADE_BAND = 150 -- ...and fades out over the next this-many
 local FADE_SPEED = 4 -- alpha per second
 
 local marker -- { Plot, Highlight, Gui, Label, Adornee } or nil

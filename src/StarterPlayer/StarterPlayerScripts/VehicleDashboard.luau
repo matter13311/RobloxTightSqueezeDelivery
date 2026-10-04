@@ -90,7 +90,7 @@ function Dashboard.new(player)
 	-- device it is also the jump button; the left is the movement thumbstick.
 	-- The centre strip is the one part of the bottom edge nothing else claims,
 	-- and it happens to be where a real dashboard sits anyway.
-	local panel = newFrame(gui, "Panel", UDim2.new(0.5, 0, 1, -16), UDim2.fromOffset(196, 90))
+	local panel = newFrame(gui, "Panel", UDim2.new(0.5, 0, 1, -16), UDim2.fromOffset(196, 80))
 	panel.AnchorPoint = Vector2.new(0.5, 1)
 	panel.BackgroundTransparency = 0.08
 	corner(panel, 10)
@@ -133,21 +133,15 @@ function Dashboard.new(player)
 	local unitLabel = newLabel(panel, "Unit", UDim2.fromOffset(10, 46), UDim2.fromOffset(176, 24), "MPH", 11, DIM_TEXT)
 	unitLabel.TextXAlignment = Enum.TextXAlignment.Right
 
-	-- Bottom strip does double duty: the control hints while you're driving
-	-- normally, and a loud handbrake warning the moment it matters. They can
-	-- share the space because you don't need to be told which key shifts gear
-	-- at the exact moment you're sideways with the handbrake up.
-	local status = newLabel(panel, "Status", UDim2.fromOffset(10, 70), UDim2.fromOffset(176, 16), "", 10, DIM_TEXT)
-	self.StatusLabel = status
-
-	local handbrakeBadge = newFrame(panel, "HandbrakeBadge", UDim2.fromOffset(10, 70), UDim2.fromOffset(176, 16), Color3.fromRGB(214, 66, 62))
+	-- The loud handbrake warning, perched on the panel's top edge so the panel
+	-- itself can stay tight. The key legend that used to share a strip here
+	-- is VehicleControlsHint's top-centre row in both camera views.
+	local handbrakeBadge = newFrame(panel, "HandbrakeBadge", UDim2.fromOffset(10, -22), UDim2.fromOffset(176, 18), Color3.fromRGB(214, 66, 62))
 	corner(handbrakeBadge, 5)
 	handbrakeBadge.Visible = false
 	newLabel(handbrakeBadge, "Text", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "HANDBRAKE", 10, Color3.fromRGB(255, 236, 236), Enum.Font.GothamBold)
 	self.HandbrakeBadge = handbrakeBadge
 
-	self.HintText = "W  drive      S  brake, hold to reverse      SPACE  handbrake      F  exit"
-	status.Text = self.HintText
 
 	return self
 end
@@ -181,7 +175,6 @@ function Dashboard:Update(gearboxState, speedStuds, handbrakeOn)
 	self.SpeedLabel.Text = tostring(math.floor(speedStuds * MPH_PER_STUD + 0.5))
 
 	self.HandbrakeBadge.Visible = handbrakeOn == true
-	self.StatusLabel.Visible = not self.HandbrakeBadge.Visible
 end
 
 -- Hidden in first person (the player is already looking through the

@@ -1,9 +1,6 @@
--- A small always-on control legend shown only in first person. In third
--- person the dashboard's own status line already carries the drive/brake/
--- handbrake/exit hints (see VehicleDashboard.HintText), but in first person
--- that dashboard is hidden entirely (you're looking through the windshield
--- at the real one), so a first-time player has nothing on screen telling
--- them how to get back out of the seat.
+-- A small always-on control legend, shown in both camera views. (The
+-- third-person dashboard used to carry its own copy of these hints in its
+-- bottom strip, but they spilled out of the panel, so it lives only here.)
 --
 -- Built after a playtest where a child kept mashing SPACE (handbrake, not
 -- exit) trying to leave the car, and never noticed F was the way out. So F
@@ -76,7 +73,7 @@ function ControlsHint.new(player)
 	-- entirely. DeliveryHud's job panel is anchored off this panel's bottom
 	-- edge (see its comment above jobFrame.Position), so a height change here
 	-- has to be mirrored there or the two start overlapping.
-	panel.Size = UDim2.fromOffset(480, 34)
+	panel.Size = UDim2.fromOffset(580, 34)
 	panel.BackgroundColor3 = PANEL
 	panel.BackgroundTransparency = 0.1
 	panel.BorderSizePixel = 0
@@ -95,7 +92,7 @@ function ControlsHint.new(player)
 	local row = newLabel(panel, "Hint", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 16, DIM_TEXT, Enum.Font.GothamMedium)
 	row.RichText = true
 	row.Text = string.format(
-		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">Space handbrake   Q/E blinkers   H honk   L lights</font>',
+		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">W/S drive   Space handbrake   Q/E blinkers   H honk   L lights</font>',
 		hexEXIT,
 		hexDIM
 	)
@@ -123,9 +120,6 @@ function ControlsHint:_apply()
 	self.Panel.Visible = self.Visible and not self.TouchActive
 end
 
--- Shown only in first person - in third person the dashboard's own status
--- line already carries the same hints, and stacking both on screen at once
--- would be the "too busy" clutter this HUD is trying to avoid.
 function ControlsHint:SetVisible(visible)
 	if self.Visible == visible then
 		return

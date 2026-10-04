@@ -899,6 +899,7 @@ end
 
 local latestData = nil -- last GetPlotData result
 local viewedVehicleId = nil -- the car parked on the stage right now
+local buyInFlight = false -- an upgrade purchase is awaiting the server
 
 -- Forward-declared: buy/tune/paint handlers re-render after a remote returns,
 -- and rendering is what wires those handlers up.
@@ -1245,6 +1246,13 @@ local function makeUpgradeCard(section, vehicleId, statName, spec, unlockedLevel
 	buyButton.TextColor3 = PANEL
 	buyButton.AutoButtonColor = true
 	buyButton.MouseButton1Click:Connect(function()
+		-- One purchase in flight at a time. Spam clicks used to queue several
+		-- buys that each applied this card's stale unlockedLevel + 1, leaving
+		-- the tuned level one short of the bought one (bar one off, button MAXED).
+		if buyInFlight then
+			return
+		end
+		buyInFlight = true
 		playClickSound()
 		local bought = buyUpgradeEvent:InvokeServer(vehicleId, statName)
 		if bought then
@@ -1254,6 +1262,7 @@ local function makeUpgradeCard(section, vehicleId, statName, spec, unlockedLevel
 			setCarConfigValueEvent:InvokeServer(vehicleId, statName, VehicleUpgrades.ValueAtLevel(spec, unlockedLevel + 1))
 		end
 		refreshTerminalData()
+		buyInFlight = false
 	end)
 end
 

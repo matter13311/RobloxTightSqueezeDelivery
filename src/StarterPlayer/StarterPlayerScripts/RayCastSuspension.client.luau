@@ -891,7 +891,7 @@ local function beginDrive(humanoid, seatPart)
 		mySession.Dashboard:Update(mySession.Gearbox, speed, mySession.Handbrake)
 		local firstPerson = VehicleViewMode.IsFirstPerson()
 		mySession.Dashboard:SetVisible(not firstPerson)
-		mySession.ControlsHint:SetVisible(firstPerson)
+		mySession.ControlsHint:SetVisible(true)
 	end
 
 	endDrive(mySession)
