@@ -295,6 +295,13 @@ function VehicleTouchControls.new(player, handlers)
 	layout.Padding = UDim.new(0, 8)
 	layout.Parent = secondaryRow
 
+	self:_newButton(secondaryRow, UDim2.fromOffset(48, 48), UDim2.new(), "CAM", BRIGHT_TEXT, function()
+		-- Cycles first / close third / far third; handled in VehicleCamera.
+		local event = script.Parent:FindFirstChild("CycleCameraView")
+		if event then
+			event:Fire()
+		end
+	end)
 	self:_newButton(secondaryRow, UDim2.fromOffset(48, 48), UDim2.new(), "◀", BRIGHT_TEXT, function()
 		handlers.OnTurnSignal("Left")
 	end)

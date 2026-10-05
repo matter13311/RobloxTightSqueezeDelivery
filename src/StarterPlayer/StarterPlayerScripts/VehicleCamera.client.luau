@@ -135,6 +135,13 @@ ContextActionService:BindAction("VehicleCameraCycle", function(_, inputState)
 	return Enum.ContextActionResult.Pass
 end, false, Enum.KeyCode.C)
 
+-- The touch CAM button (VehicleTouchControls) fires this; it lives beside the
+-- scripts so the button doesn't need to reach into this one.
+local cycleEvent = Instance.new("BindableEvent")
+cycleEvent.Name = "CycleCameraView"
+cycleEvent.Event:Connect(cycleView)
+cycleEvent.Parent = script.Parent
+
 local function onCharacterAdded(character)
 	local humanoid = character:WaitForChild("Humanoid")
 	-- Fires for sitting down AND standing up, and both need the same
