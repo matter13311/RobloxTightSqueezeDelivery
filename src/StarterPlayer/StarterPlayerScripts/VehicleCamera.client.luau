@@ -9,6 +9,7 @@
 -- whatever they zoom to becomes the value that gets restored across the next
 -- transition.
 
+local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -90,6 +91,49 @@ local function restoreAfterSeatChange()
 		overriding = false
 	end)
 end
+
+-- C cycles first person -> close third -> far third. Only while seated: the
+-- key is advertised on the driving controls bar, and on foot the player has
+-- the scroll wheel.
+local VIEW_FIRST = 0.5
+local VIEW_CLOSE = 14
+local VIEW_FAR = 32
+-- Zoom below this counts as first person, up to VIEW_SPLIT as "close".
+local FIRST_LIMIT = 2
+local VIEW_SPLIT = 22
+
+local function cycleView()
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not (humanoid and humanoid.SeatPart) or overriding then
+		return
+	end
+	local zoom = trackedZoom or VIEW_CLOSE
+	local target
+	if zoom < FIRST_LIMIT then
+		target = VIEW_CLOSE
+	elseif zoom < VIEW_SPLIT then
+		target = VIEW_FAR
+	else
+		target = VIEW_FIRST
+	end
+	overriding = true
+	task.spawn(function()
+		applyZoom(target)
+		for _ = 1, HOLD_FRAMES do
+			RunService.RenderStepped:Wait()
+		end
+		releaseZoom()
+		overriding = false
+	end)
+end
+
+ContextActionService:BindAction("VehicleCameraCycle", function(_, inputState)
+	if inputState == Enum.UserInputState.Begin then
+		cycleView()
+	end
+	return Enum.ContextActionResult.Pass
+end, false, Enum.KeyCode.C)
 
 local function onCharacterAdded(character)
 	local humanoid = character:WaitForChild("Humanoid")

@@ -92,7 +92,7 @@ function ControlsHint.new(player)
 	local row = newLabel(panel, "Hint", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 16, DIM_TEXT, Enum.Font.GothamMedium)
 	row.RichText = true
 	row.Text = string.format(
-		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">W/S drive   Space handbrake   Q/E blinkers   H honk   L lights</font>',
+		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">W/S drive   Space handbrake   Q/E blinkers   H honk   L lights   C camera</font>',
 		hexEXIT,
 		hexDIM
 	)
