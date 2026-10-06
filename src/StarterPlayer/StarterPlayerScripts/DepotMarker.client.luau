@@ -22,6 +22,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 local GuideMarker = require(ReplicatedStorage.Modules.UI.GuideMarker)
+local Haulage = require(ReplicatedStorage.Modules.Delivery.Haulage)
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local player = Players.LocalPlayer
@@ -145,31 +147,95 @@ local function playerPosition()
 	return root and root.Position or nil
 end
 
-local function isAtDepot(target, spaces)
+local function isAtDepot(target, spaces, radius)
 	local position = playerPosition()
 	if not position then
 		return false
 	end
 	for _, space in spaces do
-		if (space.Position - position).Magnitude <= AT_DEPOT_STUDS then
+		if (space.Position - position).Magnitude <= radius then
 			return true
 		end
 	end
-	return (target:GetPivot().Position - position).Magnitude <= AT_DEPOT_STUDS
+	return (target:GetPivot().Position - position).Magnitude <= radius
+end
+
+-- A trailer has no bay posts to hand over to, so its marker stays on until the
+-- truck is close enough for the hitch prompt to be doing the talking instead.
+local AT_TRAILER_STUDS = 45
+
+--=============================================================================
+-- A tractor's "depot"
+--=============================================================================
+
+-- A tractor does not load at the depot, so pointing it there is the bug this
+-- section exists for: players drove a hitch truck into the loading bay and
+-- waited for a job list that could never open. What it needs next depends on
+-- whether it has its trailer:
+--
+--   nothing hitched  ->  the player's own trailer, wherever it is standing
+--                        (or the stalls, if it is not in the world yet)
+--   trailer on       ->  the freight building, where the trailer is loaded
+--
+-- Returns target, spaces, label - the same shape resolveDepot feeds the loop.
+local function resolveRigTarget(carModel)
+	if Haulage.Trailer(carModel) then
+		local freightBay = Haulage.DepotBay(true)
+		if not freightBay then
+			return nil, {}, nil
+		end
+		-- The board over the dock doors, for the reason the depot's SIGN is
+		-- the target rather than the building.
+		return freightBay:FindFirstChild("FreightBoard") or freightBay, Haulage.SpacesIn(freightBay, true), "FREIGHT"
+	end
+
+	local trailer = TrailerHitch.FindOwnedTrailer(workspace:FindFirstChild(TrailerHitch.WorkspaceFolderName), player.UserId)
+	if trailer then
+		return trailer, {}, "YOUR TRAILER"
+	end
+	return TrailerHitch.FindStalls(), {}, "TRAILER STALLS"
 end
 
 task.spawn(function()
 	while true do
 		local target, spaces = resolveDepot()
+		local label = "DEPOT"
+		local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
+		local rig = Haulage.IsTractor(carModel)
+		if rig then
+			target, spaces, label = resolveRigTarget(carModel)
+		end
+
+		-- When the player has ARRIVED, and the marker steps aside.
+		--
+		-- For the depot that is a wide radius: the bay's corner posts take
+		-- over there. A rig cannot use the same rule, because the trailer
+		-- stalls are inside that radius of the freight building - so the
+		-- marker went dark at the very moment the trailer was hooked up, which
+		-- is exactly when the player first needs to be told where to take it.
+		-- For a rig the marker stays on the building until the trailer is
+		-- actually standing in one of its bays (the test that opens the job
+		-- list), and on a trailer until the truck is right beside it.
+		local arrived = false
+		if target then
+			if not rig then
+				arrived = isAtDepot(target, spaces, AT_DEPOT_STUDS)
+			elseif #spaces > 0 then
+				arrived = Haulage.FindParkedSpace(carModel, spaces) ~= nil
+			else
+				arrived = isAtDepot(target, spaces, AT_TRAILER_STUDS)
+			end
+		end
+
 		local show = target ~= nil
 			and activeContract == nil
 			and rideAlongContract == nil
 			and player:GetAttribute(TUTORIAL_ACTIVE_ATTRIBUTE) ~= true
-			and not isAtDepot(target, spaces)
+			and not arrived
 
 		-- SetTarget is idempotent, so calling it every poll is fine.
 		if show then
-			marker:SetTarget(target, { Label = "DEPOT" })
+			marker:SetTarget(target, { Label = label })
 		else
 			marker:SetTarget(nil)
 		end

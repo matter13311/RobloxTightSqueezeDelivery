@@ -92,6 +92,11 @@ VehicleCatalog.Vehicles = {
 		-- vehicles before it.
 		RequiredDeliveries = 1, --default 450
 		DefaultOwned = false, -- purchasable from the shop tab instead
+		-- A TutorialConfig.Tracks key. Buying this vehicle pops up that track's
+		-- Offer ("Congrats... want a quick lesson?") - see TutorialGuide. This
+		-- truck needs one because it is the only vehicle that cannot carry
+		-- cargo as it comes: it has to be hitched to a trailer first.
+		PurchaseTutorial = "HitchTruck",
 	},
 }
 

@@ -15,7 +15,21 @@ DeliveryConfig.World = {
 	RootFolderName = "Delivery", -- workspace.Delivery
 	DepotFolderName = "Depot",
 	LoadingBayName = "LoadingBay",
+	-- workspace.Delivery.Depot.FreightBay: where a tractor backs its TRAILER in
+	-- to be loaded. The freight equivalent of LoadingBay - see Haulage.luau.
+	FreightBayName = "FreightBay",
+	-- workspace.Delivery.Depot.TrailerStalls: the row of invisible stall
+	-- markers a player's trailer is stood in when it is spawned or recalled
+	-- (TrailerHitch.server.luau). One Part per stall; its LookVector is the way
+	-- the trailer's nose points.
+	TrailerStallsName = "TrailerStalls",
 	DestinationsFolderName = "Destinations",
+	-- bool attribute on a parking space Part: true makes it a RIG BAY, long
+	-- enough for a trailer. A tractor can only load and deliver in these, and a
+	-- destination with none is never offered to one. Set by the map generator
+	-- (tools/mapgen/Dock.luau) - a rig bay's name need not start with
+	-- SpacePrefix, the attribute alone is what marks it.
+	RigBayAttribute = "RigBay",
 	-- Any Part whose name starts with this, inside a destination model or the
 	-- loading bay, is a parking space. A prefix rather than an exact name so a
 	-- destination can have Space1/Space2/SpaceLoadingRamp without a list

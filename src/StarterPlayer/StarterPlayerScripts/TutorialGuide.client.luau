@@ -41,9 +41,12 @@ local TweenService = game:GetService("TweenService")
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
 local GuideMarker = require(ReplicatedStorage.Modules.UI.GuideMarker)
 local GuideSpotlight = require(ReplicatedStorage.Modules.UI.GuideSpotlight)
+local Haulage = require(ReplicatedStorage.Modules.Delivery.Haulage)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
 local PlotOwnership = require(ReplicatedStorage.Modules.Plots.PlotOwnership)
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local TutorialConfig = require(ReplicatedStorage.Modules.Tutorial.TutorialConfig)
+local VehicleCatalog = require(ReplicatedStorage.Modules.Vehicles.VehicleCatalog)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
@@ -434,8 +437,21 @@ end
 -- appears, instead of a moment before it (leaving the player staring at "pick a
 -- job" with no list) or a moment after (leaving the list open under an
 -- instruction to keep driving).
-local function rawInBay()
-	local spaces = findBaySpaces()
+--
+-- `rig` asks it of the freight building's rig bays instead, which is where a
+-- tractor and trailer takes its jobs. Haulage.FindParkedSpace is the HUD's own
+-- containment test, so for a rig it measures the TRAILER.
+local rigSpaces = {}
+
+local function findRigSpaces()
+	if #rigSpaces == 0 then
+		rigSpaces = Haulage.DepotSpaces(true)
+	end
+	return rigSpaces
+end
+
+local function rawInBay(rig)
+	local spaces = if rig then findRigSpaces() else findBaySpaces()
 	if #spaces == 0 then
 		return false
 	end
@@ -447,12 +463,7 @@ local function rawInBay()
 	if not ParkGrade.IsStopped(chassis) then
 		return false
 	end
-	for _, space in spaces do
-		if ParkGrade.Evaluate(carModel, space).Inside then
-			return true
-		end
-	end
-	return false
+	return Haulage.FindParkedSpace(carModel, spaces) ~= nil
 end
 
 -- STICKY, on exactly the grace the HUD shows the job board on, and it has to
@@ -466,14 +477,73 @@ end
 -- poll and once directly out of start(), so there is no single elapsed value to
 -- add up. lastInBayAt starting at zero reads as "a very long time ago", which
 -- is the right answer before the player has ever parked.
-local lastInBayAt = 0
+local lastInBayAt = { [true] = 0, [false] = 0 }
 
-local function parkedInBay()
-	if rawInBay() then
-		lastInBayAt = os.clock()
+local function parkedIn(rig)
+	if rawInBay(rig) then
+		lastInBayAt[rig] = os.clock()
 		return true
 	end
-	return (os.clock() - lastInBayAt) < DeliveryConfig.Parking.LeaveGraceSeconds
+	return (os.clock() - lastInBayAt[rig]) < DeliveryConfig.Parking.LeaveGraceSeconds
+end
+
+local function parkedInBay()
+	return parkedIn(false)
+end
+
+local function parkedInFreightBay()
+	return parkedIn(true)
+end
+
+--=============================================================================
+-- The rig
+--=============================================================================
+
+-- What the trailer-truck track asks about. All of it is replicated state, like
+-- everything else here: the Hitch attachment on the truck, the ObjectValue the
+-- server points at the coupled trailer, the owner attribute on the trailer.
+
+-- The player's spawned truck, if it is one that tows.
+local function myTractor()
+	local carModel = myVehicle()
+	return if carModel and Haulage.IsTractor(carModel) then carModel else nil
+end
+
+-- Hitched right now. Not sticky, and deliberately so: a step that needs the
+-- trailer on swaps to its Hint the moment it is dropped, which is the
+-- instruction the player needs at that moment.
+local function trailerHitched()
+	local tractor = myTractor()
+	return tractor ~= nil and Haulage.Trailer(tractor) ~= nil
+end
+
+-- The player's own trailer, wherever it is standing - or, until it has
+-- streamed in (or if the yard was full when the truck spawned), the stalls it
+-- will be stood in.
+local function myTrailerTarget()
+	local trailer =
+		TrailerHitch.FindOwnedTrailer(workspace:FindFirstChild(TrailerHitch.WorkspaceFolderName), player.UserId)
+	if trailer then
+		return trailer, { Label = "Your trailer" }
+	end
+	return markableIn(TrailerHitch.FindStalls()), { Label = "TRAILER STALLS" }
+end
+
+-- One rig bay, picked once - the same reasoning as pickSpace.
+local chosenRigSpace = nil
+
+local function pickRigSpace()
+	if chosenRigSpace and chosenRigSpace:IsDescendantOf(workspace) then
+		return chosenRigSpace
+	end
+	local spaces = findRigSpaces()
+	chosenRigSpace = if #spaces > 0 then spaces[math.random(#spaces)] else nil
+	return chosenRigSpace
+end
+
+local function drivingTractor()
+	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
+	return carModel ~= nil and Haulage.IsTractor(carModel)
 end
 
 --=============================================================================
@@ -639,7 +709,121 @@ local stepLogic = {
 			return placeTarget(findDestination(stop)), { Label = stop, ScreenArrow = false }
 		end,
 	},
+
+	--=========================================================================
+	-- The trailer-truck track (TutorialConfig.Tracks.HitchTruck)
+	--=========================================================================
+
+	SpawnRig = {
+		IsDone = function()
+			return myTractor() ~= nil
+		end,
+		Ready = function()
+			return true
+		end,
+		Target = function()
+			return terminalTargetOf(myPlot()), { Label = "Your terminal" }
+		end,
+		-- Bites once the terminal is open, on whichever truck is showing - so
+		-- the text has to say WHICH truck; the dimming only says "this button".
+		Spotlight = terminalSpotlight,
+	},
+
+	HitchTrailer = {
+		IsDone = trailerHitched,
+		Ready = drivingTractor,
+		Target = function(ready)
+			if not ready then
+				return myTractor(), { Label = "Your truck", Beam = false }
+			end
+			-- From here the hitch prompt (TrailerHitchPrompt) does the close
+			-- work - "not lined up", "stop completely", "[T] Hitch trailer" -
+			-- and this only has to get the truck to the right trailer.
+			return myTrailerTarget()
+		end,
+	},
+
+	ParkAtFreight = {
+		IsDone = parkedInFreightBay,
+		-- Driving, WITH the trailer on. Drop it and the Hint says to pick it
+		-- back up, rather than leaving an arrow over a bay a bobtail tractor
+		-- can never be "parked" in.
+		Ready = function()
+			return drivingTractor() and trailerHitched()
+		end,
+		Target = function(ready)
+			if ready then
+				return nil, nil -- SpaceMarker below is the one marker, as in DriveToDepot
+			end
+			if not drivingTractor() then
+				return myTractor(), { Label = "Your truck", Beam = false }
+			end
+			return myTrailerTarget()
+		end,
+		NoTargetWhenReady = true,
+		SpaceMarker = function(ready)
+			if not ready then
+				return nil, nil
+			end
+			return pickRigSpace(), { Label = "Back your trailer in" }
+		end,
+	},
+
+	ChooseFreight = {
+		IsDone = function()
+			return activeContract ~= nil
+		end,
+		Ready = parkedInFreightBay,
+		Target = function(ready)
+			if ready then
+				return nil, nil
+			end
+			local freightBay = Haulage.DepotBay(true)
+			return (freightBay and freightBay:FindFirstChild("FreightBoard")) or markableIn(freightBay), { Label = "FREIGHT" }
+		end,
+		NoTargetWhenReady = true,
+		Spotlight = function(ready)
+			if not ready then
+				return nil, nil
+			end
+			return boardSpotlight()
+		end,
+	},
+
+	DeliverFreight = {
+		IsDone = function()
+			return deliveredDuringRun and not receiptShowing()
+		end,
+		Ready = function()
+			return drivingTractor() and trailerHitched()
+		end,
+		Target = function(ready)
+			if not ready then
+				if not drivingTractor() then
+					return myTractor(), { Label = "Your truck", Beam = false }
+				end
+				return myTrailerTarget()
+			end
+			local stop = activeContract and activeContract.Stops and activeContract.Stops[1]
+			local destination = stop and findDestination(stop)
+			if not destination then
+				return nil, nil
+			end
+			-- The long bay itself rather than the building's sign: a rig
+			-- destination has ordinary bays as well, and the trailer only
+			-- counts in the one that is long enough for it.
+			return Haulage.SpacesIn(destination, true)[1] or placeTarget(destination), { Label = stop, ScreenArrow = false }
+		end,
+		HoldsForReceipt = true,
+	},
 }
+
+-- Flags on the two first-delivery steps that the runner used to recognise by
+-- name. Set here, beside the track's own, so the runner asks one question of
+-- every step instead of keeping a list of ids.
+stepLogic.DriveToDepot.NoTargetWhenReady = true
+stepLogic.ChooseCargo.NoTargetWhenReady = true
+stepLogic.Deliver.HoldsForReceipt = true
 
 --=============================================================================
 -- The runner
@@ -649,6 +833,30 @@ local marker = nil
 local running = false
 local stepIndex = 0
 local finishToken = 0
+-- Which tutorial is running: nil for the first-delivery one, or a
+-- TutorialConfig.Tracks key. Everything that differs between them - the steps,
+-- the finish message, whether the server is told - is read through the three
+-- functions below, so the runner itself never asks which one it is.
+local activeTrack = nil
+
+local function activeSteps()
+	local track = activeTrack and TutorialConfig.Tracks[activeTrack]
+	return if track then track.Steps else TutorialConfig.Steps
+end
+
+local function activeFinish()
+	local track = activeTrack and TutorialConfig.Tracks[activeTrack]
+	return if track then track.Finish else TutorialConfig.Finish
+end
+
+-- TutorialFinished sets the save's TutorialDone, which is about the FIRST
+-- tutorial: "do not show this to me on join". A track is only ever started by
+-- a purchase popup or the settings menu, so it has nothing to record.
+local function tellServerFinished()
+	if activeTrack == nil then
+		tutorialFinishedEvent:FireServer()
+	end
+end
 -- [step id] = true once its "nothing to point at" warning has been printed. Not
 -- cleared on restart: the warning is about the PLACE being wrong, and a second
 -- run of the tutorial will not have fixed it.
@@ -823,7 +1031,7 @@ stop = function(tellServer)
 	screenGui.Enabled = false
 
 	if tellServer then
-		tutorialFinishedEvent:FireServer()
+		tellServerFinished()
 	end
 end
 
@@ -846,18 +1054,31 @@ local function finish()
 	setRunning(false)
 	stepIndex = 0
 
-	renderBanner("DONE", TutorialConfig.Finish.Title, TutorialConfig.Finish.Body)
+	local finishMessage = activeFinish()
+	renderBanner("DONE", finishMessage.Title, finishMessage.Body)
 	skipButton.Text = "Close"
 
-	tutorialFinishedEvent:FireServer()
+	tellServerFinished()
 
 	-- A token rather than a cancellable task: restarting the tutorial from the
 	-- settings menu inside these few seconds would otherwise have the old
 	-- timer hide the new run's banner.
 	finishToken += 1
 	local token = finishToken
-	task.delay(TutorialConfig.Finish.Seconds, function()
+	-- Read now, not inside the timer: by the time it fires a different
+	-- tutorial may have been started (the token check catches that) and this
+	-- must still describe the one that just finished.
+	local wasFirstTutorial = activeTrack == nil
+	task.delay(finishMessage.Seconds, function()
 		if finishToken ~= token then
+			return
+		end
+
+		-- The garage nudge belongs to the first tutorial only; a player
+		-- finishing a track bought the truck AT that terminal.
+		if not wasFirstTutorial then
+			screenGui.Enabled = false
+			skipButton.Text = "Skip"
 			return
 		end
 
@@ -887,7 +1108,7 @@ local function poll()
 		return
 	end
 
-	local steps = TutorialConfig.Steps
+	local steps = activeSteps()
 	while stepIndex <= #steps and stepLogic[steps[stepIndex].Id].IsDone() do
 		stepIndex += 1
 	end
@@ -904,7 +1125,7 @@ local function poll()
 	-- and every marker step aside so the clipboard is the only thing to read;
 	-- the next poll after it slides away finishes the step and puts the banner
 	-- back with the finish message.
-	if step.Id == "Deliver" and deliveredDuringRun then
+	if logic.HoldsForReceipt and deliveredDuringRun then
 		banner.Visible = false
 		ensureMarker():SetTarget(nil, nil)
 		ensureSpotlight():SetTarget(nil, nil)
@@ -939,7 +1160,7 @@ local function poll()
 	-- Target deliberately goes nil at that point now that SpaceMarker is the
 	-- only marker left on screen (see the step's own comment) - a real "found
 	-- nothing" would be SpaceMarker coming back empty, not this one.
-	local expectedNilTarget = ready and (step.Id == "ChooseCargo" or step.Id == "DriveToDepot")
+	local expectedNilTarget = ready and logic.NoTargetWhenReady == true
 	if not target and not expectedNilTarget and not warnedNoTarget[step.Id] then
 		warnedNoTarget[step.Id] = true
 		warn(
@@ -970,12 +1191,15 @@ local function poll()
 	ensureSpaceMarker():SetTarget(spaceTarget, spaceOptions)
 end
 
-local function start()
+-- `track` is a TutorialConfig.Tracks key, or nil for the first-delivery
+-- tutorial.
+local function start(track)
 	-- Restarting from the settings menu mid-run is legitimate (a player who got
 	-- lost wants it from the top), so a run in progress is torn down rather
 	-- than refused. The server is not told: it already knows.
 	stop(false)
 
+	activeTrack = if track and TutorialConfig.Tracks[track] then track else nil
 	deliveredDuringRun = false
 	setRunning(true)
 	stepIndex = 1
@@ -1019,7 +1243,133 @@ end)
 -- build - see GameSettings' ReplayTutorial definition. The menu knows nothing
 -- about tutorials and this script knows nothing about menus; the key is the
 -- only thing they share.
-GameSettings.OnAction("ReplayTutorial", start)
+GameSettings.OnAction("ReplayTutorial", function()
+	start(nil)
+end)
+GameSettings.OnAction("ReplayHitchTutorial", function()
+	start("HitchTruck")
+end)
+
+--=============================================================================
+-- The offer
+--=============================================================================
+
+-- "Congrats on your trailer truck! Want a quick lesson?" - shown the moment a
+-- vehicle with a PurchaseTutorial (VehicleCatalog) is bought, and the only way
+-- a track ever starts by itself.
+--
+-- A popup with a yes and a no, not the track simply starting: the player has
+-- the garage open and has just spent the biggest sum in the game, and a banner
+-- quietly appearing under that panel is the tutorial equivalent of talking to
+-- somebody who is looking the other way. It also has to be refusable without
+-- cost - a player buying the truck on a second account, or one who watched a
+-- friend do it, should be one click from never seeing it.
+--
+-- Built on demand and destroyed on answer: it is on screen for a few seconds
+-- once per account, so there is nothing worth keeping around.
+local function offerTrack(trackKey)
+	local track = TutorialConfig.Tracks[trackKey]
+	local offer = track and track.Offer
+	if not offer or playerGui:FindFirstChild("TutorialOfferGui") then
+		return
+	end
+
+	local offerGui = Instance.new("ScreenGui")
+	offerGui.Name = "TutorialOfferGui"
+	offerGui.ResetOnSpawn = false
+	offerGui.IgnoreGuiInset = true
+	-- Above the banner (6) and so above the garage terminal it appears over,
+	-- below the settings menu (100).
+	offerGui.DisplayOrder = 7
+	offerGui.Parent = playerGui
+
+	-- Swallows clicks, so a press that misses a button does not land on the
+	-- garage panel underneath and spawn or buy something.
+	local scrim = Instance.new("TextButton")
+	scrim.Size = UDim2.fromScale(1, 1)
+	scrim.BackgroundColor3 = Color3.new(0, 0, 0)
+	scrim.BackgroundTransparency = 0.45
+	scrim.AutoButtonColor = false
+	scrim.Text = ""
+	scrim.Parent = offerGui
+
+	local card = Instance.new("Frame")
+	card.AnchorPoint = Vector2.new(0.5, 0.5)
+	card.Position = UDim2.fromScale(0.5, 0.5)
+	card.Size = UDim2.new(0.86, 0, 0, 250)
+	card.BackgroundColor3 = PANEL
+	card.BorderSizePixel = 0
+	card.Parent = offerGui
+	Instance.new("UICorner", card).CornerRadius = UDim.new(0, 12)
+
+	local cardSize = Instance.new("UISizeConstraint")
+	cardSize.MaxSize = Vector2.new(480, 250)
+	cardSize.Parent = card
+
+	local cardStroke = Instance.new("UIStroke")
+	cardStroke.Color = ACCENT
+	cardStroke.Thickness = 2
+	cardStroke.Parent = card
+
+	local function text(position, size, font, textSize, color, value)
+		local line = Instance.new("TextLabel")
+		line.BackgroundTransparency = 1
+		line.Position = position
+		line.Size = size
+		line.Font = font
+		line.TextSize = textSize
+		line.TextColor3 = color
+		line.TextWrapped = true
+		line.TextXAlignment = Enum.TextXAlignment.Center
+		line.TextYAlignment = Enum.TextYAlignment.Top
+		line.Text = value
+		line.Parent = card
+		return line
+	end
+
+	text(UDim2.fromOffset(20, 18), UDim2.new(1, -40, 0, 30), Enum.Font.LuckiestGuy, 24, ACCENT, offer.Title)
+	text(UDim2.fromOffset(24, 58), UDim2.new(1, -48, 0, 96), Enum.Font.GothamMedium, 15, BRIGHT_TEXT, offer.Body)
+	if offer.Footnote then
+		text(UDim2.new(0, 20, 1, -32), UDim2.new(1, -40, 0, 16), Enum.Font.Gotham, 12, DIM_TEXT, offer.Footnote)
+	end
+
+	local function button(anchorX, label, background, textColor, onClick)
+		local choice = Instance.new("TextButton")
+		choice.AnchorPoint = Vector2.new(anchorX, 1)
+		choice.Position = UDim2.new(0.5, if anchorX == 1 then -6 else 6, 1, -44)
+		choice.Size = UDim2.new(0.5, -30, 0, 40)
+		choice.BackgroundColor3 = background
+		choice.BorderSizePixel = 0
+		choice.Font = Enum.Font.GothamBold
+		choice.TextSize = 15
+		choice.TextColor3 = textColor
+		choice.Text = label
+		choice.Parent = card
+		Instance.new("UICorner", choice).CornerRadius = UDim.new(0, 8)
+		choice.Activated:Connect(function()
+			offerGui:Destroy()
+			onClick()
+		end)
+	end
+
+	button(1, offer.Decline or "Maybe later", CARD, DIM_TEXT, function() end)
+	-- Dark text on the accent green: the one filled, coloured control on the
+	-- card, so "yes" is where the eye lands first.
+	button(0, offer.Accept or "Show me how", ACCENT, PANEL, function()
+		start(trackKey)
+	end)
+end
+
+-- PlotTerminal writes this the moment a purchase lands (see its BuyVehicle
+-- call). An attribute rather than a remote or a require: the two scripts stay
+-- ignorant of each other, exactly as they are over TutorialActive.
+player:GetAttributeChangedSignal("VehicleJustBought"):Connect(function()
+	local vehicleId = player:GetAttribute("VehicleJustBought")
+	local vehicleDef = type(vehicleId) == "string" and VehicleCatalog.Get(vehicleId)
+	if vehicleDef and vehicleDef.PurchaseTutorial then
+		offerTrack(vehicleDef.PurchaseTutorial)
+	end
+end)
 
 -- Asked at startup, off the main thread. GetPlotData is the round trip every
 -- client already makes, so the tutorial costs no remote of its own (see

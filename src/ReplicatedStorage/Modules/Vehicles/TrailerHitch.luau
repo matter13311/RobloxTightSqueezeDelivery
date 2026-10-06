@@ -70,7 +70,92 @@ TrailerHitch.Attributes = {
 	-- bool on the trailer model. True only between a completed couple and its
 	-- uncouple, and read by the client to decide which prompt to show.
 	Hitched = "TrailerHitched",
+	-- number (UserId) on the trailer model, or absent. Whose trailer this is,
+	-- for its whole life - unlike ClaimedBy, which only lasts while coupled.
+	-- Set on a trailer spawned for a player (TrailerHitch.server.luau's PLAYER
+	-- TRAILERS section); only their own truck may couple to it. A trailer
+	-- without it is a hand-placed one and open to everybody, the same rule
+	-- VehicleOwnership has for cars.
+	Owner = "TrailerOwnerUserId",
 }
+
+--=============================================================================
+-- Player trailers
+--=============================================================================
+
+-- Model under ServerStorage.TrailerTemplates that is cloned for each player.
+TrailerHitch.TemplateFolderName = "TrailerTemplates"
+TrailerHitch.PlayerTemplateName = "Trailer"
+
+-- Where a player's trailer is stood: workspace.Delivery.Depot.TrailerStalls,
+-- one Part per stall, LookVector = the way the trailer's nose points. Spelled
+-- out here rather than read from DeliveryConfig because this module must stay
+-- free of requires (CargoLoad requires it).
+TrailerHitch.StallsPath = { "Delivery", "Depot", "TrailerStalls" }
+
+-- How close (studs, from the stalls) a bobtail tractor has to be for its
+-- driver to call their trailer back to a stall. A yard-sized radius: the
+-- recall is "the yard crew fetched it", not a teleport you can use from across
+-- the map to skip driving back.
+TrailerHitch.RecallRadius = 160
+-- ...and a trailer already standing this close to the stalls does not need
+-- recalling - it is right there. Without this the prompt would offer to fetch
+-- a trailer the player is looking at.
+TrailerHitch.RecallNotNeededWithin = 70
+
+function TrailerHitch.FindStalls()
+	local node = workspace
+	for _, name in TrailerHitch.StallsPath do
+		node = node:FindFirstChild(name)
+		if not node then
+			return nil
+		end
+	end
+	return node
+end
+
+function TrailerHitch.GetOwnerUserId(trailerModel)
+	local owner = trailerModel and trailerModel:GetAttribute(TrailerHitch.Attributes.Owner)
+	return if type(owner) == "number" then owner else nil
+end
+
+-- May a truck owned by `userId` couple to this trailer? An unowned trailer is
+-- anybody's. Shared so the client never offers a hitch the server will refuse.
+function TrailerHitch.CanUse(userId, trailerModel)
+	local owner = TrailerHitch.GetOwnerUserId(trailerModel)
+	return owner == nil or owner == userId
+end
+
+-- The trailer that belongs to `userId`, wherever it is, or nil.
+function TrailerHitch.FindOwnedTrailer(trailersFolder, userId)
+	if not (trailersFolder and userId) then
+		return nil
+	end
+	for _, trailer in trailersFolder:GetChildren() do
+		if trailer:IsA("Model") and TrailerHitch.GetOwnerUserId(trailer) == userId then
+			return trailer
+		end
+	end
+	return nil
+end
+
+-- Whether a bobtail tractor at `tractorPosition` may recall `userId`'s trailer.
+-- The one rule both the prompt and the server apply.
+function TrailerHitch.CanRecall(tractorPosition, trailersFolder, userId)
+	local stalls = TrailerHitch.FindStalls()
+	if not stalls then
+		return false
+	end
+	local stallsPosition = stalls:GetPivot().Position
+	if (tractorPosition - stallsPosition).Magnitude > TrailerHitch.RecallRadius then
+		return false
+	end
+	local owned = TrailerHitch.FindOwnedTrailer(trailersFolder, userId)
+	if owned and (owned:GetPivot().Position - stallsPosition).Magnitude <= TrailerHitch.RecallNotNeededWithin then
+		return false
+	end
+	return true
+end
 
 -- The folder in Workspace trailers live in. Deliberately NOT workspace.Vehicles:
 -- Raycast.server.luau's AddCar requires a DriverSeat and would reject every
@@ -242,6 +327,10 @@ function TrailerHitch.FindCandidate(tractorModel, trailersFolder)
 		return nil
 	end
 
+	-- The truck's owner, read straight off VehicleOwnership's attribute rather
+	-- than through that module, to keep this one free of requires.
+	local tractorOwner = tractorModel:GetAttribute("OwnerUserId")
+
 	local best, bestDistance = nil, math.huge
 	for _, trailer in trailersFolder:GetChildren() do
 		if not trailer:IsA("Model") or not trailer.PrimaryPart then
@@ -249,6 +338,9 @@ function TrailerHitch.FindCandidate(tractorModel, trailersFolder)
 		end
 		if trailer:GetAttribute(TrailerHitch.Attributes.Hitched) then
 			continue -- already on the back of somebody else's truck
+		end
+		if not TrailerHitch.CanUse(tractorOwner, trailer) then
+			continue -- another driver's trailer; never offered, never taken
 		end
 		local kingpin = TrailerHitch.GetKingpinAttachment(trailer)
 		if not kingpin then

@@ -430,12 +430,15 @@ local getContractBoardFunction = Instance.new("BindableFunction")
 getContractBoardFunction.Name = "GetContractBoard"
 getContractBoardFunction.Parent = script.Parent
 
-getContractBoardFunction.OnInvoke = function(player, config, capacity)
+--
+-- `rig` is true for a tractor and trailer, which gets the same jobs pointed at
+-- destinations a trailer can reach (see ContractPool.Board).
+getContractBoardFunction.OnInvoke = function(player, config, capacity, rig)
 	local data = playerData[player.UserId]
 	if not data then
 		return nil
 	end
-	return ContractPool.Board(data, config or {}, capacity or 0)
+	return ContractPool.Board(data, config or {}, capacity or 0, nil, rig == true)
 end
 
 -- Removes a contract from the board and hands back its seed, or nil if this

@@ -91,15 +91,13 @@ local SCREEN_MARGIN_TOP = 130
 local DEFAULT_NEAR_DISTANCE = 100
 
 -- How far off dead-ahead (degrees, measured on the horizontal plane) the
--- target can be before the screen marker switches from the diamond to the
--- arrow. WorldToViewportPoint being "on screen" is not the same question as
--- "roughly in front of the player" - the camera's FOV alone puts targets
--- 30+ degrees to either side on screen, and pinning a diamond exactly over
--- one of those reads as "it's right there" when the player still has to
--- turn a third of the way around to face it. Below this angle the target is
--- close enough to dead-ahead that a static pin at its exact spot is the more
--- honest signal; at or beyond it, the arrow's rotation is the only thing
--- that actually answers "which way do I turn".
+-- target can be and still be marked with the DIAMOND. WorldToViewportPoint
+-- being "on screen" is not the same question as "roughly in front of the
+-- player" - the camera's FOV alone puts targets 30+ degrees to either side on
+-- screen, and a diamond over one of those reads as "it's right there" when the
+-- player still has to turn a third of the way around to face it. Beyond this
+-- angle an on-screen target gets a down arrow over it instead, and one that is
+-- off screen altogether gets the edge arrow - see _step.
 local ON_TARGET_ANGLE = 18
 
 local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
@@ -456,16 +454,38 @@ function GuideMarker:_step()
 		facingAngle = math.deg(math.acos(math.clamp(flatLook.Unit:Dot(flatToTarget.Unit), -1, 1)))
 	end
 
-	if facingAngle <= ON_TARGET_ANGLE then
-		-- Close enough to dead-ahead that the projected point is both stable
-		-- and the more honest signal: pin the diamond exactly where the
-		-- target sits on screen.
-		local point = camera:WorldToViewportPoint(centre)
-		local clampedX = math.clamp(point.X, SCREEN_MARGIN, viewport.X - SCREEN_MARGIN)
+	-- Is the target actually ON SCREEN - in front of the camera, and inside
+	-- the band the marker is allowed to sit in?
+	--
+	-- This used to be decided by facingAngle alone, and that was the "the
+	-- building is in the middle of my screen but the arrow is over on the
+	-- right" bug. Anything more than ON_TARGET_ANGLE off dead-ahead got the
+	-- edge arrow - but a wide screen shows 50 degrees either side, so a target
+	-- 20 degrees off was plainly visible, with its beam standing on it, while
+	-- its marker sat at the far edge pointing away from it. A marker next to
+	-- the thing you can see, saying it is somewhere else, is worse than none.
+	--
+	-- So: if it projects onto the screen, the marker sits on it. The angle
+	-- now only chooses the GLYPH there.
+	local point, inFront = camera:WorldToViewportPoint(centre)
+	local onScreen = inFront
+		and point.X >= SCREEN_MARGIN
+		and point.X <= viewport.X - SCREEN_MARGIN
+		and point.Y >= 0
+		and point.Y <= viewport.Y
+
+	if onScreen then
 		local clampedY = math.clamp(point.Y, SCREEN_MARGIN_TOP, viewport.Y - SCREEN_MARGIN)
-		self._screen.Position = UDim2.fromOffset(clampedX, clampedY)
+		self._screen.Position = UDim2.fromOffset(point.X, clampedY)
 		self._screenArrow.Rotation = 0
-		self._screenArrow.Text = "\u{25C6}" -- a pin sitting on the spot, not a direction
+		if facingAngle <= ON_TARGET_ANGLE then
+			-- Near enough dead-ahead: a pin sitting on the spot, not a direction.
+			self._screenArrow.Text = "\u{25C6}"
+		else
+			-- Visible but off to one side: an arrow pointing DOWN at it, which
+			-- says "that one, there" without the diamond's "you are facing it".
+			self._screenArrow.Text = "\u{25BC}"
+		end
 	else
 		-- Off to a side, including straight behind - bearing computed in the
 		-- CAMERA'S LOCAL SPACE rather than from WorldToViewportPoint. A point

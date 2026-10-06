@@ -33,6 +33,7 @@ local RunService = game:GetService("RunService")
 
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
+local Haulage = require(ReplicatedStorage.Modules.Delivery.Haulage)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
 local VehicleOwnership = require(ReplicatedStorage.Modules.Vehicles.VehicleOwnership)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
@@ -59,11 +60,10 @@ local world = DeliveryConfig.World
 -- this script and into ContractPool - and both need the same answers without
 -- either requiring the other. See that module's header.
 --
--- The loading bay is still looked up here: it is not a destination, and this
--- is the only script that cares where it is.
+-- Where a job is TAKEN is not a destination and is not looked up here either:
+-- it is the loading bay for a truck and the freight building for a rig, and
+-- Haulage.DepotSpaces answers for both at the moment a job is accepted.
 Destinations.Build()
-
-local loadingBay = Destinations.LoadingBay()
 
 --=============================================================================
 -- Remotes
@@ -267,10 +267,27 @@ end
 -- The board for whatever truck this player is in right now. One place, because
 -- both the "show me the board" remote and the accept handler need the same
 -- answer built against the same vehicle snapshot.
+--
+-- A TRACTOR IS QUOTED AGAINST ITS TRAILER. The load goes on the trailer (see
+-- Haulage.luau), so it is the trailer's capacity that sizes the jobs, and the
+-- board is drawn for a rig - every job pointed at a destination with a bay
+-- long enough to take one. A tractor with nothing hitched has no carrier at
+-- all and is offered nothing: there is nowhere to put a crate.
+--
+-- Returns the board, the driven vehicle, and the model the load goes on.
 local function boardFor(player)
 	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
-	local config = configOf(carModel)
-	return getContractBoardFunction:Invoke(player, config, CargoLoad.Capacity(config)), carModel
+	local rig = Haulage.IsTractor(carModel)
+	local carrier = Haulage.Carrier(carModel)
+	local config = configOf(carrier)
+	local board = getContractBoardFunction:Invoke(player, config, CargoLoad.Capacity(config), rig)
+	if type(board) == "table" then
+		board.Rig = rig
+		if rig and not carrier then
+			board.Offers = {}
+		end
+	end
+	return board, carModel, carrier
 end
 
 -- Client asks for the board when it decides the player is at the dock. The
@@ -302,16 +319,8 @@ end
 -- Accepting
 --=============================================================================
 
--- Which of a container's spaces the truck is parked in, plus its grade.
-local function findParkedSpace(carModel, spaces)
-	for _, space in spaces do
-		local grade = ParkGrade.Evaluate(carModel, space)
-		if grade.Inside then
-			return space, grade
-		end
-	end
-	return nil, nil
-end
+-- "Which of these spaces is it parked in" is Haulage.FindParkedSpace: for a
+-- rig the thing that has to be in the bay is the trailer, not the tractor.
 
 acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	if type(contractId) ~= "number" then
@@ -325,7 +334,7 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- whatever they were in when the board was last displayed. A saved contract
 	-- is a capacity fraction, not a crate count (see ContractPool's header), so
 	-- this is the only quote that can honestly be loaded onto this bed.
-	local board, carModel = boardFor(player)
+	local board, carModel, carrier = boardFor(player)
 	if type(board) ~= "table" then
 		return -- their data has not finished loading; nothing to take from
 	end
@@ -355,12 +364,19 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- hint about. Being at rest is required for the same reason it is at a
 	-- destination: a moving, client-owned chassis is a lagging echo on the
 	-- server, and a stationary one is not.
-	local space = findParkedSpace(carModel, Destinations.SpacesIn(loadingBay))
+	--
+	-- A rig loads at the freight building, with its TRAILER in a rig bay; every
+	-- other vehicle at the loading bay, as it always has.
+	local rig = Haulage.IsTractor(carModel)
+	if not carrier then
+		return -- a tractor with nothing hitched: the board offered it nothing
+	end
+	local space = Haulage.FindParkedSpace(carModel, Haulage.DepotSpaces(rig))
 	if not space or not ParkGrade.IsStopped(carModel.PrimaryPart) then
 		return
 	end
 
-	local loaded = CargoManager.Load(carModel, contract.TypeId, contract.Units)
+	local loaded = CargoManager.Load(carrier, contract.TypeId, contract.Units)
 	if loaded <= 0 then
 		return
 	end
@@ -373,7 +389,7 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- with the board this handler was reading, which should be impossible and
 	-- is cheap to be certain about.
 	if not takeContractFunction:Invoke(player, contractId) then
-		CargoManager.Unload(carModel)
+		CargoManager.Unload(carrier)
 		return
 	end
 
@@ -383,6 +399,12 @@ acceptContractEvent.OnServerEvent:Connect(function(player, contractId)
 	-- never going to earn.
 	contract.Units = loaded
 	contract.Vehicle = carModel
+	-- The model the goods are on - the trailer for a rig, and the vehicle
+	-- itself otherwise. Everything from here on that asks about the LOAD
+	-- (its condition, whether it is in the bay, emptying it) asks this model;
+	-- everything about the DRIVER still asks Vehicle.
+	contract.Carrier = carrier
+	contract.Rig = rig
 	setActiveContract(player, contract)
 
 	deliveryUpdateEvent:FireClient(player, { Active = contract })
@@ -400,8 +422,8 @@ end)
 -- Arrival
 --=============================================================================
 
-local function completeDelivery(player, carModel, contract, space, grade)
-	local load = CargoManager.GetLoad(carModel)
+local function completeDelivery(player, carrier, contract, space, grade)
+	local load = CargoManager.GetLoad(carrier)
 	local destination = Destinations.Get(contract.Stops[1])
 
 	local value = CargoLoad.Value(load.Units, load.TypeId, load.Condition)
@@ -424,7 +446,7 @@ local function completeDelivery(player, carModel, contract, space, grade)
 
 	setActiveContract(player, nil)
 	stoppedFor[player] = nil
-	CargoManager.Unload(carModel)
+	CargoManager.Unload(carrier)
 
 	local newBalance = awardMoneyFunction:Invoke(player, payout)
 	-- The lifetime counter every level in the game is derived from. Bumped
@@ -505,7 +527,19 @@ RunService.Heartbeat:Connect(function(delta)
 		-- and children ON the car, so there is no table anywhere holding a
 		-- reference to a destroyed vehicle. The two lines below are the whole
 		-- cleanup.
-		if not carModel or not carModel.Parent or not carModel.PrimaryPart then
+		--
+		-- A rig's job dies the same way with its TRAILER, which is where its
+		-- goods are: recalling the trailer to the yard replaces it with a new,
+		-- empty one. If only the tractor went, the trailer is still standing
+		-- somewhere with the load's attributes on it, so those are cleared -
+		-- otherwise it would be hitched up again later already "carrying" a job
+		-- nobody holds.
+		local carrier = contract.Carrier
+		local carrierGone = not carrier or not carrier.Parent or not carrier.PrimaryPart
+		if not carModel or not carModel.Parent or not carModel.PrimaryPart or carrierGone then
+			if not carrierGone then
+				CargoManager.Unload(carrier)
+			end
 			setActiveContract(player, nil)
 			stoppedFor[player] = nil
 			-- Cancelled, not merely cleared. Both used to arrive as the same
@@ -522,11 +556,11 @@ RunService.Heartbeat:Connect(function(delta)
 		-- Goods reduced to nothing: the mission is over on the spot, wherever the
 		-- truck is. Checked before the arrival logic so a wrecked load can never
 		-- be paid out at the destination.
-		local wrecked = CargoManager.GetLoad(carModel)
+		local wrecked = CargoManager.GetLoad(carrier)
 		if wrecked.Units > 0 and wrecked.Condition <= 0 then
 			setActiveContract(player, nil)
 			stoppedFor[player] = nil
-			CargoManager.Unload(carModel)
+			CargoManager.Unload(carrier)
 			local failed = { Destination = contract.Stops[1], TypeId = wrecked.TypeId, Units = wrecked.Units }
 			deliveryUpdateEvent:FireClient(player, { Active = nil, Failed = failed })
 			endRideAlongs(contract, function()
@@ -548,7 +582,17 @@ RunService.Heartbeat:Connect(function(delta)
 			continue
 		end
 
-		local space, grade = findParkedSpace(carModel, destination.Spaces)
+		-- A rig delivers with the trailer still on the truck, in a rig bay.
+		-- Dropping the trailer short and driving the tractor in does not count -
+		-- FindParkedSpace measures the hitched trailer and finds none - and
+		-- neither does somebody else's trailer picked up on the way.
+		if contract.Rig and Haulage.Trailer(carModel) ~= carrier then
+			stoppedFor[player] = 0
+			continue
+		end
+
+		local space, grade =
+			Haulage.FindParkedSpace(carModel, if contract.Rig then destination.RigSpaces else destination.Spaces)
 		if not space or not ParkGrade.IsStopped(carModel.PrimaryPart) then
 			-- DRAINED, not reset to zero. The difference matters because this
 			-- is the one place in the game with no grace period anywhere else
@@ -576,7 +620,7 @@ RunService.Heartbeat:Connect(function(delta)
 		local held = (stoppedFor[player] or 0) + elapsed
 		stoppedFor[player] = held
 		if held >= DeliveryConfig.Parking.StoppedHoldSeconds then
-			completeDelivery(player, carModel, contract, space, grade)
+			completeDelivery(player, carrier, contract, space, grade)
 		end
 	end
 end)

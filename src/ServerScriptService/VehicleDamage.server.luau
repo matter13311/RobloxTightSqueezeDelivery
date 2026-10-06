@@ -17,6 +17,7 @@ local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
 local VehiclePhysics = require(ReplicatedStorage.Modules.Vehicles.VehiclePhysics)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
@@ -102,12 +103,32 @@ local function isDriverOf(player, carModel)
 	return occupantPlayer == player
 end
 
+local function isTrailer(model)
+	local trailersFolder = workspace:FindFirstChild(TrailerHitch.WorkspaceFolderName)
+	return trailersFolder ~= nil and model.Parent == trailersFolder
+end
+
 -- Returns (false, reason) so a silently-dropped report can be logged. A crash
 -- that produces no damage looks identical whether the numbers were too small or
 -- the report never got past this function, and those have opposite fixes.
+--
+-- A report may also name the TRAILER on the back of the reporter's truck: a
+-- trailer has bodywork to lose and swings into things the tractor never
+-- touches. Everything about WHO is reporting is then asked of the tractor (it
+-- is the one with a driver and an entry grace); everything about WHERE of the
+-- trailer. The third return value is that driven truck - the model itself for
+-- an ordinary report.
 local function validate(player, carModel, position, magnitude)
-	if typeof(carModel) ~= "Instance" or not carModel:IsA("Model") or carModel.Parent ~= VehicleFolder then
-		return false, "not a Model inside workspace.Vehicles"
+	if typeof(carModel) ~= "Instance" or not carModel:IsA("Model") then
+		return false, "not a Model"
+	end
+	local reportedModel = carModel
+	if carModel.Parent ~= VehicleFolder then
+		local tractor = isTrailer(carModel) and TrailerHitch.GetHitchedTractor(carModel)
+		if not (tractor and tractor.Parent == VehicleFolder) then
+			return false, "not a Model inside workspace.Vehicles, nor a trailer hitched to one"
+		end
+		carModel = tractor
 	end
 	if typeof(position) ~= "Vector3" then
 		return false, "position was not a Vector3"
@@ -120,7 +141,7 @@ local function validate(player, carModel, position, magnitude)
 	if magnitude <= 0 or magnitude > VehicleCollision.MaxImpulse then
 		return false, string.format("magnitude %.1f is outside 0..%.0f (MaxImpulse)", magnitude, VehicleCollision.MaxImpulse)
 	end
-	if not VehicleCollision.GetBodyFolder(carModel) then
+	if not VehicleCollision.GetBodyFolder(reportedModel) then
 		return false, "car has no Body folder"
 	end
 	if not withinRateLimit(player) then
@@ -139,11 +160,11 @@ local function validate(player, carModel, position, magnitude)
 		return false, string.format("within the %.2fs entry grace (%.2fs left)", VehicleCollision.EntryDamageGrace, graceUntil - os.clock())
 	end
 	-- A crash has to have happened somewhere near the car that reported it.
-	local chassis = carModel.PrimaryPart
+	local chassis = reportedModel.PrimaryPart
 	if chassis and (chassis.Position - position).Magnitude > 100 then
 		return false, "impact position is more than 100 studs from the chassis"
 	end
-	return true, nil
+	return true, nil, carModel
 end
 
 --=============================================================================
@@ -419,10 +440,13 @@ end
 -- The car (if any) that a hit part belongs to. Walks up rather than checking
 -- Parent, because the part reported is a hull box or a panel several folders
 -- deep, not a direct child of the car.
+--
+-- A trailer counts: driving into one, parked or towed, damages its bodywork
+-- (and whatever it is carrying) the same way hitting a truck does.
 local function carModelFromPart(part)
 	local model = part:FindFirstAncestorOfClass("Model")
 	while model do
-		if model.Parent == VehicleFolder then
+		if model.Parent == VehicleFolder or isTrailer(model) then
 			return model
 		end
 		model = model:FindFirstAncestorOfClass("Model")
@@ -435,7 +459,7 @@ end
 --=============================================================================
 
 impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse, hitPart)
-	local ok, reason = validate(player, carModel, position, impulse)
+	local ok, reason, drivenCar = validate(player, carModel, position, impulse)
 	if not ok then
 		log("IMPACT REJECTED from %s: %s", player.Name, reason)
 		return
@@ -455,7 +479,12 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 	-- The same 0-1 scale the reporting client scaled its own local crash sound
 	-- with (see severity in VehicleCrashDetector's onImpact), so a bystander's
 	-- copy of the sound matches it.
-	local severity = severityOf(carModel, impulse)
+	--
+	-- Against the DRIVEN truck's mass, which is what the client multiplied
+	-- by: a trailer's own report is scaled to its tractor (see the trailer
+	-- section of VehicleCrashDetector), because the trailer weighs almost
+	-- nothing and every damage number here is calibrated to truck masses.
+	local severity = severityOf(drivenCar, impulse)
 	impactSoundRemote:FireAllClients(position, severity, player)
 
 	-- ...and the same crash, applied to whatever is in the bed. On this scale
@@ -470,13 +499,28 @@ impactRemote.OnServerEvent:Connect(function(player, carModel, position, impulse,
 	-- the same speed.
 	if typeof(hitPart) == "Instance" and hitPart:IsA("BasePart") then
 		local otherCar = carModelFromPart(hitPart)
-		if otherCar and otherCar ~= carModel then
+		-- (Never the reporter's own trailer or tractor: the truck's hulls rest
+		-- on the trailer for the whole tow, and that is not a crash.)
+		if
+			otherCar
+			and otherCar ~= carModel
+			and otherCar ~= drivenCar
+			and otherCar ~= TrailerHitch.GetHitchedTrailer(drivenCar)
+		then
 			applyDamage(otherCar, position, amount * 0.5, VehicleCollision.DamageRadius)
 			-- Halved for the same reason the panel damage is: only one of the
 			-- two clients reports this crash, and the driver who got hit
 			-- should not lose a full load's worth of condition to a collision
 			-- they may not have caused.
-			CargoManager.ApplyImpact(otherCar, severityOf(otherCar, impulse * 0.5))
+			--
+			-- A trailer's own mass cannot be divided back out the way a
+			-- truck's is - it reads infinite while parked (anchored) and next
+			-- to nothing while towed - so a trailer takes half the hitting
+			-- truck's severity instead.
+			local otherSeverity = if isTrailer(otherCar)
+				then severity * 0.5
+				else severityOf(otherCar, impulse * 0.5)
+			CargoManager.ApplyImpact(otherCar, otherSeverity)
 		end
 	end
 end)

@@ -25,6 +25,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
 local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleCollision = require(ReplicatedStorage.Modules.Vehicles.VehicleCollision)
@@ -90,6 +91,77 @@ hitchRequest.Parent = ReplicatedStorage
 -- Losing trailer-vs-other-car is a much smaller loss than the rig detonating,
 -- but it is a loss, and it is the thing to revisit first if trailers ever stop
 -- being a prototype.
+-- UPDATE - the limitation above is gone, and so is the blanket rule that
+-- caused it. A trailer's shape now collides with vehicles like any other
+-- solid thing (see trailerRules at the bottom), and the ONE pairing that must
+-- not resolve - a trailer against the tractor that tows it - is switched off
+-- part by part with NoCollisionConstraints instead (exemptFromEachOther).
+-- Those are per pair, cost no collision group, and are exactly as strong as
+-- the group rule was for the two bodies they name. So another player's truck
+-- hits a trailer, parked or towed, and a trailer swinging wide hits them.
+local NO_COLLIDE_FOLDER = "TractorNoCollide"
+
+-- The parts of a vehicle or trailer that are its collision shape: the chassis
+-- and the hull boxes. Read structurally rather than by collision group,
+-- because VehicleCollisionSetup may not have grouped a just-spawned truck yet.
+local function solidParts(model)
+	local parts = {}
+	if model.PrimaryPart then
+		table.insert(parts, model.PrimaryPart)
+	end
+	local hulls = VehicleCollision.GetHullFolder(model)
+	if hulls then
+		for _, part in hulls:GetDescendants() do
+			if part:IsA("BasePart") then
+				table.insert(parts, part)
+			end
+		end
+	end
+	return parts
+end
+
+-- Stops `trailerModel` and `tractorModel` colliding with EACH OTHER, and with
+-- nothing else. One tractor at a time: linking a trailer to a new truck drops
+-- its exemption from the old one.
+--
+-- Made for a trailer's owner's truck as soon as both exist, not only while
+-- coupled. Backing up to hitch puts the tractor's tail under the trailer's
+-- nose before the pin is close enough to take, and a solid nose there would
+-- stop the truck a couple of studs short of ever being able to couple.
+local function exemptFromEachOther(tractorModel, trailerModel)
+	local trailerChassis = trailerModel.PrimaryPart
+	if not (trailerChassis and tractorModel.PrimaryPart) then
+		return
+	end
+	local existing = trailerChassis:FindFirstChild(NO_COLLIDE_FOLDER)
+	if existing then
+		if existing:GetAttribute("Tractor") == tractorModel:GetFullName() and existing:FindFirstChildOfClass("NoCollisionConstraint") then
+			local first = existing:FindFirstChildOfClass("NoCollisionConstraint")
+			if first.Part1 and first.Part1:IsDescendantOf(tractorModel) then
+				return -- already exempt from this very truck
+			end
+		end
+		existing:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = NO_COLLIDE_FOLDER
+	folder:SetAttribute("Tractor", tractorModel:GetFullName())
+	for _, trailerPart in solidParts(trailerModel) do
+		for _, tractorPart in solidParts(tractorModel) do
+			local constraint = Instance.new("NoCollisionConstraint")
+			constraint.Part0 = trailerPart
+			constraint.Part1 = tractorPart
+			constraint.Parent = folder
+		end
+	end
+	folder.Parent = trailerChassis
+end
+
+-- Longest edge, in studs, a trailer body part may have and still be knocked
+-- off in a crash. See the Body branch below.
+local MAX_DETACHABLE_PANEL_SIZE = 20
+
 local function setUpTrailerCollision(trailerModel)
 	local hulls = trailerModel:FindFirstChild("Collision")
 	local body = trailerModel:FindFirstChild("Body")
@@ -115,6 +187,19 @@ local function setUpTrailerCollision(trailerModel)
 			part.CollisionGroup = VehicleCollision.Groups.Cosmetic
 			part.CanCollide = false
 			part.CanQuery = false
+			-- Bodywork can be knocked off in a crash, like a truck's
+			-- (VehicleDamage) - but not the shell. The box sides, roof and
+			-- floor are single meshes the length of the trailer, and losing one
+			-- would leave a see-through trailer and a fifty-stud panel bouncing
+			-- down the street. The small stuff - doors, bumper, mudguards,
+			-- landing gear - is what comes off. A builder's own NoDetach
+			-- (either way) is left alone.
+			if
+				part:GetAttribute(VehicleCollision.NO_DETACH_ATTRIBUTE) == nil
+				and math.max(part.Size.X, part.Size.Y, part.Size.Z) > MAX_DETACHABLE_PANEL_SIZE
+			then
+				part:SetAttribute(VehicleCollision.NO_DETACH_ATTRIBUTE, true)
+			end
 		else
 			part.CollisionGroup = VehicleCollision.Groups.Attached
 		end
@@ -148,6 +233,7 @@ local function attachWheels(trailerModel, chassis, attachments, config)
 		end
 
 		local cloned = wheelModel:Clone()
+		VehiclePhysics.RepairWheelWelds(cloned)
 		cloned.Name = wheel.Name
 		cloned.Parent = wheelFolder
 
@@ -657,6 +743,12 @@ local function canCouple(player, tractorModel, trailerModel)
 	if claimedBy ~= nil and claimedBy ~= player.UserId then
 		return false, "That trailer is reserved"
 	end
+	-- A spawned trailer is its owner's for life (see the PLAYER TRAILERS
+	-- section). FindCandidate already skips other drivers' trailers on both
+	-- sides, so this only ever refuses a forged or raced request.
+	if not TrailerHitch.CanUse(player.UserId, trailerModel) then
+		return false, "That trailer belongs to another driver"
+	end
 
 	-- Their own truck, and one they are actually sitting in. Ownership alone
 	-- is not enough: it would let a player hitch a trailer onto a truck parked
@@ -724,6 +816,11 @@ local function couple(player, tractorModel, trailerModel)
 	trailerChassis.AssemblyLinearVelocity = Vector3.zero
 	trailerChassis.AssemblyAngularVelocity = Vector3.zero
 
+	-- Before the trailer is unanchored below, while the two hulls are sitting
+	-- inside each other and nothing is simulating either: from the first
+	-- simulated frame they must already not be a contact.
+	exemptFromEachOther(tractorModel, trailerModel)
+
 	buildGimbal(tractorModel, trailerModel)
 
 	-- Each body's suspension must ignore the other's geometry, or the
@@ -776,6 +873,363 @@ local function couple(player, tractorModel, trailerModel)
 end
 
 --=============================================================================
+-- PLAYER TRAILERS
+--=============================================================================
+
+-- Every player with a tractor has at most ONE trailer in the world, and it is
+-- theirs: stood in a stall at the freight yard when they first drive the
+-- tractor in, kept once it is on the truck, and re-used for every job.
+--
+-- WHY ONE KEPT TRAILER, rather than a fresh one per mission. A trailer per job
+-- sounds tidier - the trailer IS the load, so it could appear when a contract
+-- is taken and vanish when it is delivered - but it makes the hitch-up, the
+-- hardest manoeuvre in the game, a toll on every single job instead of a thing
+-- you do once and then own the result of. It also strands the player bobtail
+-- at every drop-off. Kept, the rig is the player's rig: back into the freight
+-- bay, load, deliver, come back with the same trailer still on.
+--
+-- WHY THERE IS A RECALL. A kept trailer can be lost - dropped in a street,
+-- jackknifed into an alley, left behind when the truck was respawned at the
+-- plot. Anything a player can lose needs a way back that is not "leave the
+-- game", so a bobtail tractor in the yard can have the trailer brought back to
+-- a stall. It is a NEW trailer: whatever the old one was carrying is gone with
+-- it, the same rule respawning a loaded truck has always had.
+
+local ServerStorage = game:GetService("ServerStorage")
+
+local playerTrailers = {} -- [userId] = trailer Model
+
+-- Footprint a standing trailer needs, in the stall's own frame: half its
+-- length either way along the stall, and most of the stall pitch across it.
+-- Deliberately generous along the length - a trailer dropped half out of a
+-- stall still blocks it.
+local STALL_HALF_LENGTH = 40
+local STALL_HALF_WIDTH = 9
+
+-- THE STALLS ARE A HANDFUL AND THE SERVER IS TWELVE PLAYERS, so a stall is
+-- never somewhere a trailer LIVES - it is somewhere one waits to be picked up.
+-- Three rules keep them turning over, and together they mean any number of
+-- players can share any number of stalls:
+--
+--   1. A trailer is only stood in a stall when its owner drives a bobtail
+--      tractor INTO THE YARD (see the arrival loop below), not when the truck
+--      spawns at a plot on the far side of the terminal. Stalls hold the
+--      trailers of the players who are actually there.
+--   2. A parked, empty trailer whose owner has left the yard is cleared away
+--      after STALL_IDLE_SECONDS. It comes back by itself the next time they
+--      drive in.
+--   3. If every stall is still taken when somebody needs one, the trailer
+--      that has stood longest goes - but only once it has had
+--      STALL_MAX_DWELL_SECONDS, which is plenty of time to back onto it. Its
+--      owner is told, and gets it back with T.
+--
+-- More stalls is still the better answer to a busy yard: add TrailerStall
+-- parts to workspace.Delivery.Depot.TrailerStalls and they are used.
+local STALL_IDLE_SECONDS = 20
+local STALL_MAX_DWELL_SECONDS = 90
+-- How far past the recall radius an owner has to be before rule 2 applies, so
+-- circling the yard to line up does not count as leaving it.
+local STALL_IDLE_MARGIN = 40
+
+-- [trailer Model] = os.clock() when it was first seen standing in a stall.
+-- Weak keys: a destroyed trailer must not be kept alive by its stopwatch.
+local stalledSince = setmetatable({}, { __mode = "k" })
+
+-- [userId] = true for a player whose trailer was cleared under rule 3. They
+-- are not given another automatically - or two players waiting on one stall
+-- would take turns evicting each other once a second - only when they ask.
+local awaitingManualRecall = {}
+
+local function stallParts()
+	local stalls = TrailerHitch.FindStalls()
+	local parts = {}
+	if stalls then
+		for _, child in stalls:GetChildren() do
+			if child:IsA("BasePart") then
+				table.insert(parts, child)
+			end
+		end
+	end
+	-- By name, so everybody fills stall 1 first and the order is the same on
+	-- every server rather than whatever GetChildren happens to return.
+	table.sort(parts, function(a, b)
+		return a.Name < b.Name
+	end)
+	return parts
+end
+
+-- The trailer standing in this stall, or nil.
+local function trailerInStall(stall, ignore)
+	for _, trailer in trailersFolder:GetChildren() do
+		if trailer ~= ignore and trailer:IsA("Model") and trailer.PrimaryPart then
+			local offset = trailer.PrimaryPart.Position - stall.Position
+			local along = math.abs(offset:Dot(stall.CFrame.LookVector))
+			local across = math.abs(offset:Dot(stall.CFrame.RightVector))
+			if along < STALL_HALF_LENGTH and across < STALL_HALF_WIDTH then
+				return trailer
+			end
+		end
+	end
+	return nil
+end
+
+local function isLoaded(trailer)
+	local units = trailer:GetAttribute(CargoLoad.Attributes.Units)
+	return type(units) == "number" and units > 0
+end
+
+-- Something other than a trailer standing in the stall: a parked truck, a prop
+-- somebody left there. A trailer stood on top of it would be anchored and so
+-- look fine, right up until it was hitched and the two were pushed apart.
+local obstacleParams = OverlapParams.new()
+obstacleParams.FilterType = Enum.RaycastFilterType.Exclude
+obstacleParams.RespectCanCollide = true
+
+local function stallObstructed(stall)
+	obstacleParams.FilterDescendantsInstances = { trailersFolder }
+	-- A trailer-sized box, lifted clear of the ground so the yard surface and
+	-- its painted lines never count.
+	local box = CFrame.lookAt(stall.Position, stall.Position + stall.CFrame.LookVector) * CFrame.new(0, 6, 0)
+	local parts = workspace:GetPartBoundsInBox(box, Vector3.new(8.5, 8, 46), obstacleParams)
+	return #parts > 0
+end
+
+local destroyPlayerTrailer -- forward declaration; freeStall evicts with it
+
+-- A stall with nothing standing in it, or - rule 3 above - the one whose
+-- trailer has been waiting longest, cleared. A stall is never cleared from
+-- under a loaded trailer (that would cancel somebody's job to make room for
+-- somebody else's) nor from under one that has not yet had its dwell.
+local function freeStall(ignore)
+	local now = os.clock()
+	local evict, evictStall, evictDwell = nil, nil, STALL_MAX_DWELL_SECONDS
+	for _, stall in stallParts() do
+		local occupant = trailerInStall(stall, ignore)
+		if not occupant then
+			if not stallObstructed(stall) then
+				return stall
+			end
+			continue
+		end
+		if
+			not occupant:GetAttribute(TrailerHitch.Attributes.Hitched)
+			and not isLoaded(occupant)
+			and TrailerHitch.GetOwnerUserId(occupant) ~= nil
+		then
+			local dwell = now - (stalledSince[occupant] or now)
+			if dwell >= evictDwell then
+				evict, evictStall, evictDwell = occupant, stall, dwell
+			end
+		end
+	end
+	if evict then
+		local ownerId = TrailerHitch.GetOwnerUserId(evict)
+		destroyPlayerTrailer(ownerId)
+		awaitingManualRecall[ownerId] = true
+		local owner = Players:GetPlayerByUserId(ownerId)
+		if owner then
+			hitchRequest:FireClient(owner, "notice", "Your trailer was moved to make room - press T in the yard to bring it back")
+		end
+		return evictStall
+	end
+	return nil
+end
+
+destroyPlayerTrailer = function(userId)
+	local trailer = playerTrailers[userId]
+	playerTrailers[userId] = nil
+	if not trailer then
+		return
+	end
+	-- Uncoupled first, so the tractor's link, its ray filter and the pitch
+	-- attachment built on its chassis are all cleaned up by the one function
+	-- that knows about them, rather than left pointing at a destroyed model.
+	if couplings[trailer] then
+		uncouple(trailer)
+	end
+	trailer:Destroy()
+end
+
+-- Stands a fresh trailer for `player` in a stall, replacing any they already
+-- have. Returns (ok, reason).
+local function spawnPlayerTrailer(player)
+	local templates = ServerStorage:FindFirstChild(TrailerHitch.TemplateFolderName)
+	local template = templates and templates:FindFirstChild(TrailerHitch.PlayerTemplateName)
+	if not template then
+		warn(
+			"TrailerHitch: no ServerStorage."
+				.. TrailerHitch.TemplateFolderName
+				.. "."
+				.. TrailerHitch.PlayerTemplateName
+				.. " - nobody can be given a trailer. Put the trailer model there."
+		)
+		return false, "No trailer available"
+	end
+
+	local stall = freeStall(playerTrailers[player.UserId])
+	if not stall then
+		return false, "The trailer stalls are full - try again in a moment"
+	end
+
+	destroyPlayerTrailer(player.UserId)
+
+	local trailer = template:Clone()
+	trailer:SetAttribute(TrailerHitch.Attributes.Owner, player.UserId)
+	-- Atomic for the same reason PlotManager spawns cars that way: the whole
+	-- model streams in and out as one, so no client ever holds a trailer with
+	-- no PrimaryPart.
+	trailer.ModelStreamingMode = Enum.ModelStreamingMode.Atomic
+
+	-- Centred on the stall by its BOUNDING BOX, not its pivot: the pivot is the
+	-- chassis, which sits well back from the middle of a trailer whose body
+	-- overhangs the kingpin. Height is only roughly right here - addTrailer's
+	-- placeOnGround sets it properly the moment the model is parented.
+	local facing = CFrame.lookAt(stall.Position, stall.Position + stall.CFrame.LookVector)
+	local boxCFrame = trailer:GetBoundingBox()
+	local boxOffset = trailer:GetPivot():ToObjectSpace(boxCFrame).Position
+	trailer:PivotTo(facing * CFrame.new(-boxOffset.X, 5, -boxOffset.Z))
+
+	playerTrailers[player.UserId] = trailer
+	trailer.Parent = trailersFolder
+
+	-- Their truck may drive through their own trailer's shape - see
+	-- exemptFromEachOther for why that has to be true before coupling.
+	for _, carModel in workspace.Vehicles:GetChildren() do
+		if
+			carModel:IsA("Model")
+			and TrailerHitch.CanTow(carModel)
+			and VehicleOwnership.GetOwnerUserId(carModel) == player.UserId
+		then
+			exemptFromEachOther(carModel, trailer)
+		end
+	end
+	return true, nil
+end
+
+local vehicleFolder = workspace:WaitForChild("Vehicles")
+
+-- A player who respawns their tractor at the plot has a NEW truck and,
+-- possibly, the same trailer still standing somewhere: point its exemption at
+-- the new one.
+vehicleFolder.ChildAdded:Connect(function(carModel)
+	if not (carModel:IsA("Model") and TrailerHitch.CanTow(carModel)) then
+		return
+	end
+	local trailer = playerTrailers[VehicleOwnership.GetOwnerUserId(carModel) or 0]
+	if trailer and trailer.Parent then
+		-- Deferred so the truck's Collision folder has replicated its welds
+		-- and PrimaryPart before its parts are enumerated.
+		task.defer(exemptFromEachOther, carModel, trailer)
+	end
+end)
+
+-- The tractor this player is driving, if it is theirs to tow with and has
+-- nothing on the back.
+local function bobtailTractorOf(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local seat = humanoid and humanoid.SeatPart
+	local carModel = seat and seat.Name == "DriverSeat" and seat.Parent
+	if
+		carModel
+		and carModel:IsA("Model")
+		and carModel.PrimaryPart
+		and carModel.Parent == vehicleFolder
+		and TrailerHitch.CanTow(carModel)
+		and VehicleOwnership.CanEnter(player, carModel)
+		and not TrailerHitch.GetHitchedTrailer(carModel)
+	then
+		return carModel
+	end
+	return nil
+end
+
+-- [Player] = true once they have been told the stalls are full, so the
+-- message is one line when they arrive rather than one a second while they
+-- wait. Cleared the moment they get a trailer or leave the yard.
+local toldStallsFull = {}
+
+-- The arrival loop: rules 1 and 2 above. Once a second is plenty - it decides
+-- things that happen over tens of seconds, on at most a dozen players.
+local function tendStalls()
+	local stalls = TrailerHitch.FindStalls()
+	if not stalls then
+		return
+	end
+	local yard = stalls:GetPivot().Position
+	local now = os.clock()
+
+	-- Rule 1: a bobtail tractor in the yard whose owner has no trailer
+	-- anywhere gets one. A player who HAS one somewhere else is left alone -
+	-- fetching it replaces it, which can cancel a job, so that is their key
+	-- press to make (the recall request, below).
+	for _, player in Players:GetPlayers() do
+		local tractor = bobtailTractorOf(player)
+		local inYard = tractor ~= nil
+			and (tractor.PrimaryPart.Position - yard).Magnitude <= TrailerHitch.RecallRadius
+		if not inYard then
+			toldStallsFull[player] = nil
+			continue
+		end
+		local existing = playerTrailers[player.UserId]
+		if existing and not existing.Parent then
+			playerTrailers[player.UserId] = nil
+			existing = nil
+		end
+		if existing or awaitingManualRecall[player.UserId] then
+			continue
+		end
+		local ok, reason = spawnPlayerTrailer(player)
+		if ok then
+			toldStallsFull[player] = nil
+		elseif not toldStallsFull[player] then
+			toldStallsFull[player] = true
+			hitchRequest:FireClient(player, "notice", reason)
+		end
+	end
+
+	-- Rule 2, and the stopwatch rule 3 reads.
+	for userId, trailer in playerTrailers do
+		if not (trailer.Parent and trailer.PrimaryPart) then
+			playerTrailers[userId] = nil
+			continue
+		end
+		local standing = false
+		if not trailer:GetAttribute(TrailerHitch.Attributes.Hitched) then
+			for _, stall in stallParts() do
+				if trailerInStall(stall) == trailer then
+					standing = true
+					break
+				end
+			end
+		end
+		if not standing then
+			stalledSince[trailer] = nil
+			continue
+		end
+		stalledSince[trailer] = stalledSince[trailer] or now
+
+		local owner = Players:GetPlayerByUserId(userId)
+		local root = owner and owner.Character and owner.Character.PrimaryPart
+		local ownerAway = not root
+			or (root.Position - yard).Magnitude > TrailerHitch.RecallRadius + STALL_IDLE_MARGIN
+		if ownerAway and not isLoaded(trailer) and now - stalledSince[trailer] >= STALL_IDLE_SECONDS then
+			destroyPlayerTrailer(userId)
+		end
+	end
+end
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		local ok, err = pcall(tendStalls)
+		if not ok then
+			warn("TrailerHitch: stall upkeep failed: " .. tostring(err))
+		end
+	end
+end)
+
+--=============================================================================
 -- Requests
 --=============================================================================
 
@@ -790,13 +1244,44 @@ local function tractorFor(player)
 	return (model and model:IsA("Model") and model.PrimaryPart) and model or nil
 end
 
+-- [Player] = os.clock() of their last recall. A recall destroys and rebuilds a
+-- whole model, so it is the one request here worth rate-limiting.
+local lastRecall = {}
+local RECALL_COOLDOWN_SECONDS = 3
+
+local function recall(player, tractorModel)
+	if not VehicleOwnership.CanEnter(player, tractorModel) or not TrailerHitch.CanTow(tractorModel) then
+		return
+	end
+	if TrailerHitch.GetHitchedTrailer(tractorModel) then
+		return -- it is on the back of the truck; there is nothing to fetch
+	end
+	if not TrailerHitch.CanRecall(tractorModel.PrimaryPart.Position, trailersFolder, player.UserId) then
+		return
+	end
+	local now = os.clock()
+	if lastRecall[player] and now - lastRecall[player] < RECALL_COOLDOWN_SECONDS then
+		return
+	end
+	lastRecall[player] = now
+	awaitingManualRecall[player.UserId] = nil
+
+	local ok, reason = spawnPlayerTrailer(player)
+	hitchRequest:FireClient(player, "notice", if ok then "Your trailer is waiting in the stalls" else reason)
+end
+
 hitchRequest.OnServerEvent:Connect(function(player, action)
-	if action ~= "hitch" and action ~= "unhitch" then
+	if action ~= "hitch" and action ~= "unhitch" and action ~= "recall" then
 		return
 	end
 
 	local tractorModel = tractorFor(player)
 	if not tractorModel then
+		return
+	end
+
+	if action == "recall" then
+		recall(player, tractorModel)
 		return
 	end
 
@@ -814,11 +1299,12 @@ hitchRequest.OnServerEvent:Connect(function(player, action)
 	end
 	local ok, reason = couple(player, tractorModel, trailerModel)
 	if not ok then
-		-- Only ever a warn: the client runs the identical geometry test before
-		-- offering the prompt, so a refusal here means either a race (two
-		-- players, one trailer) or a bug, and both are worth seeing in the log
-		-- while this is a prototype.
+		-- The client runs the identical geometry test before offering the
+		-- prompt, so a refusal here means either a race or a bug - worth a line
+		-- in the log, and worth telling the player rather than leaving them
+		-- pressing a key that does nothing.
 		warn("TrailerHitch: refused " .. player.Name .. "'s hitch request: " .. tostring(reason))
+		hitchRequest:FireClient(player, "notice", tostring(reason))
 	end
 end)
 
@@ -845,6 +1331,12 @@ Players.PlayerRemoving:Connect(function(player)
 			uncouple(trailerModel)
 		end
 	end
+	-- Their own trailer leaves with them, wherever it was standing - nobody
+	-- else can couple to it, so left behind it would only ever be an obstacle.
+	destroyPlayerTrailer(player.UserId)
+	lastRecall[player] = nil
+	toldStallsFull[player] = nil
+	awaitingManualRecall[player.UserId] = nil
 end)
 
 --=============================================================================
@@ -876,9 +1368,9 @@ end
 -- block above setUpTrailerCollision for the measurements behind each of these.
 local trailerRules = {
 	{ "Default", true },
-	-- THE important one: the tractor towing it, and (see the known limitation)
-	-- every other vehicle too.
-	{ Groups.Vehicle, false },
+	-- Solid against every vehicle. The tractor towing it is the one exception,
+	-- and that is made per pair by exemptFromEachOther, not here.
+	{ Groups.Vehicle, true },
 	{ Groups.Cosmetic, false },
 	{ Groups.Attached, false },
 	{ Groups.Debris, false },

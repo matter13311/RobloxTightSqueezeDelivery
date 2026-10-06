@@ -46,6 +46,14 @@ local DEFINITIONS = {
 		ButtonText = "Start",
 	},
 	{
+		Category = "Tutorial",
+		Key = "ReplayHitchTutorial",
+		Label = "Trailer truck tutorial",
+		Description = "How to hook up a trailer, load it at the Freight building and haul it. For the American Hitch Truck.",
+		Type = "Action",
+		ButtonText = "Start",
+	},
+	{
 		Category = "Audio",
 		Key = "MusicVolume",
 		Label = "Music volume",

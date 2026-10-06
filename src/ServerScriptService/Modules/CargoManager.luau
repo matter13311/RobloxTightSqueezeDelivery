@@ -297,13 +297,25 @@ end
 -- since each crate landing is meant to make it dip - and a stale frame would
 -- weld the later crates in mid-air relative to the bed.
 local function placeCrate(carModel, chassis, folder, config, cargoType, emptyMass, index)
-	local bedCFrame = getBedCFrame(carModel, chassis, config)
+	local bedCFrame
+	if config.CargoSealed then
+		-- An enclosed body (a box trailer): nothing to see, so nothing is
+		-- built. The thud still plays, from the body itself, and the count
+		-- below still climbs - a sealed load is loaded in every way except
+		-- that there are no crate Parts. No bed attachment is looked for
+		-- either; the chassis stands in for it should the load ever be given
+		-- weight (CargoMassFractionPerUnit).
+		bedCFrame = chassis.CFrame
+		playCrateSound(chassis)
+	else
+		bedCFrame = getBedCFrame(carModel, chassis, config)
 
-	local crate = buildCrate(cargoType, chassis, index)
-	crate.CFrame = bedCFrame * CFrame.new(CargoLoad.CrateOffset(index, cargoType.CrateSize))
-	crate.Parent = folder
-	weldTo(crate, chassis)
-	playCrateSound(crate)
+		local crate = buildCrate(cargoType, chassis, index)
+		crate.CFrame = bedCFrame * CFrame.new(CargoLoad.CrateOffset(index, cargoType.CrateSize))
+		crate.Parent = folder
+		weldTo(crate, chassis)
+		playCrateSound(crate)
+	end
 
 	local placed = index + 1
 	applyBallast(carModel, chassis, folder, bedCFrame, CargoLoad.AddedMass(config, emptyMass, placed, cargoType.Id))
@@ -479,6 +491,10 @@ end
 -- the condition factor, so a player is never charged twice for one crash. That
 -- is also why the Units attribute is not decremented when a crate flies off.
 function CargoManager.ApplyImpact(carModel, severity)
+	-- A tractor's goods are on its trailer, and it is the tractor that reports
+	-- the crash. For every other vehicle this is the vehicle itself.
+	carModel = CargoLoad.Carrier(carModel)
+
 	-- Nothing lands on a load that is still being put on. The truck is
 	-- immobilised in the bay while this is true, so any impact reaching us here
 	-- was somebody else driving into a parked vehicle - which should not cost

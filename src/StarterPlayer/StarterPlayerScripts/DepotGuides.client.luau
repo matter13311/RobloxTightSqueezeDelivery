@@ -45,7 +45,7 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
-local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
+local Haulage = require(ReplicatedStorage.Modules.Delivery.Haulage)
 local VehicleSeats = require(ReplicatedStorage.Modules.Vehicles.VehicleSeats)
 
 local player = Players.LocalPlayer
@@ -109,9 +109,10 @@ local function findDestinationsFolder()
 	return deliveryRoot and deliveryRoot:FindFirstChild(world.DestinationsFolderName)
 end
 
-local function isSpace(instance)
-	return instance:IsA("BasePart") and instance.Name:sub(1, #world.SpacePrefix) == world.SpacePrefix
-end
+-- Either kind of bay - an ordinary "Space*" or a rig bay (which the freight
+-- building names RigSpace*, so the prefix alone would miss them). Every one
+-- gets a guide; which of them LIGHT is decided per vehicle in repoll.
+local isSpace = Haulage.IsSpace
 
 -- A prefix rather than an exact name, for the same reason SpacePrefix is one:
 -- a big destination can carry Sign1 over each door without a list anywhere.
@@ -391,6 +392,9 @@ end
 -- Contains a character no Instance name can hold, so it can never collide with
 -- a destination model called "Depot".
 local DEPOT_GROUP = "\0Depot"
+-- The freight building's rig bays: the depot of a tractor and trailer. Its own
+-- group so a truck never sees them light and a rig never sees the loading bay.
+local FREIGHT_GROUP = "\0Freight"
 
 local entries = {}
 
@@ -437,6 +441,12 @@ task.spawn(function()
 		local loadingBay = findLoadingBay()
 		if loadingBay then
 			scanForGuides(loadingBay, DEPOT_GROUP)
+		end
+		-- The freight building's board is hand-built (FreightBoard, not a
+		-- Sign* part), so only its bays are picked up here.
+		local freightBay = Haulage.DepotBay(true)
+		if freightBay then
+			scanForGuides(freightBay, FREIGHT_GROUP)
 		end
 		task.wait(2)
 	end
@@ -543,10 +553,13 @@ local function repoll()
 	-- the guide grades the vehicle they are sitting in, and their own cargo
 	-- is not on it.
 	local destination = if driving then activeDestination else rideAlongDestination
-	local litGroup = if chassis then (destination or DEPOT_GROUP) else nil
+	-- A tractor's depot is the freight building, and the only bays that are
+	-- any of its business - there or at a destination - are the rig bays.
+	local rig = Haulage.IsTractor(carModel)
+	local litGroup = if chassis then (destination or (if rig then FREIGHT_GROUP else DEPOT_GROUP)) else nil
 
 	for _, entry in entries do
-		if entry.Group ~= litGroup then
+		if entry.Group ~= litGroup or (rig and not Haulage.IsRigSpace(entry.Space)) then
 			entry.TargetVisibility = 0
 			continue
 		end
@@ -564,7 +577,9 @@ local function repoll()
 		-- is fading out keeps whatever colour it had, which is what a light
 		-- going dark looks like.
 		if visibility > 0 then
-			entry.TargetColor = ramp(ParkGrade.Approach(carModel, entry.Space))
+			-- Graded on whatever has to be in the bay - the trailer for a rig
+			-- (and nothing at all, so never green, for a bobtail tractor).
+			entry.TargetColor = ramp(Haulage.Approach(carModel, entry.Space))
 		end
 	end
 end

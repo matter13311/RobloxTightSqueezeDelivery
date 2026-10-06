@@ -440,6 +440,7 @@ local function AddCar(carModel)
 		local wheelModelName = VehiclePhysics.GetVisualWheelModelName(config, wheel)
 		local wheelModel = (wheelModelName and wheelsFolder:FindFirstChild(wheelModelName)) or defaultWheelModel
 		local clonedWheel = wheelModel:Clone()
+		VehiclePhysics.RepairWheelWelds(clonedWheel)
 		clonedWheel.Parent = wheelFolder
 		clonedWheel.Name = wheelName
 

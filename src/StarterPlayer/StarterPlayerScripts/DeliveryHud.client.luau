@@ -30,6 +30,7 @@ local UserInputService = game:GetService("UserInputService")
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
+local Haulage = require(ReplicatedStorage.Modules.Delivery.Haulage)
 local ParkGrade = require(ReplicatedStorage.Modules.Delivery.ParkGrade)
 local ProgressionConfig = require(ReplicatedStorage.Modules.Delivery.ProgressionConfig)
 local ResponsiveScale = require(ReplicatedStorage.Modules.UI.ResponsiveScale)
@@ -1300,7 +1301,8 @@ local function refreshJobFrame()
 	end
 
 	local cargoType = CargoTypes.GetOrDefault(activeContract.TypeId)
-	local carModel = activeContract.Vehicle
+	-- The model the goods are on: the trailer for a rig, the truck otherwise.
+	local carModel = activeContract.Carrier or activeContract.Vehicle
 	local condition = 1
 	if carModel and carModel.Parent then
 		local value = carModel:GetAttribute(CargoLoad.Attributes.Condition)
@@ -1339,7 +1341,7 @@ local function setActiveContract(contract)
 	end
 	-- Driven by the attribute changing rather than polled, so the number moves
 	-- the instant the server registers a crash.
-	local carModel = contract and contract.Vehicle
+	local carModel = contract and (contract.Carrier or contract.Vehicle)
 	if carModel then
 		conditionConnection = carModel:GetAttributeChangedSignal(CargoLoad.Attributes.Condition):Connect(refreshJobFrame)
 	end
@@ -1602,47 +1604,34 @@ local world = DeliveryConfig.World
 -- appear (or be renamed, or be moved) after this script has already run - and
 -- a one-shot lookup at line 1 would leave the board permanently dead with no
 -- clue why. Once found, the list is cached and the scan stops.
-local baySpaces = {}
-
-local function findBaySpaces()
-	if #baySpaces > 0 then
-		return baySpaces
-	end
-
-	local deliveryRoot = workspace:FindFirstChild(world.RootFolderName)
-	local depotFolder = deliveryRoot and deliveryRoot:FindFirstChild(world.DepotFolderName)
-	local loadingBay = depotFolder and depotFolder:FindFirstChild(world.LoadingBayName)
-	if not loadingBay then
-		return baySpaces
-	end
-
-	for _, descendant in loadingBay:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant.Name:sub(1, #world.SpacePrefix) == world.SpacePrefix then
-			table.insert(baySpaces, descendant)
-		end
-	end
-	return baySpaces
-end
+--
+-- TWO lists, because there are two places a job is taken: the loading bay for
+-- a truck and the freight building for a tractor and trailer (see Haulage).
+-- Keyed by `rig` so each is found and cached on its own.
+local baySpaces = { [true] = {}, [false] = {} }
 
 local function truckIsInBay()
-	local spaces = findBaySpaces()
-	if #spaces == 0 then
-		return false
-	end
 	local carModel = VehicleSeats.FindCarDrivenBy(player, VehicleFolder)
 	local chassis = carModel and carModel.PrimaryPart
 	if not chassis then
 		return false
 	end
+
+	local rig = Haulage.IsTractor(carModel)
+	if #baySpaces[rig] == 0 then
+		baySpaces[rig] = Haulage.DepotSpaces(rig)
+	end
+	if #baySpaces[rig] == 0 then
+		return false
+	end
+
 	if not ParkGrade.IsStopped(chassis) then
 		return false
 	end
-	for _, space in spaces do
-		if ParkGrade.Evaluate(carModel, space).Inside then
-			return true
-		end
-	end
-	return false
+	-- For a rig it is the TRAILER that has to be in the bay, and a tractor
+	-- with nothing hitched is never in one - so no board ever opens for a
+	-- truck that has nowhere to put a crate.
+	return Haulage.FindParkedSpace(carModel, baySpaces[rig]) ~= nil
 end
 
 -- The board OPENS the instant the test passes and CLOSES only once it has
@@ -1796,7 +1785,7 @@ waypointScale.Scale = 1
 waypointScale.Parent = waypoint
 
 -- Resolved lazily and re-resolved while empty, for the same reason
--- findBaySpaces is: the destination models are hand-built in Studio and can
+-- the bay spaces are: the destination models are hand-built in Studio and can
 -- appear or be renamed after this script has already run.
 local destinationModels = nil
 
@@ -1817,20 +1806,19 @@ end
 -- the NEAR branch below - so the diamond phase never pays for this lookup.
 local destinationSpaceCache = {}
 
-local function findDestinationSpace(model)
-	local cached = destinationSpaceCache[model]
+--
+-- `rig` picks the long bay a trailer has to go in rather than the first space
+-- of any kind - pointing a rig at a bay it cannot use would be worse than not
+-- pointing at all. Cached separately, under the model's name.
+local function findDestinationSpace(model, rig)
+	local key = if rig then model.Name .. "\0rig" else model
+	local cached = destinationSpaceCache[key]
 	if cached ~= nil then
 		return cached or nil
 	end
 
-	local found = nil
-	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant.Name:sub(1, #world.SpacePrefix) == world.SpacePrefix then
-			found = descendant
-			break
-		end
-	end
-	destinationSpaceCache[model] = found or false
+	local found = Haulage.SpacesIn(model, rig)[1]
+	destinationSpaceCache[key] = found or false
 	return found
 end
 
@@ -1909,7 +1897,7 @@ RunService.RenderStepped:Connect(function()
 	-- icon is exactly what used to let a diamond and an arrow show at once.
 	local target = pivotTarget
 	if near then
-		local space = findDestinationSpace(model)
+		local space = findDestinationSpace(model, activeContract.Rig == true)
 		if space then
 			target = space.Position
 		end

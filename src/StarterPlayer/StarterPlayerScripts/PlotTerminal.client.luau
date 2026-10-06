@@ -2534,6 +2534,11 @@ local function renderHeader(data)
 	setAction("BUY " .. formatMoney(def.Price), SPAWN_BLUE, function()
 		if buyVehicleFunction:InvokeServer(vehicleId) then
 			playClaimSound()
+			-- Says "this was just bought" to whoever cares, without this
+			-- script knowing who that is - today TutorialGuide, which offers
+			-- the lesson some vehicles come with (VehicleCatalog's
+			-- PurchaseTutorial). Client-only, like TutorialActive.
+			player:SetAttribute("VehicleJustBought", vehicleId)
 		end
 		refreshTerminalData()
 	end)

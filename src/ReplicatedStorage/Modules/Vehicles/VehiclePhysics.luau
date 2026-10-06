@@ -584,6 +584,7 @@ local DEFAULT_TRANSMISSION = {
 	-- past that (0.62) means each gear is still visibly pulling when it
 	-- hands over, and the new gear picks up harder than the old one was -
 	-- which is what a shift should feel like. Push this near 1.0 and the car
+	CargoSealed = false, -- true for an enclosed body (a box trailer): the load is counted and paid for but no crates are built - see CargoManager.placeCrate
 	-- crawls to every shift point on the 5% of torque it has left there.
 	ShiftUpAt = 0.62,
 	ShiftDownAt = 0.42, -- downshift once speed falls below this fraction of the NEXT GEAR DOWN's top speed. Must stay clearly below ShiftUpAt - the gap between them is the whole hysteresis band, and without one the box hunts up and down every other frame at a steady throttle
@@ -1061,6 +1062,28 @@ function VehiclePhysics.GetVisualWheelModelName(config, wheel)
 		local override = wheel.Attachment:GetAttribute("WheelModelName")
 		if override ~= nil then
 			return override
+-- Switches back on any WeldConstraint inside a freshly cloned wheel that was
+-- saved switched off. Call it on the CLONE, right after cloning a template out
+-- of ReplicatedStorage.Wheels.
+--
+-- A multi-part wheel is held together by its own WeldConstraints, and those
+-- have been found Enabled = false in the place file more than once (the dual
+-- tyres of TrailerWheel, each time after an editing session). What turns them
+-- off has not been caught: no script in the game does, and the map generator
+-- was ruled out by running it under a watcher, so it is something done to the
+-- template in Studio - but
+-- a wheel whose tyres are not welded to its rim drops them on the road the
+-- moment it is unanchored. Nothing legitimately ships a wheel with a disabled
+-- weld, so repairing the clone costs nothing and makes the template's saved
+-- state stop mattering.
+function VehiclePhysics.RepairWheelWelds(wheelInstance)
+	for _, descendant in wheelInstance:GetDescendants() do
+		if descendant:IsA("WeldConstraint") and not descendant.Enabled then
+			descendant.Enabled = true
+		end
+	end
+end
+
 		end
 		if config.CosmeticWheelModelName then
 			return config.CosmeticWheelModelName

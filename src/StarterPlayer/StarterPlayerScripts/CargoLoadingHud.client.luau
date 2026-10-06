@@ -26,6 +26,7 @@ local TweenService = game:GetService("TweenService")
 local CargoLoad = require(ReplicatedStorage.Modules.Delivery.CargoLoad)
 local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
 local ResponsiveScale = require(ReplicatedStorage.Modules.UI.ResponsiveScale)
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 
 local player = Players.LocalPlayer
 
@@ -243,6 +244,9 @@ local shownCar, shownTotal, shownColor = nil, 0, BRIGHT_TEXT
 local wasDone = false
 
 local function refresh(carModel)
+	-- A tractor's load is on its trailer, so that is the model whose
+	-- attributes describe it. For every other vehicle this is the vehicle.
+	carModel = carModel and CargoLoad.Carrier(carModel)
 	if not carModel or not CargoLoad.IsLoading(carModel) then
 		gui.Enabled = false
 		shownCar = nil
@@ -356,6 +360,45 @@ local function watch(carModel)
 			end
 		end)
 	)
+
+	-- A tractor's trailer carries the load and so the attribute, and it is
+	-- hitched long after the driver sat down - so the trailer's signal is
+	-- wired up whenever the hitch link changes, not once here. The link is an
+	-- ObjectValue the server creates on the first coupling, hence ChildAdded
+	-- as well as Changed.
+	local trailerConnection = nil
+	local function watchTrailer()
+		if trailerConnection then
+			trailerConnection:Disconnect()
+			trailerConnection = nil
+		end
+		local carrier = CargoLoad.Carrier(carModel)
+		if carrier ~= carModel then
+			trailerConnection = carrier:GetAttributeChangedSignal(CargoLoad.Attributes.LoadingPlaced):Connect(function()
+				refresh(carModel)
+			end)
+		end
+		refresh(carModel)
+	end
+	local function watchLink(link)
+		if link.Name == TrailerHitch.Links.TrailerOnTractor and link:IsA("ObjectValue") then
+			table.insert(watchConnections, link.Changed:Connect(watchTrailer))
+			watchTrailer()
+		end
+	end
+	table.insert(watchConnections, carModel.ChildAdded:Connect(watchLink))
+	for _, child in carModel:GetChildren() do
+		watchLink(child)
+	end
+	-- A plain function in the same list, so the trailer's connection is
+	-- dropped with the rest the next time watch() runs.
+	table.insert(watchConnections, {
+		Disconnect = function()
+			if trailerConnection then
+				trailerConnection:Disconnect()
+			end
+		end,
+	})
 
 	-- Covers sitting down in a truck that is already mid-load.
 	refresh(carModel)

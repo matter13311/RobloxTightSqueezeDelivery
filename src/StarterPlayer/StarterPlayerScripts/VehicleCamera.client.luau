@@ -13,6 +13,9 @@ local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 local VehicleEyePoint = require(script.Parent.VehicleEyePoint)
 
 local player = Players.LocalPlayer
@@ -95,12 +98,47 @@ end
 -- C cycles first person -> close third -> far third. Only while seated: the
 -- key is advertised on the driving controls bar, and on foot the player has
 -- the scroll wheel.
+--
+-- A TRUCK THAT TOWS gets its own, longer set. A tractor and trailer is about
+-- seventy studs nose to tail, so the ordinary "far" view sits somewhere over
+-- the trailer's roof and shows none of what the driver is trying to judge -
+-- where the back end is going. Its three stages are the cab, the cab with the
+-- front of the trailer, and the whole rig; and the scroll wheel is allowed out
+-- past the last of them, where every other vehicle stops at the game's normal
+-- limit.
 local VIEW_FIRST = 0.5
-local VIEW_CLOSE = 14
-local VIEW_FAR = 32
--- Zoom below this counts as first person, up to VIEW_SPLIT as "close".
+local VIEWS = { VIEW_FIRST, 14, 32 }
+local RIG_VIEWS = { VIEW_FIRST, 30, 70 }
+local RIG_MAX_ZOOM = 95
+-- Zoom below this counts as first person.
 local FIRST_LIMIT = 2
-local VIEW_SPLIT = 22
+-- How far short of a stage (studs) the camera has to be for that stage to be
+-- "further out" - see cycleView.
+local STAGE_SLACK = 2
+
+-- Captured before anything here changes it: the limit every vehicle but a
+-- tractor is held to, and what the player goes back to on foot.
+local baseMaxZoom = trueMaxZoom
+
+-- The vehicle the player is sitting in, if it is one that tows.
+local function seatedInTractor()
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local seat = humanoid and humanoid.SeatPart
+	local carModel = seat and seat.Parent
+	return carModel ~= nil and carModel:IsA("Model") and TrailerHitch.CanTow(carModel)
+end
+
+-- Widens or restores the zoom limit to suit what the player is sitting in.
+-- Run on every seat change, BEFORE restoreAfterSeatChange reads trueMaxZoom -
+-- so climbing out of a rig at seventy studs is clamped back to the on-foot
+-- limit by the restore that follows, rather than left hanging out there.
+local function syncZoomLimit()
+	trueMaxZoom = if seatedInTractor() then math.max(baseMaxZoom, RIG_MAX_ZOOM) else baseMaxZoom
+	if not overriding then
+		player.CameraMaxZoomDistance = trueMaxZoom
+	end
+end
 
 local function cycleView()
 	local character = player.Character
@@ -108,14 +146,29 @@ local function cycleView()
 	if not (humanoid and humanoid.SeatPart) or overriding then
 		return
 	end
-	local zoom = trackedZoom or VIEW_CLOSE
-	local target
+	local views = if seatedInTractor() then RIG_VIEWS else VIEWS
+	local zoom = trackedZoom or views[2]
+	-- The next stage OUT from wherever the camera is now, wrapping to first
+	-- person from the last. "Out" means clearly further than the camera
+	-- already is (STAGE_SLACK), so a view scrolled a little off its stage
+	-- still counts as that stage.
+	--
+	-- Each stage is capped at the zoom limit before it is compared. Without
+	-- that a stage the limit cannot reach is never arrived at, so the cycle
+	-- keeps asking for it and never wraps - which is what the old two-stage
+	-- version did on the game's 20-stud limit: far (32) clamped to 20, read
+	-- back as "still short of far", forever.
+	local target = VIEW_FIRST
 	if zoom < FIRST_LIMIT then
-		target = VIEW_CLOSE
-	elseif zoom < VIEW_SPLIT then
-		target = VIEW_FAR
+		target = views[2]
 	else
-		target = VIEW_FIRST
+		for index = 2, #views do
+			local stage = math.min(views[index], trueMaxZoom)
+			if zoom < stage - STAGE_SLACK then
+				target = stage
+				break
+			end
+		end
 	end
 	overriding = true
 	task.spawn(function()
@@ -146,7 +199,12 @@ local function onCharacterAdded(character)
 	local humanoid = character:WaitForChild("Humanoid")
 	-- Fires for sitting down AND standing up, and both need the same
 	-- treatment - the controller re-evaluates the zoom either way.
-	humanoid.Seated:Connect(restoreAfterSeatChange)
+	humanoid.Seated:Connect(function()
+		syncZoomLimit()
+		restoreAfterSeatChange()
+	end)
+	-- A respawn is a seat change nothing fires for: back to the on-foot limit.
+	syncZoomLimit()
 end
 
 RunService.RenderStepped:Connect(function()

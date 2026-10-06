@@ -29,6 +29,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CargoTypes = require(ReplicatedStorage.Modules.Delivery.CargoTypes)
 -- DeliveryConfig requires nothing itself, so this cannot cycle.
 local DeliveryConfig = require(ReplicatedStorage.Modules.Delivery.DeliveryConfig)
+-- Requires nothing at all, so neither can this.
+local TrailerHitch = require(ReplicatedStorage.Modules.Vehicles.TrailerHitch)
 
 local CargoLoad = {}
 
@@ -80,11 +82,27 @@ CargoLoad.Attributes = {
 -- Shared because three unrelated places ask it and must agree: the driving
 -- client immobilises the truck while it is true, the loading HUD is shown
 -- while it is true, and CargoManager ignores impacts while it is true.
+--
+-- A tractor's load goes on its TRAILER (see Haulage.luau), so the attributes
+-- are on the trailer model - but the truck being held still, and the driver
+-- watching the overlay, are in the tractor. Asking about the tractor therefore
+-- answers for the rig.
 function CargoLoad.IsLoading(carModel)
 	if not carModel then
 		return false
 	end
-	return carModel:GetAttribute(CargoLoad.Attributes.LoadingPlaced) ~= nil
+	return CargoLoad.Carrier(carModel):GetAttribute(CargoLoad.Attributes.LoadingPlaced) ~= nil
+end
+
+-- The model whose cargo attributes describe this vehicle's load: the trailer
+-- on its hitch if it has one, otherwise the vehicle itself. Never nil for a
+-- model, so it is safe to read attributes straight off the result.
+function CargoLoad.Carrier(carModel)
+	local trailer = TrailerHitch.GetHitchedTrailer(carModel)
+	if trailer and trailer.Parent then
+		return trailer
+	end
+	return carModel
 end
 
 --=============================================================================

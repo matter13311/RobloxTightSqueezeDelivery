@@ -57,7 +57,19 @@ config.BrakeFriction = 0.3
 -- Deliberately below the tractor's, so the trailer is what lets go first.
 config.LateralGripStrength = 1.1
 
--- The trailer is its own cargo; CargoManager never touches it.
-config.CargoCapacity = 0
+-- FREIGHT. A tractor's load goes on its trailer (see Delivery/Haulage.luau),
+-- so this is the capacity the freight board sizes its jobs against - the
+-- biggest in the game, above BoxTruck's fully upgraded 18, because the rig is
+-- the top of the ladder and this number is most of what it pays.
+config.CargoCapacity = 24
+-- An enclosed box: the load is counted, damaged and paid for like any other,
+-- but no crates are built inside a body nobody can see into.
+config.CargoSealed = true
+-- CargoMassFractionPerUnit is left at the default 0 ON PURPOSE: the load adds
+-- no mass. The bogie's spring rate is derived once, at setup, from the empty
+-- trailer (TrailerHitch.server's tuneSuspension), and the trailer weighs so
+-- little that any honest load would be several times its own mass - enough to
+-- sit the bogie on its bump stops and pitch the nose up. Give the load weight
+-- only together with re-tuning the suspension for it.
 
 return config

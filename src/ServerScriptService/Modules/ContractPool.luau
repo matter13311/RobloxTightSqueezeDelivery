@@ -420,8 +420,50 @@ end
 -- empty table when they are not in one); `capacity` is CargoLoad.Capacity of
 -- it, passed in rather than re-derived so the whole board is quoted off one
 -- snapshot of one vehicle.
-local function draw(contract, config, capacity)
-	local destination = Destinations.Get(contract.Stop)
+--
+-- `rig` is true when that truck is a tractor. A trailer cannot be taken where
+-- most of the pool points - most destinations open onto an alley - so a
+-- rig's card names a RIG destination instead: see rigStopFor.
+local function rigStopFor(contract, data)
+	local unlocked = ProgressionConfig.UnlockedZone(data.Permits)
+	local original = Destinations.Get(contract.Stop)
+
+	local reachable, sameZone = {}, {}
+	for _, name in Destinations.RigNames() do
+		local destination = Destinations.Get(name)
+		if destination.Zone <= unlocked then
+			table.insert(reachable, name)
+			if original and destination.Zone == original.Zone then
+				table.insert(sameZone, name)
+			end
+		end
+	end
+
+	-- The rig bay in the SAME ZONE as the job's own stop when there is one, so
+	-- a Harbour job is still a Harbour job - the same distance, the same zone
+	-- multiplier, the same permit - and only the door changes. Otherwise any
+	-- rig bay the player can reach.
+	--
+	-- Chosen by the contract's id, never at random: the board is drawn fresh
+	-- every time it is opened and again when a job is accepted, and all of
+	-- those have to name the same place.
+	local pool = if #sameZone > 0 then sameZone else reachable
+	if #pool == 0 then
+		return nil
+	end
+	return pool[contract.Id % #pool + 1]
+end
+
+local function draw(contract, config, capacity, data, rig)
+	local stop = contract.Stop
+	if rig then
+		stop = rigStopFor(contract, data)
+		if not stop then
+			return nil -- no rig bay built anywhere this player can go
+		end
+	end
+
+	local destination = Destinations.Get(stop)
 	if not destination then
 		return nil
 	end
@@ -444,7 +486,7 @@ local function draw(contract, config, capacity)
 	return {
 		Id = contract.Id,
 		-- One stop today; see DeliveryManager's header for why it is a list.
-		Stops = { contract.Stop },
+		Stops = { stop },
 		TypeId = contract.TypeId,
 		Units = units,
 		QuotedValue = math.floor(baseValue * (1 + destination.DistanceBonus) * destination.ZoneMultiplier),
@@ -471,13 +513,19 @@ end
 -- SecondsUntilNext is a DURATION, not a timestamp. A timestamp would be
 -- meaningless to a client whose os.time() need not agree with the server's,
 -- and the difference would show up as a countdown that starts wrong.
-function ContractPool.Board(data, config, capacity, now)
+--
+-- `rig` draws the same pool for a tractor and trailer: every card re-pointed
+-- at a destination with a rig bay. One pool, not a second freight one - the
+-- slots, the refill clock and the paid refresh are a single thing the player
+-- already understands, and a job taken with the rig is a slot spent exactly
+-- like any other.
+function ContractPool.Board(data, config, capacity, now, rig)
 	now = now or os.time()
 	ContractPool.Regenerate(data, now)
 
 	local offers = {}
 	for _, contract in data.Contracts do
-		local card = draw(contract, config, capacity)
+		local card = draw(contract, config, capacity, data, rig)
 		if card then
 			table.insert(offers, card)
 		end

@@ -94,6 +94,77 @@ TutorialConfig.GarageReminder = {
 }
 
 --=============================================================================
+-- Extra tracks
+--=============================================================================
+
+-- A TRACK is a second, shorter tutorial for one thing bought late in the game,
+-- run by the same banner, markers and spotlight as the first-delivery one
+-- above. Steps / Finish have exactly the shapes they have there; the runner's
+-- stepLogic table has an entry for every Id.
+--
+-- A track is OFFERED rather than started: the player has just spent the
+-- biggest sum in the game and is looking at a "congratulations", not asking
+-- for a lesson, so Offer is a popup with a yes and a no. Saying no costs
+-- nothing - every track has a Replay button in the settings menu (see
+-- GameSettings), which is also the only way back in after finishing one.
+--
+-- Which vehicle offers which track is VehicleCatalog's business
+-- (`PurchaseTutorial = "<track key>"`), so a new one needs an entry here, an
+-- entry there, and nothing in the runner unless it invents a new kind of step.
+TutorialConfig.Tracks = {
+	HitchTruck = {
+		Offer = {
+			Title = "Congrats on your trailer truck!",
+			Body = "The American Hitch Truck hauls a huge trailer - the biggest loads and the biggest "
+				.. "payouts in the game. It works a little differently from your other trucks. "
+				.. "Want a quick lesson?",
+			Accept = "Show me how",
+			Decline = "Maybe later",
+			Footnote = "You can replay this any time from Settings (M).",
+		},
+		Steps = {
+			{
+				Id = "SpawnRig",
+				Title = "Spawn your Hitch Truck",
+				Body = "Press F at your terminal, pick the American Hitch Truck and click SPAWN VEHICLE.",
+			},
+			{
+				Id = "HitchTrailer",
+				Title = "Hook up your trailer",
+				-- The one step with a "why": a tractor with no trailer cannot
+				-- carry anything, which is exactly what playtesters did not know
+				-- when they drove one into the ordinary depot and waited.
+				Body = "This truck can't carry cargo by itself. Drive to your trailer, back up to its front, STOP, then press T.",
+				Hint = "Press F by the door to get into your truck.",
+			},
+			{
+				Id = "ParkAtFreight",
+				Title = "Back into a freight bay",
+				Body = "Reverse your TRAILER into a long bay at the FREIGHT building and stop.",
+				Hint = "Get in your truck and press T behind your trailer to hook it up.",
+			},
+			{
+				Id = "ChooseFreight",
+				Title = "Pick a freight job",
+				Body = "Click a job on the list to load your trailer.",
+				Hint = "Park your trailer fully inside the long bay and stop - the job list opens by itself.",
+			},
+			{
+				Id = "DeliverFreight",
+				Title = "Haul it",
+				Body = "Follow the marker and park your TRAILER in the long marked bay. Swing wide on corners!",
+				Hint = "Get back in your truck and keep the trailer hooked up (T).",
+			},
+		},
+		Finish = {
+			Title = "You're a freight hauler!",
+			Body = "Your trailer stays hooked up - head back to FREIGHT for the next load. Lost it? Press T near the trailer stalls to bring it back.",
+			Seconds = 10,
+		},
+	},
+}
+
+--=============================================================================
 -- Look
 --=============================================================================
 

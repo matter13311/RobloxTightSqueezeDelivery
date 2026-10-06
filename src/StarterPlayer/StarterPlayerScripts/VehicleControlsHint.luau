@@ -18,6 +18,11 @@ local PANEL_EDGE = Color3.fromRGB(52, 58, 70)
 local DIM_TEXT = Color3.fromRGB(160, 170, 188)
 local BRIGHT_TEXT = Color3.fromRGB(236, 240, 247)
 local EXIT_COLOR = Color3.fromRGB(232, 138, 60)
+local TOW_COLOR = Color3.fromRGB(86, 200, 128)
+
+local PANEL_WIDTH = 580
+-- Set by TrailerHitchPrompt.client.luau (its TOW_HINT_ATTRIBUTE).
+local TOW_HINT_ATTRIBUTE = "TowKeyHint"
 
 local function corner(parent, radius)
 	local c = Instance.new("UICorner")
@@ -73,7 +78,7 @@ function ControlsHint.new(player)
 	-- entirely. DeliveryHud's job panel is anchored off this panel's bottom
 	-- edge (see its comment above jobFrame.Position), so a height change here
 	-- has to be mirrored there or the two start overlapping.
-	panel.Size = UDim2.fromOffset(580, 34)
+	panel.Size = UDim2.fromOffset(PANEL_WIDTH, 34)
 	panel.BackgroundColor3 = PANEL
 	panel.BackgroundTransparency = 0.1
 	panel.BorderSizePixel = 0
@@ -91,13 +96,28 @@ function ControlsHint.new(player)
 	-- Bumped from 13 to 16 alongside the panel - see its comment.
 	local row = newLabel(panel, "Hint", UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), "", 16, DIM_TEXT, Enum.Font.GothamMedium)
 	row.RichText = true
-	row.Text = string.format(
-		'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">W/S drive   Space handbrake   Q/E blinkers   H honk   L lights   C camera</font>',
-		hexEXIT,
-		hexDIM
-	)
 	row.TextXAlignment = Enum.TextXAlignment.Center
 	self.HintLabel = row
+
+	-- One optional extra entry on the end: what T does right now, for a truck
+	-- that tows ("T drop trailer"). TrailerHitchPrompt owns that answer and
+	-- publishes it as an attribute on the Player; this only draws it. In the
+	-- same green its own card uses, so the two read as one control - and the
+	-- panel grows to fit rather than squeezing the row everybody else needs.
+	local hexTOW = TOW_COLOR:ToHex()
+	local function redraw()
+		local tow = player:GetAttribute(TOW_HINT_ATTRIBUTE)
+		local hasTow = type(tow) == "string" and tow ~= ""
+		row.Text = string.format(
+			'<font color="#%s"><b>F</b> exit</font>   <font color="#%s">W/S drive   Space handbrake   Q/E blinkers   H honk   L lights   C camera</font>%s',
+			hexEXIT,
+			hexDIM,
+			if hasTow then string.format('   <font color="#%s"><b>T</b> %s</font>', hexTOW, tow) else ""
+		)
+		panel.Size = UDim2.fromOffset(if hasTow then PANEL_WIDTH + 130 else PANEL_WIDTH, 34)
+	end
+	redraw()
+	self._towConnection = player:GetAttributeChangedSignal(TOW_HINT_ATTRIBUTE):Connect(redraw)
 
 	self.Visible = false
 	panel.Visible = false
@@ -129,6 +149,10 @@ function ControlsHint:SetVisible(visible)
 end
 
 function ControlsHint:Destroy()
+	if self._towConnection then
+		self._towConnection:Disconnect()
+		self._towConnection = nil
+	end
 	if self._inputConnection then
 		self._inputConnection:Disconnect()
 		self._inputConnection = nil

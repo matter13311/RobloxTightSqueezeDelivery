@@ -277,6 +277,82 @@ local function onImpact(mySession, deltaV, velocity)
 end
 
 --=============================================================================
+-- The trailer
+--=============================================================================
+
+-- A hitched trailer is a second body this client simulates, and it hits
+-- things the tractor never touches - the inside of every corner, mostly. So it
+-- gets the same measurement the truck does, cut down to the one thing that
+-- matters for it: a sudden change in its velocity that neither gravity nor its
+-- own suspension produced is a crash, and is reported against the TRAILER so
+-- it is the trailer's bodywork (and the load inside it) that pays.
+--
+-- No rebound kill and no scrape here. Both exist to correct how the TRUCK
+-- drives, and the trailer is dragged by a hinge, not driven.
+--
+-- The hitch itself moves the trailer's velocity too - every time the truck
+-- brakes or the rig bends - but smoothly, a fraction of a stud per second per
+-- frame. A real hit is ImpactMinDeltaV in ONE frame, the same threshold the
+-- truck is judged by, and nothing the pin does comes near it.
+local function stepTrailer(mySession, delta, now)
+	local trailer = TrailerHitch.GetHitchedTrailer(mySession.CarModel)
+	local trailerChassis = trailer and trailer.PrimaryPart
+	if not trailerChassis or trailerChassis.Anchored then
+		mySession.Trailer = nil
+		return
+	end
+
+	local state = mySession.Trailer
+	if not state or state.Model ~= trailer then
+		-- Just coupled. Start clean, and sit out a moment: the snap onto the
+		-- pin and the drop onto its own springs are not a crash.
+		VehiclePhysics.TrackSuspensionDeltaV(trailer)
+		mySession.Trailer = {
+			Model = trailer,
+			LastVelocity = trailerChassis.AssemblyLinearVelocity,
+			QuietUntil = now + VehicleCollision.EntryDamageGrace,
+			LastImpact = 0,
+		}
+		return
+	end
+
+	local velocity = trailerChassis.AssemblyLinearVelocity
+	local deltaV = velocity
+		- state.LastVelocity
+		- Vector3.new(0, -workspace.Gravity * delta, 0)
+		- VehiclePhysics.ConsumeSuspensionDeltaV(trailer)
+	state.LastVelocity = velocity
+
+	if
+		deltaV.Magnitude < VehicleCollision.ImpactMinDeltaV
+		or now < state.QuietUntil
+		or now - state.LastImpact < VehicleCollision.ImpactCooldown
+		or withinEntryGrace(mySession)
+	then
+		return
+	end
+	state.LastImpact = now
+
+	-- Same aim as onImpact: whatever it hit lies back along -deltaV.
+	local params = mySession.TrailerImpactParams
+	params.FilterDescendantsInstances = { mySession.CarModel, trailer, player.Character }
+	local result = workspace:Raycast(trailerChassis.Position, -deltaV.Unit * 40, params)
+	local hitPosition = if result then result.Position else trailerChassis.Position
+
+	-- Scaled by the TRACTOR's mass, not the trailer's. The trailer weighs a
+	-- fortieth of the truck, and every damage figure on the server is tuned
+	-- against truck-sized impulses - its own mass would make the hardest hit
+	-- it can take too small to scratch it. VehicleDamage divides the same
+	-- mass back out for severity.
+	local impulse = mySession.Chassis.AssemblyMass * deltaV.Magnitude
+	local severityRange = VehicleCollision.ImpactSevereDeltaV - VehicleCollision.ImpactMinDeltaV
+	local severity = math.clamp((deltaV.Magnitude - VehicleCollision.ImpactMinDeltaV) / severityRange, 0, 1)
+
+	impactRemote:FireServer(trailer, hitPosition, impulse, result and result.Instance)
+	playImpactSound(hitPosition, severity)
+end
+
+--=============================================================================
 -- Car-vs-car shoves
 --=============================================================================
 
@@ -442,6 +518,9 @@ local function endSession()
 	-- Nothing is draining this any more, so don't leave a stale reading (or a
 	-- reference to the car) behind for the next session to subtract.
 	VehiclePhysics.ClearSuspensionDeltaV(session.CarModel)
+	if session.Trailer then
+		VehiclePhysics.ClearSuspensionDeltaV(session.Trailer.Model)
+	end
 	VehicleEntryDebug.Finish()
 	for _, connection in session.Connections do
 		connection:Disconnect()
@@ -535,6 +614,7 @@ local function step(mySession, delta)
 	end
 
 	checkCarShoves(mySession, now)
+	stepTrailer(mySession, delta, now)
 
 	-- Recent velocities, newest last, for checkCarShoves to read the pre-hit speed.
 	table.insert(mySession.History, { At = now, Velocity = velocity })
@@ -564,6 +644,12 @@ local function beginSession(carModel)
 	-- part must never be treated as something the truck hit.
 	impactParams.RespectCanCollide = true
 
+	-- The trailer's own cast; its filter is set per use, since which trailer
+	-- is on the back can change without the driver leaving the seat.
+	local trailerImpactParams = RaycastParams.new()
+	trailerImpactParams.FilterType = Enum.RaycastFilterType.Exclude
+	trailerImpactParams.RespectCanCollide = true
+
 	local normalParams = RaycastParams.new()
 	normalParams.FilterType = Enum.RaycastFilterType.Include
 	-- Also covers a part that turns non-collidable AFTER its contact opened -
@@ -586,6 +672,8 @@ local function beginSession(carModel)
 		CarContactUntil = 0, -- os.clock() until which a car-vs-car hit is in progress
 		Connections = {},
 		ImpactParams = impactParams,
+		TrailerImpactParams = trailerImpactParams,
+		Trailer = nil, -- { Model, LastVelocity, QuietUntil, LastImpact } while one is hitched - see stepTrailer
 		NormalParams = normalParams,
 		ScrapeEffect = nil,
 	}

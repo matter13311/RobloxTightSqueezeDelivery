@@ -29,6 +29,8 @@ Destinations.ByName = {}
 -- so without this two servers rolling the "same" contract could disagree about
 -- which building it names.
 Destinations.Order = {}
+-- The sorted names of the destinations that have a rig bay - see RigNames.
+Destinations.RigOrder = {}
 
 -- Every parking space inside a container, by DeliveryConfig's Space prefix.
 -- Public because DeliveryManager needs the same answer for the loading bay,
@@ -120,7 +122,20 @@ function Destinations.Build()
 			zone = 1
 		end
 		zone = math.floor(zone)
+		-- The subset long enough for a trailer. Empty for most destinations -
+		-- the ones down alleys - which is exactly what keeps them off a rig's
+		-- board (see ContractPool's rigStopFor).
+		local rigSpaces = {}
+		for _, space in spaces do
+			if space:GetAttribute(world.RigBayAttribute) == true then
+				table.insert(rigSpaces, space)
+			end
+		end
+		if #rigSpaces > 0 then
+			table.insert(Destinations.RigOrder, model.Name)
+		end
 		Destinations.ByName[model.Name] = {
+			RigSpaces = rigSpaces,
 			Zone = zone,
 			ZoneMultiplier = DeliveryConfig.Payout.ZoneMultipliers[zone] or 1,
 			Name = model.Name,
@@ -134,6 +149,7 @@ function Destinations.Build()
 	end
 
 	table.sort(Destinations.Order)
+	table.sort(Destinations.RigOrder)
 
 	-- Printed once, at build time, because "why do I keep getting the same
 	-- destination" is otherwise unanswerable from inside the game. Contract
@@ -146,11 +162,20 @@ function Destinations.Build()
 	-- not a problem.
 	print(
 		string.format(
-			"Destinations: %d built - %s",
+			"Destinations: %d built - %s. Rig bays at %d - %s",
 			#Destinations.Order,
-			if #Destinations.Order > 0 then table.concat(Destinations.Order, ", ") else "(none)"
+			if #Destinations.Order > 0 then table.concat(Destinations.Order, ", ") else "(none)",
+			#Destinations.RigOrder,
+			if #Destinations.RigOrder > 0 then table.concat(Destinations.RigOrder, ", ") else "(none)"
 		)
 	)
+end
+
+-- The destinations a trailer can be delivered to: the ones with at least one
+-- RigBay space. Sorted and read-only, like Names.
+function Destinations.RigNames()
+	Destinations.Build()
+	return Destinations.RigOrder
 end
 
 -- Every destination name, in sorted order.
